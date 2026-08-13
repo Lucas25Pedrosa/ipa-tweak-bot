@@ -1,0 +1,1045 @@
+name: Telegram IPA Injector
+
+on:
+  workflow_dispatch:
+
+jobs:
+  inject:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            binutils \
+            tar \
+            zip \
+            unzip \
+            curl
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+
+          pip install telethon
+
+          pip install --force-reinstall \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+          echo "✅ Dependências instaladas"
+
+          cyan --version
+
+      - name: Download latest IPA from Telegram
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+        run: |
+          python telegram_download.py
+
+      - name: Validate downloaded IPA
+        run: |
+          if [ ! -f input.ipa ]; then
+            echo "❌ input.ipa não encontrado"
+            exit 1
+          fi
+
+          unzip -tq input.ipa > /dev/null
+
+          echo "✅ IPA original válido"
+          ls -lh input.ipa
+
+      - name: Detect app and select addon
+        id: prepare
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import plistlib
+          import sys
+          import zipfile
+
+          from pathlib import Path
+
+
+          with zipfile.ZipFile(
+              "input.ipa",
+              "r"
+          ) as z:
+
+              plist_files = [
+                  name
+                  for name in z.namelist()
+                  if name.startswith("Payload/")
+                  and name.count("/") == 2
+                  and name.endswith(
+                      ".app/Info.plist"
+                  )
+              ]
+
+              if not plist_files:
+                  raise SystemExit(
+                      "❌ Info.plist principal "
+                      "não encontrado"
+                  )
+
+              with z.open(
+                  plist_files[0]
+              ) as f:
+                  plist = plistlib.load(f)
+
+
+          bundle_id = plist.get(
+              "CFBundleIdentifier"
+          )
+
+          app_name = (
+              plist.get(
+                  "CFBundleDisplayName"
+              )
+              or plist.get(
+                  "CFBundleName"
+              )
+              or "Unknown"
+          )
+
+          version = plist.get(
+              "CFBundleShortVersionString",
+              "Unknown"
+          )
+
+          if not bundle_id:
+              raise SystemExit(
+                  "❌ Bundle ID não encontrado"
+              )
+
+
+          with open(
+              "config/addons.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+              config = json.load(f)
+
+
+          apps = config.get(
+              "apps",
+              {}
+          )
+
+          if bundle_id not in apps:
+
+              print()
+              print(
+                  "❌ Aplicativo não cadastrado"
+              )
+              print(
+                  f"Bundle ID: {bundle_id}"
+              )
+              print()
+              print(
+                  "Aplicativos cadastrados:"
+              )
+
+              for bid, data in apps.items():
+                  print(
+                      f" • "
+                      f"{data.get('name')}"
+                      f" ({bid})"
+                  )
+
+              sys.exit(1)
+
+
+          app_config = apps[bundle_id]
+
+          addons = app_config.get(
+              "addons",
+              []
+          )
+
+          if not addons:
+              raise SystemExit(
+                  "❌ Nenhum addon cadastrado"
+              )
+
+
+          default_name = app_config.get(
+              "default_addon"
+          )
+
+          if default_name:
+
+              addon = next(
+                  (
+                      item
+                      for item in addons
+                      if item.get(
+                          "name",
+                          ""
+                      ).lower()
+                      ==
+                      default_name.lower()
+                  ),
+                  None
+              )
+
+              if addon is None:
+                  raise SystemExit(
+                      "❌ default_addon inválido"
+                  )
+
+          elif len(addons) == 1:
+
+              addon = addons[0]
+
+          else:
+
+              raise SystemExit(
+                  "❌ Mais de um addon "
+                  "e nenhum default definido"
+              )
+
+
+          for item in addon.get(
+              "files",
+              []
+          ):
+
+              path = item.get("path")
+
+              if not path:
+                  raise SystemExit(
+                      "❌ Componente sem path"
+                  )
+
+              if not Path(path).exists():
+                  raise SystemExit(
+                      f"❌ Arquivo ausente: "
+                      f"{path}"
+                  )
+
+
+          with open(
+              "selected_addon.json",
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              json.dump(
+                  addon,
+                  f,
+                  ensure_ascii=False,
+                  indent=2
+              )
+
+
+          with open(
+              os.environ[
+                  "GITHUB_OUTPUT"
+              ],
+              "a",
+              encoding="utf-8"
+          ) as out:
+
+              out.write(
+                  f"bundle_id="
+                  f"{bundle_id}\n"
+              )
+
+              out.write(
+                  f"app_name="
+                  f"{app_name}\n"
+              )
+
+              out.write(
+                  f"version="
+                  f"{version}\n"
+              )
+
+              out.write(
+                  f"addon_name="
+                  f"{addon.get('name')}\n"
+              )
+
+              out.write(
+                  "ipapatch="
+                  f"{str(addon.get('ipapatch', False)).lower()}\n"
+              )
+
+              out.write(
+                  "remove_extensions="
+                  f"{str(addon.get('remove_extensions', False)).lower()}\n"
+              )
+
+
+          print()
+          print("✅ Aplicativo identificado")
+          print(f"📱 {app_name}")
+          print(f"📦 {bundle_id}")
+          print(f"🔢 {version}")
+          print(
+              f"🧩 {addon.get('name')}"
+          )
+          print(
+              f"🩹 IPA Patch: "
+              f"{addon.get('ipapatch', False)}"
+          )
+          PY
+
+      - name: Install IPA Patch
+        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
+        run: |
+          curl \
+            --location \
+            --fail \
+            --output ipapatch \
+            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
+
+          chmod +x ipapatch
+
+          ./ipapatch --version
+
+      - name: Prepare addon components
+        run: |
+          python <<'PY'
+          import json
+          import shutil
+          import zipfile
+
+          from pathlib import Path
+
+
+          with open(
+              "selected_addon.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+              addon = json.load(f)
+
+
+          prepared = Path(
+              "prepared"
+          )
+
+          if prepared.exists():
+              shutil.rmtree(prepared)
+
+
+          bundles = (
+              prepared / "bundles"
+          )
+
+          appex = (
+              prepared / "appex"
+          )
+
+          bundles.mkdir(
+              parents=True
+          )
+
+          appex.mkdir(
+              parents=True
+          )
+
+
+          inject_files = []
+
+
+          for item in addon.get(
+              "files",
+              []
+          ):
+
+              path = Path(
+                  item["path"]
+              )
+
+              action = item["action"]
+
+              print(
+                  f"📦 {path.name} "
+                  f"-> {action}"
+              )
+
+
+              if action == "inject":
+
+                  inject_files.append(
+                      str(path)
+                  )
+
+
+              elif action == "bundle":
+
+                  with zipfile.ZipFile(
+                      path,
+                      "r"
+                  ) as z:
+
+                      z.extractall(
+                          bundles
+                      )
+
+
+              elif action == "appex":
+
+                  with zipfile.ZipFile(
+                      path,
+                      "r"
+                  ) as z:
+
+                      z.extractall(
+                          appex
+                      )
+
+
+              else:
+
+                  raise SystemExit(
+                      f"❌ Ação desconhecida: "
+                      f"{action}"
+                  )
+
+
+          with open(
+              "inject_files.txt",
+              "w",
+              encoding="utf-8"
+          ) as f:
+
+              for item in inject_files:
+                  f.write(
+                      item + "\n"
+                  )
+
+
+          print(
+              f"✅ "
+              f"{len(inject_files)} "
+              f"componente(s) preparados"
+          )
+          PY
+
+      - name: Inject with Cyan
+        run: |
+          mapfile -t INJECT_FILES \
+            < inject_files.txt
+
+          CYAN_ARGS=(
+            -i input.ipa
+            -o Cyan_Output.ipa
+            -u
+            -w
+          )
+
+          if [ "${#INJECT_FILES[@]}" -gt 0 ]; then
+
+            CYAN_ARGS+=("-f")
+
+            for FILE in "${INJECT_FILES[@]}"; do
+              CYAN_ARGS+=("$FILE")
+            done
+
+          fi
+
+          if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
+            CYAN_ARGS+=("-e")
+          fi
+
+          CYAN_ARGS+=("--overwrite")
+
+          echo "💉 Executando Cyan..."
+
+          cyan "${CYAN_ARGS[@]}"
+
+          test -f Cyan_Output.ipa
+
+          echo "✅ Cyan concluído"
+
+      - name: Reproduce functional dylib layout
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+        run: |
+          python <<'PY'
+          import os
+          import plistlib
+          import shutil
+          import zipfile
+
+          from pathlib import Path
+          from cyan.tbhtypes.executable import Executable
+
+
+          bundle_id = os.environ[
+              "BUNDLE_ID"
+          ]
+
+
+          ROOT_DYLIBS = {
+
+              "com.facebook.Facebook": [
+                  "Glow.dylib"
+              ],
+
+              "com.burbn.instagram": [
+                  "Regram.dylib",
+                  "RegramExtension.dylib"
+              ],
+
+              "com.zhiliaoapp.musically": [
+                  "___RXTikTok.dylib"
+              ],
+
+              "ph.telegra.Telegraph": [
+                  "sideloadFixerLol.dylib",
+                  "TelegramChatFixer.dylib",
+                  "TelegramNotificationFix.dylib",
+                  "TelegramScreenshotBypass.dylib"
+              ],
+
+              "com.dr1ven.eraser": [
+                  "link_file_0.dylib"
+              ],
+
+              "com.letterboxd.LetterboxdApp": [
+                  "LetterboxdPatch.dylib",
+                  "sideloadbypass1.dylib",
+                  "sideloadbypass2.dylib"
+              ]
+          }
+
+
+          work = Path(
+              "layout_work"
+          )
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+
+          with zipfile.ZipFile(
+              "Cyan_Output.ipa",
+              "r"
+          ) as z:
+
+              z.extractall(work)
+
+
+          apps = list(
+              (
+                  work
+                  / "Payload"
+              ).glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ .app principal "
+                  "não identificado"
+              )
+
+
+          app = apps[0]
+
+
+          with open(
+              app / "Info.plist",
+              "rb"
+          ) as f:
+
+              plist = plistlib.load(f)
+
+
+          executable_name = plist.get(
+              "CFBundleExecutable"
+          )
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable ausente"
+              )
+
+
+          executable_path = (
+              app
+              / executable_name
+          )
+
+
+          executable = Executable(
+              str(executable_path)
+          )
+
+
+          dylibs = ROOT_DYLIBS.get(
+              bundle_id,
+              []
+          )
+
+
+          if dylibs:
+              executable.remove_signature()
+
+
+          for dylib_name in dylibs:
+
+              source = (
+                  app
+                  / "Frameworks"
+                  / dylib_name
+              )
+
+              destination = (
+                  app
+                  / dylib_name
+              )
+
+
+              if source.exists():
+
+                  if destination.exists():
+                      destination.unlink()
+
+                  shutil.move(
+                      source,
+                      destination
+                  )
+
+                  print(
+                      f"✅ Frameworks/"
+                      f"{dylib_name} "
+                      f"-> raiz"
+                  )
+
+
+              elif not destination.exists():
+
+                  raise SystemExit(
+                      f"❌ {dylib_name} "
+                      f"não encontrado"
+                  )
+
+
+              old_load = (
+                  f"@rpath/"
+                  f"{dylib_name}"
+              )
+
+              new_load = (
+                  f"@executable_path/"
+                  f"{dylib_name}"
+              )
+
+
+              executable.change_dependency(
+                  old_load,
+                  new_load
+              )
+
+
+              print(
+                  f"✅ {old_load} "
+                  f"-> {new_load}"
+              )
+
+
+          with zipfile.ZipFile(
+              "Layout_Output.ipa",
+              "w",
+              compression=zipfile.ZIP_DEFLATED
+          ) as z:
+
+              for file in work.rglob("*"):
+
+                  if file.is_file():
+
+                      z.write(
+                          file,
+                          file.relative_to(
+                              work
+                          )
+                      )
+
+
+          print(
+              "✅ Layout das dylibs concluído"
+          )
+          PY
+
+      - name: Add bundles and extensions
+        run: |
+          python <<'PY'
+          import shutil
+          import zipfile
+
+          from pathlib import Path
+
+
+          work = Path(
+              "package_work"
+          )
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+
+          with zipfile.ZipFile(
+              "Layout_Output.ipa",
+              "r"
+          ) as z:
+
+              z.extractall(work)
+
+
+          apps = list(
+              (
+                  work
+                  / "Payload"
+              ).glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ App principal "
+                  "não encontrado"
+              )
+
+
+          app = apps[0]
+
+
+          bundle_source = Path(
+              "prepared/bundles"
+          )
+
+
+          for item in bundle_source.iterdir():
+
+              destination = (
+                  app
+                  / item.name
+              )
+
+              if destination.exists():
+
+                  if destination.is_dir():
+                      shutil.rmtree(
+                          destination
+                      )
+
+                  else:
+                      destination.unlink()
+
+
+              if item.is_dir():
+
+                  shutil.copytree(
+                      item,
+                      destination
+                  )
+
+              else:
+
+                  shutil.copy2(
+                      item,
+                      destination
+                  )
+
+              print(
+                  f"📦 {item.name}"
+              )
+
+
+          appex_source = Path(
+              "prepared/appex"
+          )
+
+
+          if any(
+              appex_source.iterdir()
+          ):
+
+              plugins = (
+                  app / "PlugIns"
+              )
+
+              plugins.mkdir(
+                  exist_ok=True
+              )
+
+
+              for item in appex_source.iterdir():
+
+                  destination = (
+                      plugins
+                      / item.name
+                  )
+
+
+                  if destination.exists():
+
+                      if destination.is_dir():
+                          shutil.rmtree(
+                              destination
+                          )
+
+                      else:
+                          destination.unlink()
+
+
+                  if item.is_dir():
+
+                      shutil.copytree(
+                          item,
+                          destination
+                      )
+
+                  else:
+
+                      shutil.copy2(
+                          item,
+                          destination
+                      )
+
+                  print(
+                      f"🧩 {item.name}"
+                  )
+
+
+          with zipfile.ZipFile(
+              "Package_Output.ipa",
+              "w",
+              compression=zipfile.ZIP_DEFLATED
+          ) as z:
+
+              for file in work.rglob("*"):
+
+                  if file.is_file():
+
+                      z.write(
+                          file,
+                          file.relative_to(
+                              work
+                          )
+                      )
+
+
+          print(
+              "✅ Recursos adicionados"
+          )
+          PY
+
+      - name: Apply Info.plist changes
+        run: |
+          python <<'PY'
+          import json
+          import plistlib
+          import shutil
+          import zipfile
+
+          from pathlib import Path
+
+
+          with open(
+              "selected_addon.json",
+              "r",
+              encoding="utf-8"
+          ) as f:
+
+              addon = json.load(f)
+
+
+          changes = addon.get(
+              "plist",
+              {}
+          )
+
+
+          if not changes:
+
+              shutil.copy2(
+                  "Package_Output.ipa",
+                  "Plist_Output.ipa"
+              )
+
+              print(
+                  "ℹ️ Nenhuma alteração "
+                  "de Info.plist"
+              )
+
+              raise SystemExit(0)
+
+
+          work = Path(
+              "plist_work"
+          )
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+
+          with zipfile.ZipFile(
+              "Package_Output.ipa",
+              "r"
+          ) as z:
+
+              z.extractall(work)
+
+
+          apps = list(
+              (
+                  work
+                  / "Payload"
+              ).glob("*.app")
+          )
+
+          app = apps[0]
+
+          plist_path = (
+              app
+              / "Info.plist"
+          )
+
+
+          with open(
+              plist_path,
+              "rb"
+          ) as f:
+
+              plist = plistlib.load(f)
+
+
+          for key, value in changes.items():
+
+              old = plist.get(
+                  key,
+                  "<não existente>"
+              )
+
+              plist[key] = value
+
+              print(
+                  f"✅ {key}: "
+                  f"{old} -> {value}"
+              )
+
+
+          with open(
+              plist_path,
+              "wb"
+          ) as f:
+
+              plistlib.dump(
+                  plist,
+                  f,
+                  fmt=plistlib.FMT_BINARY
+              )
+
+
+          with zipfile.ZipFile(
+              "Plist_Output.ipa",
+              "w",
+              compression=zipfile.ZIP_DEFLATED
+          ) as z:
+
+              for file in work.rglob("*"):
+
+                  if file.is_file():
+
+                      z.write(
+                          file,
+                          file.relative_to(
+                              work
+                          )
+                      )
+
+
+          print(
+              "✅ Info.plist atualizado"
+          )
+          PY
+
+      - name: Apply IPA Patch to plugins only
+        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
+        run: |
+          echo "🩹 IPA Patch plugins-only"
+
+          ./ipapatch \
+            --input Plist_Output.ipa \
+            --output Final.ipa \
+            --plugins-only \
+            --noconfirm
+
+          test -f Final.ipa
+
+          echo "✅ IPA Patch concluído"
+
+      - name: Use output without IPA Patch
+        if: ${{ steps.prepare.outputs.ipapatch != 'true' }}
+        run: |
+          cp \
+            Plist_Output.ipa \
+            Final.ipa
+
+          echo "ℹ️ IPA Patch não necessário"
+
+      - name: Validate final IPA
+        run: |
+          if [ ! -f Final.ipa ]; then
+            echo "❌ Final.ipa ausente"
+            exit 1
+          fi
+
+          unzip -tq \
+            Final.ipa \
+            > /dev/null
+
+          echo ""
+          echo "✅ IPA FINAL"
+          echo "📱 ${{ steps.prepare.outputs.app_name }}"
+          echo "🔢 ${{ steps.prepare.outputs.version }}"
+          echo "📦 ${{ steps.prepare.outputs.bundle_id }}"
+          echo "🧩 ${{ steps.prepare.outputs.addon_name }}"
+          echo ""
+
+          ls -lh Final.ipa
+
+      - name: Send final IPA to Telegram
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+
+          APP_NAME: ${{ steps.prepare.outputs.app_name }}
+          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
+        run: |
+          python telegram_send.py
+
+      - name: Upload backup artifact
+        if: always() && hashFiles('Final.ipa') != ''
+        uses: actions/upload-artifact@v6
+        with:
+          name: ${{ steps.prepare.outputs.app_name }}-${{ steps.prepare.outputs.version }}-${{ steps.prepare.outputs.addon_name }}
+          path: Final.ipa
+          retention-days: 1
