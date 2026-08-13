@@ -1,15 +1,26 @@
-name: Inject Glow + IPA Patch Test
+name: Generic IPA Injector
 
 on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Link direto para o IPA descriptografado do Facebook"
+        description: "Link direto para o IPA descriptografado"
+        required: true
+        type: string
+
+      addons:
+        description: "Nome dos addons separados por vírgula. Ex: Glow"
         required: true
         type: string
 
       apply_ipapatch:
         description: "Aplicar IPA Patch somente nas extensões"
+        required: true
+        default: false
+        type: boolean
+
+      remove_extensions:
+        description: "Remover extensões (.appex)"
         required: true
         default: false
         type: boolean
@@ -35,8 +46,12 @@ jobs:
       - name: Install Cyan
         run: |
           python -m pip install --upgrade pip
+
           pip install --force-reinstall \
             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+          echo "✅ Cyan instalado"
+          cyan --version
 
       - name: Install IPA Patch
         if: ${{ inputs.apply_ipapatch }}
@@ -54,17 +69,16 @@ jobs:
           echo "✅ IPA Patch instalado"
           ./ipapatch --version
 
-      - name: Check Glow package
+      - name: Check incompatible options
+        env:
+          APPLY_IPAPATCH: ${{ inputs.apply_ipapatch }}
+          REMOVE_EXTENSIONS: ${{ inputs.remove_extensions }}
         run: |
-          ADDON="addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb"
-
-          if [ ! -f "$ADDON" ]; then
-            echo "❌ Glow .deb não encontrado"
+          if [ "$APPLY_IPAPATCH" = "true" ] && [ "$REMOVE_EXTENSIONS" = "true" ]; then
+            echo "❌ Não é possível aplicar IPA Patch e remover extensões ao mesmo tempo."
+            echo "IPA Patch precisa que os .appex sejam preservados."
             exit 1
           fi
-
-          echo "✅ Glow encontrado"
-          ls -lh "$ADDON"
 
       - name: Download IPA
         env:
@@ -87,74 +101,244 @@ jobs:
           echo "🔎 Verificando IPA..."
 
           if ! unzip -tq input.ipa > /dev/null; then
-            echo "❌ O arquivo baixado não é um ZIP/IPA válido"
+            echo "❌ O arquivo baixado não é um IPA/ZIP válido."
             exit 1
           fi
 
+          echo "✅ IPA válido"
+
+      - name: Detect app information
+        id: app
+        run: |
+          python <<'PY'
+          import zipfile
+          import plistlib
+          import os
+          import sys
+
+          ipa = "input.ipa"
+
+          with zipfile.ZipFile(ipa, "r") as z:
+              plist_files = [
+                  name for name in z.namelist()
+                  if name.startswith("Payload/")
+                  and name.count("/") == 2
+                  and name.endswith(".app/Info.plist")
+              ]
+
+              if not plist_files:
+                  print("❌ Info.plist principal não encontrado")
+                  sys.exit(1)
+
+              plist_path = plist_files[0]
+
+              with z.open(plist_path) as f:
+                  plist = plistlib.load(f)
+
+          bundle_id = plist.get("CFBundleIdentifier")
+          app_name = (
+              plist.get("CFBundleDisplayName")
+              or plist.get("CFBundleName")
+              or "Unknown"
+          )
+          version = plist.get("CFBundleShortVersionString", "Unknown")
+
+          if not bundle_id:
+              print("❌ Bundle ID não encontrado")
+              sys.exit(1)
+
+          print(f"📱 App: {app_name}")
+          print(f"📦 Bundle ID: {bundle_id}")
+          print(f"🔢 Versão: {version}")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"bundle_id={bundle_id}\n")
+              out.write(f"app_name={app_name}\n")
+              out.write(f"version={version}\n")
+          PY
+
+      - name: Find compatible addons
+        env:
+          BUNDLE_ID: ${{ steps.app.outputs.bundle_id }}
+          REQUESTED_ADDONS: ${{ inputs.addons }}
+        run: |
+          python <<'PY'
+          import json
+          import os
+          import sys
+          from pathlib import Path
+
+          bundle_id = os.environ["BUNDLE_ID"]
+          requested_raw = os.environ["REQUESTED_ADDONS"]
+
+          with open("config/addons.json", "r", encoding="utf-8") as f:
+              config = json.load(f)
+
+          apps = config.get("apps", {})
+
+          if bundle_id not in apps:
+              print(f"❌ Nenhum app cadastrado para o Bundle ID: {bundle_id}")
+              print()
+              print("Bundle IDs cadastrados:")
+
+              for registered in apps:
+                  print(f" - {registered}")
+
+              sys.exit(1)
+
+          app = apps[bundle_id]
+          available = app.get("addons", [])
+
+          requested = [
+              item.strip()
+              for item in requested_raw.split(",")
+              if item.strip()
+          ]
+
+          if not requested:
+              print("❌ Nenhum addon informado")
+              sys.exit(1)
+
+          selected = []
+
+          if len(requested) == 1 and requested[0].lower() == "all":
+              selected = available
+          else:
+              for requested_name in requested:
+                  match = next(
+                      (
+                          addon
+                          for addon in available
+                          if addon.get("name", "").lower()
+                          == requested_name.lower()
+                      ),
+                      None
+                  )
+
+                  if not match:
+                      print(f"❌ Addon não encontrado: {requested_name}")
+                      print()
+                      print("Addons disponíveis:")
+
+                      for addon in available:
+                          print(f" - {addon.get('name')}")
+
+                      sys.exit(1)
+
+                  selected.append(match)
+
+          paths = []
+
+          print("🧩 Addons selecionados:")
+
+          for addon in selected:
+              name = addon.get("name")
+              addon_type = addon.get("type")
+              file_path = addon.get("file")
+
+              if not file_path:
+                  print(f"❌ Caminho não definido para {name}")
+                  sys.exit(1)
+
+              if not Path(file_path).exists():
+                  print(f"❌ Arquivo/pasta não encontrado: {file_path}")
+                  sys.exit(1)
+
+              print(f" • {name} [{addon_type}]")
+              print(f"   {file_path}")
+
+              paths.append(file_path)
+
+          with open("selected_addons.txt", "w", encoding="utf-8") as f:
+              for path in paths:
+                  f.write(path + "\n")
+
+          print()
+          print(f"✅ {len(paths)} addon(s) preparado(s)")
+          PY
+
+      - name: Show extensions
+        run: |
+          rm -rf ipa_check
           unzip -q input.ipa -d ipa_check
 
-          APP_COUNT=$(find ipa_check/Payload -maxdepth 1 -type d -name "*.app" 2>/dev/null | wc -l)
+          echo "🧩 Extensões existentes no IPA:"
 
-          if [ "$APP_COUNT" -eq 0 ]; then
-            echo "❌ Nenhum aplicativo .app encontrado dentro de Payload"
-            exit 1
+          EXTENSIONS=$(find ipa_check/Payload -type d -name "*.appex" -print)
+
+          if [ -z "$EXTENSIONS" ]; then
+            echo "Nenhuma extensão encontrada."
+          else
+            echo "$EXTENSIONS"
           fi
-
-          echo "✅ Estrutura do IPA válida"
-
-          echo "📦 Extensões encontradas:"
-          find ipa_check/Payload -type d -name "*.appex" -print || true
 
           rm -rf ipa_check
 
-      # SEM IPA PATCH:
-      # Mantemos exatamente a lógica que já funcionou no Facebook.
-      - name: Inject Glow without extensions
-        if: ${{ !inputs.apply_ipapatch }}
+      - name: Inject addons with Cyan
+        env:
+          REMOVE_EXTENSIONS: ${{ inputs.remove_extensions }}
         run: |
-          echo "💉 Injetando Glow..."
-          echo "🗑️ Removendo extensões..."
+          echo "💉 Preparando injeção..."
 
-          cyan \
-            -i input.ipa \
-            -o Final.ipa \
-            -u \
-            -w \
-            -e \
-            -f "addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb" \
-            --overwrite
+          mapfile -t ADDONS < selected_addons.txt
 
-      # COM IPA PATCH:
-      # NÃO usamos -e, pois precisamos preservar os .appex.
-      - name: Inject Glow preserving extensions
-        if: ${{ inputs.apply_ipapatch }}
-        run: |
-          echo "💉 Injetando Glow..."
-          echo "🧩 Preservando extensões para IPA Patch..."
+          CYAN_ARGS=(
+            -i input.ipa
+            -o Cyan_Output.ipa
+            -u
+            -w
+            -f
+          )
 
-          cyan \
-            -i input.ipa \
-            -o Facebook_Glow_With_Extensions.ipa \
-            -u \
-            -w \
-            -f "addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb" \
-            --overwrite
+          for addon in "${ADDONS[@]}"; do
+            CYAN_ARGS+=("$addon")
+          done
+
+          if [ "$REMOVE_EXTENSIONS" = "true" ]; then
+            echo "🗑️ Extensões serão removidas"
+            CYAN_ARGS+=("-e")
+          else
+            echo "🧩 Extensões serão preservadas"
+          fi
+
+          CYAN_ARGS+=("--overwrite")
+
+          cyan "${CYAN_ARGS[@]}"
+
+          if [ ! -f "Cyan_Output.ipa" ]; then
+            echo "❌ Cyan não gerou o IPA"
+            exit 1
+          fi
+
+          echo "✅ Injeção concluída"
 
       - name: Apply IPA Patch to plugins only
         if: ${{ inputs.apply_ipapatch }}
         run: |
-          echo "🩹 Aplicando IPA Patch SOMENTE aos plugins..."
+          echo "🩹 Aplicando IPA Patch somente aos plugins..."
 
           ./ipapatch \
-            --input Facebook_Glow_With_Extensions.ipa \
+            --input Cyan_Output.ipa \
             --output Final.ipa \
             --plugins-only \
             --noconfirm
 
-          echo "✅ IPA Patch aplicado somente às extensões"
+          if [ ! -f "Final.ipa" ]; then
+            echo "❌ IPA Patch não gerou o arquivo final"
+            exit 1
+          fi
+
+          echo "✅ IPA Patch concluído"
+
+      - name: Use Cyan output
+        if: ${{ !inputs.apply_ipapatch }}
+        run: |
+          mv Cyan_Output.ipa Final.ipa
 
       - name: Validate final IPA
         run: |
+          echo "🔎 Validando IPA final..."
+
           if [ ! -f "Final.ipa" ]; then
             echo "❌ IPA final não encontrado"
             exit 1
@@ -165,12 +349,17 @@ jobs:
             exit 1
           fi
 
-          echo "✅ IPA final criado com sucesso"
+          echo "✅ IPA final válido"
           ls -lh Final.ipa
 
-      - name: Upload modified IPA
+          echo ""
+          echo "📱 ${{ steps.app.outputs.app_name }}"
+          echo "🔢 ${{ steps.app.outputs.version }}"
+          echo "📦 ${{ steps.app.outputs.bundle_id }}"
+
+      - name: Upload final IPA
         uses: actions/upload-artifact@v6
         with:
-          name: Facebook-Glow-Final
+          name: ${{ steps.app.outputs.app_name }}-${{ steps.app.outputs.version }}-Injected
           path: Final.ipa
           retention-days: 1
