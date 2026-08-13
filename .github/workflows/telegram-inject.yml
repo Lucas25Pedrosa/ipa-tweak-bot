@@ -9,6 +9,10 @@ jobs:
     timeout-minutes: 60
 
     steps:
+      # =========================================================
+      # 1. AMBIENTE
+      # =========================================================
+
       - name: Checkout repository
         uses: actions/checkout@v5
 
@@ -41,6 +45,10 @@ jobs:
 
           cyan --version
 
+      # =========================================================
+      # 2. TELEGRAM -> INPUT.IPA
+      # =========================================================
+
       - name: Download latest IPA from Telegram
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
@@ -57,11 +65,17 @@ jobs:
             exit 1
           fi
 
-          unzip -tq input.ipa > /dev/null
+          if ! unzip -tq input.ipa > /dev/null; then
+            echo "❌ input.ipa não é um IPA válido"
+            exit 1
+          fi
 
           echo "✅ IPA original válido"
-
           ls -lh input.ipa
+
+      # =========================================================
+      # 3. DETECTAR APP E TWEAK
+      # =========================================================
 
       - name: Detect app and select addon
         id: prepare
@@ -72,14 +86,10 @@ jobs:
           import plistlib
           import sys
           import zipfile
-
           from pathlib import Path
 
 
-          with zipfile.ZipFile(
-              "input.ipa",
-              "r"
-          ) as z:
+          with zipfile.ZipFile("input.ipa", "r") as z:
 
               plist_files = [
                   name
@@ -94,15 +104,11 @@ jobs:
                       "❌ Info.plist principal não encontrado"
                   )
 
-              with z.open(
-                  plist_files[0]
-              ) as f:
+              with z.open(plist_files[0]) as f:
                   plist = plistlib.load(f)
 
 
-          bundle_id = plist.get(
-              "CFBundleIdentifier"
-          )
+          bundle_id = plist.get("CFBundleIdentifier")
 
           app_name = (
               plist.get("CFBundleDisplayName")
@@ -130,27 +136,17 @@ jobs:
               config = json.load(f)
 
 
-          apps = config.get(
-              "apps",
-              {}
-          )
+          apps = config.get("apps", {})
 
 
           if bundle_id not in apps:
 
               print()
-              print(
-                  "❌ Aplicativo não cadastrado"
-              )
-
-              print(
-                  f"Bundle ID: {bundle_id}"
-              )
+              print("❌ Aplicativo não cadastrado")
+              print(f"Bundle ID: {bundle_id}")
 
               print()
-              print(
-                  "Aplicativos cadastrados:"
-              )
+              print("Aplicativos cadastrados:")
 
               for bid, data in apps.items():
                   print(
@@ -193,26 +189,22 @@ jobs:
 
               if addon is None:
                   raise SystemExit(
-                      "❌ default_addon inválido"
+                      f"❌ default_addon inválido: {default_name}"
                   )
-
 
           elif len(addons) == 1:
 
               addon = addons[0]
 
-
           else:
 
               raise SystemExit(
-                  "❌ Mais de um addon e nenhum default definido"
+                  "❌ Mais de um addon cadastrado "
+                  "e nenhum default_addon definido"
               )
 
 
-          for item in addon.get(
-              "files",
-              []
-          ):
+          for item in addon.get("files", []):
 
               path = item.get("path")
 
@@ -276,15 +268,19 @@ jobs:
 
           print()
           print("✅ Aplicativo identificado")
-          print(f"📱 {app_name}")
-          print(f"📦 {bundle_id}")
-          print(f"🔢 {version}")
-          print(f"🧩 {addon.get('name')}")
+          print(f"📱 Nome: {app_name}")
+          print(f"📦 Bundle ID: {bundle_id}")
+          print(f"🔢 Versão: {version}")
+          print(f"🧩 Tweak: {addon.get('name')}")
           print(
               f"🩹 IPA Patch: "
               f"{addon.get('ipapatch', False)}"
           )
           PY
+
+      # =========================================================
+      # 4. IPAPATCH
+      # =========================================================
 
       - name: Install IPA Patch
         if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
@@ -301,13 +297,16 @@ jobs:
 
           ./ipapatch --version
 
+      # =========================================================
+      # 5. PREPARAR COMPONENTES DO TWEAK
+      # =========================================================
+
       - name: Prepare addon components
         run: |
           python <<'PY'
           import json
           import shutil
           import zipfile
-
           from pathlib import Path
 
 
@@ -319,22 +318,14 @@ jobs:
               addon = json.load(f)
 
 
-          prepared = Path(
-              "prepared"
-          )
+          prepared = Path("prepared")
 
           if prepared.exists():
               shutil.rmtree(prepared)
 
 
-          bundles = (
-              prepared / "bundles"
-          )
-
-          appex = (
-              prepared / "appex"
-          )
-
+          bundles = prepared / "bundles"
+          appex = prepared / "appex"
 
           bundles.mkdir(
               parents=True
@@ -348,10 +339,7 @@ jobs:
           inject_files = []
 
 
-          for item in addon.get(
-              "files",
-              []
-          ):
+          for item in addon.get("files", []):
 
               path = Path(
                   item["path"]
@@ -409,22 +397,38 @@ jobs:
               encoding="utf-8"
           ) as f:
 
-              for item in inject_files:
+              for path in inject_files:
                   f.write(
-                      item + "\n"
+                      path + "\n"
                   )
 
 
+          print()
           print(
               f"✅ {len(inject_files)} "
-              f"componente(s) preparados"
+              f"arquivo(s) para injeção"
+          )
+
+          print(
+              f"✅ {len(list(bundles.iterdir()))} "
+              f"bundle(s) extra(s)"
+          )
+
+          print(
+              f"✅ {len(list(appex.iterdir()))} "
+              f"appex extra(s)"
           )
           PY
+
+      # =========================================================
+      # 6. CYAN
+      # =========================================================
 
       - name: Inject with Cyan
         run: |
           mapfile -t INJECT_FILES \
             < inject_files.txt
+
 
           CYAN_ARGS=(
             -i input.ipa
@@ -446,7 +450,15 @@ jobs:
 
 
           if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
+
+            echo "🧹 Extensões serão removidas"
+
             CYAN_ARGS+=("-e")
+
+          else
+
+            echo "🧩 Extensões originais serão preservadas"
+
           fi
 
 
@@ -465,6 +477,10 @@ jobs:
 
 
           echo "✅ Cyan concluído"
+
+      # =========================================================
+      # 7. REPRODUZIR LAYOUT DOS IPAS FUNCIONAIS
+      # =========================================================
 
       - name: Reproduce functional dylib layout
         env:
@@ -485,6 +501,11 @@ jobs:
           ]
 
 
+          #
+          # Dylibs que nos IPAs funcionais ficam
+          # na raiz do .app e são carregadas usando
+          # @executable_path.
+          #
           ROOT_DYLIBS = {
 
               "com.facebook.Facebook": [
@@ -547,6 +568,7 @@ jobs:
 
 
           if len(apps) != 1:
+
               raise SystemExit(
                   "❌ .app principal não identificado"
               )
@@ -555,8 +577,14 @@ jobs:
           app = apps[0]
 
 
+          plist_path = (
+              app
+              / "Info.plist"
+          )
+
+
           with open(
-              app / "Info.plist",
+              plist_path,
               "rb"
           ) as f:
 
@@ -569,6 +597,7 @@ jobs:
 
 
           if not executable_name:
+
               raise SystemExit(
                   "❌ CFBundleExecutable ausente"
               )
@@ -592,6 +621,7 @@ jobs:
 
 
           if dylibs:
+
               executable.remove_signature()
 
 
@@ -625,7 +655,14 @@ jobs:
                   )
 
 
-              elif not destination.exists():
+              elif destination.exists():
+
+                  print(
+                      f"ℹ️ {dylib_name} já está na raiz"
+                  )
+
+
+              else:
 
                   raise SystemExit(
                       f"❌ {dylib_name} não encontrado"
@@ -643,19 +680,36 @@ jobs:
               )
 
 
-              executable.change_dependency(
-                  old_load,
-                  new_load
-              )
+              try:
+
+                  executable.change_dependency(
+                      old_load,
+                      new_load
+                  )
+
+                  print(
+                      f"✅ {old_load} -> {new_load}"
+                  )
+
+              except Exception as exc:
+
+                  print(
+                      f"⚠️ Não foi possível alterar "
+                      f"{old_load}: {exc}"
+                  )
 
 
-              print(
-                  f"✅ {old_load} -> {new_load}"
-              )
+          output = Path(
+              "Layout_Output.ipa"
+          )
+
+
+          if output.exists():
+              output.unlink()
 
 
           with zipfile.ZipFile(
-              "Layout_Output.ipa",
+              output,
               "w",
               compression=zipfile.ZIP_DEFLATED
           ) as z:
@@ -672,17 +726,76 @@ jobs:
                       )
 
 
+          print()
           print(
               "✅ Layout das dylibs concluído"
           )
           PY
 
-      - name: Add bundles and extensions
+      # =========================================================
+      # 8. IPAPATCH SOMENTE NAS EXTENSÕES ORIGINAIS
+      # =========================================================
+      #
+      # IMPORTANTE:
+      #
+      # As .appex extras dos tweaks AINDA NÃO foram
+      # adicionadas nesta etapa.
+      #
+      # Isso evita:
+      #
+      # TikTok:
+      # OpenTikTokSafariExtension.appex
+      # -> already patched
+      #
+      # Instagram:
+      # OpenInRegramExtension.appex
+      # -> permanece intacta
+      #
+      # =========================================================
+
+      - name: Apply IPA Patch to original plugins only
+        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
+        run: |
+          echo "🩹 Aplicando IPA Patch"
+          echo "Modo: plugins-only"
+          echo "📌 Somente extensões originais estão presentes"
+
+          ./ipapatch \
+            --input Layout_Output.ipa \
+            --output Patched_Output.ipa \
+            --plugins-only \
+            --noconfirm
+
+
+          if [ ! -f Patched_Output.ipa ]; then
+
+            echo "❌ IPA Patch não gerou Patched_Output.ipa"
+
+            exit 1
+
+          fi
+
+
+          echo "✅ IPA Patch concluído"
+
+      - name: Skip IPA Patch when not required
+        if: ${{ steps.prepare.outputs.ipapatch != 'true' }}
+        run: |
+          cp \
+            Layout_Output.ipa \
+            Patched_Output.ipa
+
+          echo "ℹ️ IPA Patch não necessário para este app"
+
+      # =========================================================
+      # 9. ADICIONAR BUNDLES E APPEX EXTRAS
+      # =========================================================
+
+      - name: Add bundles and extra extensions
         run: |
           python <<'PY'
           import shutil
           import zipfile
-
           from pathlib import Path
 
 
@@ -697,8 +810,12 @@ jobs:
           work.mkdir()
 
 
+          #
+          # Partimos do IPA que já teve as
+          # extensões ORIGINAIS corrigidas.
+          #
           with zipfile.ZipFile(
-              "Layout_Output.ipa",
+              "Patched_Output.ipa",
               "r"
           ) as z:
 
@@ -714,6 +831,7 @@ jobs:
 
 
           if len(apps) != 1:
+
               raise SystemExit(
                   "❌ App principal não encontrado"
               )
@@ -721,6 +839,10 @@ jobs:
 
           app = apps[0]
 
+
+          # -----------------------------------------
+          # BUNDLES
+          # -----------------------------------------
 
           bundle_source = Path(
               "prepared/bundles"
@@ -766,9 +888,29 @@ jobs:
 
 
                   print(
-                      f"📦 {item.name}"
+                      f"📦 Bundle: {item.name}"
                   )
 
+
+          # -----------------------------------------
+          # APPEX EXTRAS
+          # -----------------------------------------
+          #
+          # São adicionadas DEPOIS do IPA Patch.
+          #
+          # Regram:
+          # OpenInRegramExtension.appex
+          #
+          # TikTok:
+          # OpenTikTokSafariExtension.appex
+          #
+          # X:
+          # OpenTwitterSafariExtension.appex
+          #
+          # Reddit:
+          # OpenRedditSafariExtension.appex
+          #
+          # -----------------------------------------
 
           appex_source = Path(
               "prepared/appex"
@@ -829,12 +971,22 @@ jobs:
 
 
                   print(
-                      f"🧩 {item.name}"
+                      f"🧩 APPEX extra: "
+                      f"{item.name}"
                   )
 
 
+          output = Path(
+              "Package_Output.ipa"
+          )
+
+
+          if output.exists():
+              output.unlink()
+
+
           with zipfile.ZipFile(
-              "Package_Output.ipa",
+              output,
               "w",
               compression=zipfile.ZIP_DEFLATED
           ) as z:
@@ -851,10 +1003,15 @@ jobs:
                       )
 
 
+          print()
           print(
-              "✅ Recursos adicionados"
+              "✅ Bundles e APPEX extras adicionados"
           )
           PY
+
+      # =========================================================
+      # 10. ALTERAÇÕES ESPECÍFICAS DE INFOPLIST
+      # =========================================================
 
       - name: Apply Info.plist changes
         run: |
@@ -882,11 +1039,15 @@ jobs:
           )
 
 
+          #
+          # Se não houver alterações, este já é
+          # nosso Final.ipa.
+          #
           if not changes:
 
               shutil.copy2(
                   "Package_Output.ipa",
-                  "Plist_Output.ipa"
+                  "Final.ipa"
               )
 
               print(
@@ -924,12 +1085,14 @@ jobs:
 
 
           if len(apps) != 1:
+
               raise SystemExit(
                   "❌ App principal não encontrado"
               )
 
 
           app = apps[0]
+
 
           plist_path = (
               app
@@ -978,8 +1141,17 @@ jobs:
               )
 
 
+          output = Path(
+              "Final.ipa"
+          )
+
+
+          if output.exists():
+              output.unlink()
+
+
           with zipfile.ZipFile(
-              "Plist_Output.ipa",
+              output,
               "w",
               compression=zipfile.ZIP_DEFLATED
           ) as z:
@@ -1001,52 +1173,34 @@ jobs:
           )
           PY
 
-      - name: Apply IPA Patch to plugins only
-        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
-        run: |
-          echo "🩹 Aplicando IPA Patch"
-          echo "Modo: plugins-only"
-
-          ./ipapatch \
-            --input Plist_Output.ipa \
-            --output Final.ipa \
-            --plugins-only \
-            --noconfirm
-
-
-          if [ ! -f Final.ipa ]; then
-            echo "❌ IPA Patch não gerou Final.ipa"
-            exit 1
-          fi
-
-
-          echo "✅ IPA Patch concluído"
-
-      - name: Use output without IPA Patch
-        if: ${{ steps.prepare.outputs.ipapatch != 'true' }}
-        run: |
-          cp \
-            Plist_Output.ipa \
-            Final.ipa
-
-          echo "ℹ️ IPA Patch não necessário"
+      # =========================================================
+      # 11. VALIDAÇÃO
+      # =========================================================
 
       - name: Validate final IPA
         run: |
           if [ ! -f Final.ipa ]; then
+
             echo "❌ Final.ipa ausente"
+
             exit 1
+
           fi
 
 
           if ! unzip -tq Final.ipa > /dev/null; then
+
             echo "❌ Final.ipa inválido"
+
             exit 1
+
           fi
 
 
           echo ""
-          echo "✅ IPA FINAL"
+          echo "=========================================="
+          echo "✅ IPA FINAL CRIADO"
+          echo "=========================================="
           echo ""
           echo "📱 Nome:"
           echo "${{ steps.prepare.outputs.app_name }}"
@@ -1060,8 +1214,15 @@ jobs:
           echo "🧩 Tweak:"
           echo "${{ steps.prepare.outputs.addon_name }}"
           echo ""
+          echo "🩹 IPA Patch:"
+          echo "${{ steps.prepare.outputs.ipapatch }}"
+          echo ""
 
           ls -lh Final.ipa
+
+      # =========================================================
+      # 12. TELEGRAM BOT
+      # =========================================================
 
       - name: Send final IPA to Telegram bot
         env:
