@@ -1,15 +1,10 @@
-name: Inject Test
+name: Inject Glow Test
 
 on:
   workflow_dispatch:
     inputs:
-      ipa_name:
-        description: "Nome do arquivo IPA"
-        required: true
-        type: string
-
-      addon_path:
-        description: "Caminho do addon no repositório"
+      ipa_url:
+        description: "Link direto para o IPA descriptografado do Facebook"
         required: true
         type: string
 
@@ -29,7 +24,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y binutils tar zip unzip
+          sudo apt-get install -y binutils tar zip unzip curl
 
       - name: Install Cyan
         run: |
@@ -37,41 +32,82 @@ jobs:
           pip install --force-reinstall \
             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-      - name: Check input files
+      - name: Check Glow package
         run: |
-          echo "IPA: ${{ inputs.ipa_name }}"
-          echo "Addon: ${{ inputs.addon_path }}"
+          ADDON="addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb"
 
-          if [ ! -f "${{ inputs.ipa_name }}" ]; then
-            echo "❌ IPA não encontrado"
+          if [ ! -f "$ADDON" ]; then
+            echo "❌ Glow .deb não encontrado"
             exit 1
           fi
 
-          if [ ! -e "${{ inputs.addon_path }}" ]; then
-            echo "❌ Addon não encontrado"
+          echo "✅ Glow encontrado"
+          ls -lh "$ADDON"
+
+      - name: Download IPA
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
+        run: |
+          echo "📥 Baixando IPA..."
+
+          curl \
+            --location \
+            --fail \
+            --retry 3 \
+            --output input.ipa \
+            "$IPA_URL"
+
+          echo "✅ Download concluído"
+          ls -lh input.ipa
+
+      - name: Validate IPA
+        run: |
+          echo "🔎 Verificando IPA..."
+
+          if ! unzip -tq input.ipa > /dev/null; then
+            echo "❌ O arquivo baixado não é um ZIP/IPA válido"
             exit 1
           fi
 
-      - name: Inject addon
+          unzip -q input.ipa -d ipa_check
+
+          APP_COUNT=$(find ipa_check/Payload -maxdepth 1 -type d -name "*.app" 2>/dev/null | wc -l)
+
+          if [ "$APP_COUNT" -eq 0 ]; then
+            echo "❌ Nenhum aplicativo .app encontrado dentro de Payload"
+            exit 1
+          fi
+
+          echo "✅ Estrutura do IPA válida"
+
+          rm -rf ipa_check
+
+      - name: Inject Glow
         run: |
+          echo "💉 Injetando Glow..."
+
           cyan \
-            -i "${{ inputs.ipa_name }}" \
-            -o "output.ipa" \
-            -f "${{ inputs.addon_path }}"
+            -i input.ipa \
+            -o Facebook_Glow.ipa \
+            -u \
+            -w \
+            -e \
+            -f "addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb" \
+            --overwrite
 
       - name: Check output
         run: |
-          if [ ! -f "output.ipa" ]; then
+          if [ ! -f "Facebook_Glow.ipa" ]; then
             echo "❌ O Cyan não gerou o IPA"
             exit 1
           fi
 
           echo "✅ IPA modificado criado"
-          ls -lh output.ipa
+          ls -lh Facebook_Glow.ipa
 
       - name: Upload modified IPA
         uses: actions/upload-artifact@v4
         with:
-          name: injected-ipa
-          path: output.ipa
+          name: Facebook-Glow
+          path: Facebook_Glow.ipa
           retention-days: 1
