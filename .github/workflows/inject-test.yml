@@ -9,9 +9,9 @@ on:
         type: string
 
       apply_ipapatch:
-        description: "Aplicar IPA Patch"
+        description: "Aplicar IPA Patch somente nas extensões"
         required: true
-        default: true
+        default: false
         type: boolean
 
 jobs:
@@ -39,6 +39,7 @@ jobs:
             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
       - name: Install IPA Patch
+        if: ${{ inputs.apply_ipapatch }}
         run: |
           echo "📥 Baixando IPA Patch..."
 
@@ -101,58 +102,75 @@ jobs:
 
           echo "✅ Estrutura do IPA válida"
 
+          echo "📦 Extensões encontradas:"
+          find ipa_check/Payload -type d -name "*.appex" -print || true
+
           rm -rf ipa_check
 
-      - name: Inject Glow
+      # SEM IPA PATCH:
+      # Mantemos exatamente a lógica que já funcionou no Facebook.
+      - name: Inject Glow without extensions
+        if: ${{ !inputs.apply_ipapatch }}
         run: |
           echo "💉 Injetando Glow..."
+          echo "🗑️ Removendo extensões..."
 
           cyan \
             -i input.ipa \
-            -o Facebook_Glow.ipa \
+            -o Final.ipa \
             -u \
             -w \
             -e \
             -f "addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb" \
             --overwrite
 
-      - name: Apply IPA Patch
+      # COM IPA PATCH:
+      # NÃO usamos -e, pois precisamos preservar os .appex.
+      - name: Inject Glow preserving extensions
         if: ${{ inputs.apply_ipapatch }}
         run: |
-          echo "🩹 Aplicando IPA Patch..."
+          echo "💉 Injetando Glow..."
+          echo "🧩 Preservando extensões para IPA Patch..."
+
+          cyan \
+            -i input.ipa \
+            -o Facebook_Glow_With_Extensions.ipa \
+            -u \
+            -w \
+            -f "addons/deb/com.dvntm.glow_1.3.1_iphoneos-arm.deb" \
+            --overwrite
+
+      - name: Apply IPA Patch to plugins only
+        if: ${{ inputs.apply_ipapatch }}
+        run: |
+          echo "🩹 Aplicando IPA Patch SOMENTE aos plugins..."
 
           ./ipapatch \
-            --input Facebook_Glow.ipa \
-            --output Facebook_Glow_Patched.ipa \
+            --input Facebook_Glow_With_Extensions.ipa \
+            --output Final.ipa \
+            --plugins-only \
             --noconfirm
 
-          if [ ! -f "Facebook_Glow_Patched.ipa" ]; then
-            echo "❌ IPA Patch não gerou o arquivo final"
-            exit 1
-          fi
+          echo "✅ IPA Patch aplicado somente às extensões"
 
-          mv Facebook_Glow_Patched.ipa Final.ipa
-
-          echo "✅ IPA Patch aplicado"
-
-      - name: Use Cyan output without IPA Patch
-        if: ${{ !inputs.apply_ipapatch }}
-        run: |
-          mv Facebook_Glow.ipa Final.ipa
-
-      - name: Check final IPA
+      - name: Validate final IPA
         run: |
           if [ ! -f "Final.ipa" ]; then
             echo "❌ IPA final não encontrado"
             exit 1
           fi
 
-          echo "✅ IPA final criado"
+          if ! unzip -tq Final.ipa > /dev/null; then
+            echo "❌ IPA final inválido"
+            exit 1
+          fi
+
+          echo "✅ IPA final criado com sucesso"
           ls -lh Final.ipa
 
       - name: Upload modified IPA
         uses: actions/upload-artifact@v6
         with:
-          name: Facebook-Glow-Patched
+          name: Facebook-Glow-Final
           path: Final.ipa
           retention-days: 1
