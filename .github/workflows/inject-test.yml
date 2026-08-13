@@ -1,0 +1,77 @@
+name: Inject Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_name:
+        description: "Nome do arquivo IPA"
+        required: true
+        type: string
+
+      addon_path:
+        description: "Caminho do addon no repositório"
+        required: true
+        type: string
+
+jobs:
+  inject:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y binutils tar zip unzip
+
+      - name: Install Cyan
+        run: |
+          python -m pip install --upgrade pip
+          pip install --force-reinstall \
+            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
+
+      - name: Check input files
+        run: |
+          echo "IPA: ${{ inputs.ipa_name }}"
+          echo "Addon: ${{ inputs.addon_path }}"
+
+          if [ ! -f "${{ inputs.ipa_name }}" ]; then
+            echo "❌ IPA não encontrado"
+            exit 1
+          fi
+
+          if [ ! -e "${{ inputs.addon_path }}" ]; then
+            echo "❌ Addon não encontrado"
+            exit 1
+          fi
+
+      - name: Inject addon
+        run: |
+          cyan \
+            -i "${{ inputs.ipa_name }}" \
+            -o "output.ipa" \
+            -f "${{ inputs.addon_path }}"
+
+      - name: Check output
+        run: |
+          if [ ! -f "output.ipa" ]; then
+            echo "❌ O Cyan não gerou o IPA"
+            exit 1
+          fi
+
+          echo "✅ IPA modificado criado"
+          ls -lh output.ipa
+
+      - name: Upload modified IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: injected-ipa
+          path: output.ipa
+          retention-days: 1
