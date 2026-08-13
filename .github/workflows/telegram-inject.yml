@@ -20,6 +20,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
+
           sudo apt-get install -y \
             binutils \
             tar \
@@ -59,6 +60,7 @@ jobs:
           unzip -tq input.ipa > /dev/null
 
           echo "✅ IPA original válido"
+
           ls -lh input.ipa
 
       - name: Detect app and select addon
@@ -72,6 +74,7 @@ jobs:
           import zipfile
 
           from pathlib import Path
+
 
           with zipfile.ZipFile(
               "input.ipa",
@@ -96,6 +99,7 @@ jobs:
               ) as f:
                   plist = plistlib.load(f)
 
+
           bundle_id = plist.get(
               "CFBundleIdentifier"
           )
@@ -111,10 +115,12 @@ jobs:
               "Unknown"
           )
 
+
           if not bundle_id:
               raise SystemExit(
                   "❌ Bundle ID não encontrado"
               )
+
 
           with open(
               "config/addons.json",
@@ -123,10 +129,12 @@ jobs:
           ) as f:
               config = json.load(f)
 
+
           apps = config.get(
               "apps",
               {}
           )
+
 
           if bundle_id not in apps:
 
@@ -134,9 +142,11 @@ jobs:
               print(
                   "❌ Aplicativo não cadastrado"
               )
+
               print(
                   f"Bundle ID: {bundle_id}"
               )
+
               print()
               print(
                   "Aplicativos cadastrados:"
@@ -149,6 +159,7 @@ jobs:
 
               sys.exit(1)
 
+
           app_config = apps[bundle_id]
 
           addons = app_config.get(
@@ -156,14 +167,17 @@ jobs:
               []
           )
 
+
           if not addons:
               raise SystemExit(
                   "❌ Nenhum addon cadastrado"
               )
 
+
           default_name = app_config.get(
               "default_addon"
           )
+
 
           if default_name:
 
@@ -182,15 +196,18 @@ jobs:
                       "❌ default_addon inválido"
                   )
 
+
           elif len(addons) == 1:
 
               addon = addons[0]
+
 
           else:
 
               raise SystemExit(
                   "❌ Mais de um addon e nenhum default definido"
               )
+
 
           for item in addon.get(
               "files",
@@ -209,6 +226,7 @@ jobs:
                       f"❌ Arquivo ausente: {path}"
                   )
 
+
           with open(
               "selected_addon.json",
               "w",
@@ -221,6 +239,7 @@ jobs:
                   ensure_ascii=False,
                   indent=2
               )
+
 
           with open(
               os.environ["GITHUB_OUTPUT"],
@@ -254,6 +273,7 @@ jobs:
                   f"{str(addon.get('remove_extensions', False)).lower()}\n"
               )
 
+
           print()
           print("✅ Aplicativo identificado")
           print(f"📱 {app_name}")
@@ -269,6 +289,8 @@ jobs:
       - name: Install IPA Patch
         if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
         run: |
+          echo "📥 Instalando IPA Patch..."
+
           curl \
             --location \
             --fail \
@@ -288,6 +310,7 @@ jobs:
 
           from pathlib import Path
 
+
           with open(
               "selected_addon.json",
               "r",
@@ -295,12 +318,14 @@ jobs:
           ) as f:
               addon = json.load(f)
 
+
           prepared = Path(
               "prepared"
           )
 
           if prepared.exists():
               shutil.rmtree(prepared)
+
 
           bundles = (
               prepared / "bundles"
@@ -310,6 +335,7 @@ jobs:
               prepared / "appex"
           )
 
+
           bundles.mkdir(
               parents=True
           )
@@ -318,7 +344,9 @@ jobs:
               parents=True
           )
 
+
           inject_files = []
+
 
           for item in addon.get(
               "files",
@@ -331,15 +359,18 @@ jobs:
 
               action = item["action"]
 
+
               print(
                   f"📦 {path.name} -> {action}"
               )
+
 
               if action == "inject":
 
                   inject_files.append(
                       str(path)
                   )
+
 
               elif action == "bundle":
 
@@ -352,6 +383,7 @@ jobs:
                           bundles
                       )
 
+
               elif action == "appex":
 
                   with zipfile.ZipFile(
@@ -363,11 +395,13 @@ jobs:
                           appex
                       )
 
+
               else:
 
                   raise SystemExit(
                       f"❌ Ação desconhecida: {action}"
                   )
+
 
           with open(
               "inject_files.txt",
@@ -379,6 +413,7 @@ jobs:
                   f.write(
                       item + "\n"
                   )
+
 
           print(
               f"✅ {len(inject_files)} "
@@ -398,6 +433,7 @@ jobs:
             -w
           )
 
+
           if [ "${#INJECT_FILES[@]}" -gt 0 ]; then
 
             CYAN_ARGS+=("-f")
@@ -408,17 +444,25 @@ jobs:
 
           fi
 
+
           if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
             CYAN_ARGS+=("-e")
           fi
 
+
           CYAN_ARGS+=("--overwrite")
+
 
           echo "💉 Executando Cyan..."
 
           cyan "${CYAN_ARGS[@]}"
 
-          test -f Cyan_Output.ipa
+
+          if [ ! -f Cyan_Output.ipa ]; then
+            echo "❌ Cyan não gerou Cyan_Output.ipa"
+            exit 1
+          fi
+
 
           echo "✅ Cyan concluído"
 
@@ -435,9 +479,11 @@ jobs:
           from pathlib import Path
           from cyan.tbhtypes.executable import Executable
 
+
           bundle_id = os.environ[
               "BUNDLE_ID"
           ]
+
 
           ROOT_DYLIBS = {
 
@@ -472,14 +518,17 @@ jobs:
               ]
           }
 
+
           work = Path(
               "layout_work"
           )
+
 
           if work.exists():
               shutil.rmtree(work)
 
           work.mkdir()
+
 
           with zipfile.ZipFile(
               "Cyan_Output.ipa",
@@ -488,6 +537,7 @@ jobs:
 
               z.extractall(work)
 
+
           apps = list(
               (
                   work
@@ -495,12 +545,15 @@ jobs:
               ).glob("*.app")
           )
 
+
           if len(apps) != 1:
               raise SystemExit(
                   "❌ .app principal não identificado"
               )
 
+
           app = apps[0]
+
 
           with open(
               app / "Info.plist",
@@ -509,31 +562,38 @@ jobs:
 
               plist = plistlib.load(f)
 
+
           executable_name = plist.get(
               "CFBundleExecutable"
           )
+
 
           if not executable_name:
               raise SystemExit(
                   "❌ CFBundleExecutable ausente"
               )
 
+
           executable_path = (
               app
               / executable_name
           )
 
+
           executable = Executable(
               str(executable_path)
           )
+
 
           dylibs = ROOT_DYLIBS.get(
               bundle_id,
               []
           )
 
+
           if dylibs:
               executable.remove_signature()
+
 
           for dylib_name in dylibs:
 
@@ -547,6 +607,7 @@ jobs:
                   app
                   / dylib_name
               )
+
 
               if source.exists():
 
@@ -563,11 +624,13 @@ jobs:
                       f"{dylib_name} -> raiz"
                   )
 
+
               elif not destination.exists():
 
                   raise SystemExit(
                       f"❌ {dylib_name} não encontrado"
                   )
+
 
               old_load = (
                   f"@rpath/"
@@ -579,14 +642,17 @@ jobs:
                   f"{dylib_name}"
               )
 
+
               executable.change_dependency(
                   old_load,
                   new_load
               )
 
+
               print(
                   f"✅ {old_load} -> {new_load}"
               )
+
 
           with zipfile.ZipFile(
               "Layout_Output.ipa",
@@ -605,6 +671,7 @@ jobs:
                           )
                       )
 
+
           print(
               "✅ Layout das dylibs concluído"
           )
@@ -618,14 +685,17 @@ jobs:
 
           from pathlib import Path
 
+
           work = Path(
               "package_work"
           )
+
 
           if work.exists():
               shutil.rmtree(work)
 
           work.mkdir()
+
 
           with zipfile.ZipFile(
               "Layout_Output.ipa",
@@ -634,6 +704,7 @@ jobs:
 
               z.extractall(work)
 
+
           apps = list(
               (
                   work
@@ -641,16 +712,20 @@ jobs:
               ).glob("*.app")
           )
 
+
           if len(apps) != 1:
               raise SystemExit(
                   "❌ App principal não encontrado"
               )
 
+
           app = apps[0]
+
 
           bundle_source = Path(
               "prepared/bundles"
           )
+
 
           if bundle_source.exists():
 
@@ -661,15 +736,19 @@ jobs:
                       / item.name
                   )
 
+
                   if destination.exists():
 
                       if destination.is_dir():
+
                           shutil.rmtree(
                               destination
                           )
 
                       else:
+
                           destination.unlink()
+
 
                   if item.is_dir():
 
@@ -685,13 +764,16 @@ jobs:
                           destination
                       )
 
+
                   print(
                       f"📦 {item.name}"
                   )
 
+
           appex_source = Path(
               "prepared/appex"
           )
+
 
           if (
               appex_source.exists()
@@ -701,12 +783,14 @@ jobs:
           ):
 
               plugins = (
-                  app / "PlugIns"
+                  app
+                  / "PlugIns"
               )
 
               plugins.mkdir(
                   exist_ok=True
               )
+
 
               for item in appex_source.iterdir():
 
@@ -715,15 +799,19 @@ jobs:
                       / item.name
                   )
 
+
                   if destination.exists():
 
                       if destination.is_dir():
+
                           shutil.rmtree(
                               destination
                           )
 
                       else:
+
                           destination.unlink()
+
 
                   if item.is_dir():
 
@@ -739,9 +827,11 @@ jobs:
                           destination
                       )
 
+
                   print(
                       f"🧩 {item.name}"
                   )
+
 
           with zipfile.ZipFile(
               "Package_Output.ipa",
@@ -759,6 +849,7 @@ jobs:
                               work
                           )
                       )
+
 
           print(
               "✅ Recursos adicionados"
@@ -775,6 +866,7 @@ jobs:
 
           from pathlib import Path
 
+
           with open(
               "selected_addon.json",
               "r",
@@ -783,10 +875,12 @@ jobs:
 
               addon = json.load(f)
 
+
           changes = addon.get(
               "plist",
               {}
           )
+
 
           if not changes:
 
@@ -801,14 +895,17 @@ jobs:
 
               raise SystemExit(0)
 
+
           work = Path(
               "plist_work"
           )
+
 
           if work.exists():
               shutil.rmtree(work)
 
           work.mkdir()
+
 
           with zipfile.ZipFile(
               "Package_Output.ipa",
@@ -817,6 +914,7 @@ jobs:
 
               z.extractall(work)
 
+
           apps = list(
               (
                   work
@@ -824,10 +922,12 @@ jobs:
               ).glob("*.app")
           )
 
+
           if len(apps) != 1:
               raise SystemExit(
                   "❌ App principal não encontrado"
               )
+
 
           app = apps[0]
 
@@ -836,12 +936,19 @@ jobs:
               / "Info.plist"
           )
 
+
           with open(
               plist_path,
               "rb"
           ) as f:
 
               plist = plistlib.load(f)
+
+
+          print(
+              "📝 Alterações no Info.plist:"
+          )
+
 
           for key, value in changes.items():
 
@@ -852,10 +959,12 @@ jobs:
 
               plist[key] = value
 
+
               print(
                   f"✅ {key}: "
                   f"{old} -> {value}"
               )
+
 
           with open(
               plist_path,
@@ -867,6 +976,7 @@ jobs:
                   f,
                   fmt=plistlib.FMT_BINARY
               )
+
 
           with zipfile.ZipFile(
               "Plist_Output.ipa",
@@ -885,6 +995,7 @@ jobs:
                           )
                       )
 
+
           print(
               "✅ Info.plist atualizado"
           )
@@ -893,7 +1004,8 @@ jobs:
       - name: Apply IPA Patch to plugins only
         if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
         run: |
-          echo "🩹 IPA Patch plugins-only"
+          echo "🩹 Aplicando IPA Patch"
+          echo "Modo: plugins-only"
 
           ./ipapatch \
             --input Plist_Output.ipa \
@@ -901,7 +1013,12 @@ jobs:
             --plugins-only \
             --noconfirm
 
-          test -f Final.ipa
+
+          if [ ! -f Final.ipa ]; then
+            echo "❌ IPA Patch não gerou Final.ipa"
+            exit 1
+          fi
+
 
           echo "✅ IPA Patch concluído"
 
@@ -921,16 +1038,27 @@ jobs:
             exit 1
           fi
 
-          unzip -tq \
-            Final.ipa \
-            > /dev/null
+
+          if ! unzip -tq Final.ipa > /dev/null; then
+            echo "❌ Final.ipa inválido"
+            exit 1
+          fi
+
 
           echo ""
           echo "✅ IPA FINAL"
-          echo "📱 ${{ steps.prepare.outputs.app_name }}"
-          echo "🔢 ${{ steps.prepare.outputs.version }}"
-          echo "📦 ${{ steps.prepare.outputs.bundle_id }}"
-          echo "🧩 ${{ steps.prepare.outputs.addon_name }}"
+          echo ""
+          echo "📱 Nome:"
+          echo "${{ steps.prepare.outputs.app_name }}"
+          echo ""
+          echo "📦 Bundle ID:"
+          echo "${{ steps.prepare.outputs.bundle_id }}"
+          echo ""
+          echo "🔢 Versão:"
+          echo "${{ steps.prepare.outputs.version }}"
+          echo ""
+          echo "🧩 Tweak:"
+          echo "${{ steps.prepare.outputs.addon_name }}"
           echo ""
 
           ls -lh Final.ipa
@@ -950,11 +1078,3 @@ jobs:
 
         run: |
           python telegram_send.py
-
-      - name: Upload backup artifact
-        if: always() && hashFiles('Final.ipa') != ''
-        uses: actions/upload-artifact@v6
-        with:
-          name: ${{ steps.prepare.outputs.app_name }}-${{ steps.prepare.outputs.version }}-${{ steps.prepare.outputs.addon_name }}
-          path: Final.ipa
-          retention-days: 1
