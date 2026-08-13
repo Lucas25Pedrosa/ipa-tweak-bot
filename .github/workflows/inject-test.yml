@@ -8,22 +8,10 @@ on:
         required: true
         type: string
 
-      addons:
-        description: "Nome dos addons separados por vírgula. Ex: Glow"
+      addon:
+        description: "Nome do addon. Ex: Glow, Regram, RXTikTok"
         required: true
         type: string
-
-      apply_ipapatch:
-        description: "Aplicar IPA Patch somente nas extensões"
-        required: true
-        default: false
-        type: boolean
-
-      remove_extensions:
-        description: "Remover extensões (.appex)"
-        required: true
-        default: false
-        type: boolean
 
 jobs:
   inject:
@@ -46,39 +34,10 @@ jobs:
       - name: Install Cyan
         run: |
           python -m pip install --upgrade pip
-
           pip install --force-reinstall \
             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
-          echo "✅ Cyan instalado"
           cyan --version
-
-      - name: Install IPA Patch
-        if: ${{ inputs.apply_ipapatch }}
-        run: |
-          echo "📥 Baixando IPA Patch..."
-
-          curl \
-            --location \
-            --fail \
-            --output ipapatch \
-            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
-
-          chmod +x ipapatch
-
-          echo "✅ IPA Patch instalado"
-          ./ipapatch --version
-
-      - name: Check incompatible options
-        env:
-          APPLY_IPAPATCH: ${{ inputs.apply_ipapatch }}
-          REMOVE_EXTENSIONS: ${{ inputs.remove_extensions }}
-        run: |
-          if [ "$APPLY_IPAPATCH" = "true" ] && [ "$REMOVE_EXTENSIONS" = "true" ]; then
-            echo "❌ Não é possível aplicar IPA Patch e remover extensões ao mesmo tempo."
-            echo "IPA Patch precisa que os .appex sejam preservados."
-            exit 1
-          fi
 
       - name: Download IPA
         env:
@@ -93,37 +52,32 @@ jobs:
             --output input.ipa \
             "$IPA_URL"
 
-          echo "✅ Download concluído"
+          unzip -tq input.ipa > /dev/null
+
+          echo "✅ IPA baixado e validado"
           ls -lh input.ipa
 
-      - name: Validate IPA
-        run: |
-          echo "🔎 Verificando IPA..."
-
-          if ! unzip -tq input.ipa > /dev/null; then
-            echo "❌ O arquivo baixado não é um IPA/ZIP válido."
-            exit 1
-          fi
-
-          echo "✅ IPA válido"
-
-      - name: Detect app information
-        id: app
+      - name: Detect app and prepare addon
+        id: prepare
+        env:
+          REQUESTED_ADDON: ${{ inputs.addon }}
         run: |
           python <<'PY'
-          import zipfile
-          import plistlib
+          import json
           import os
+          import plistlib
+          import zipfile
           import sys
+          from pathlib import Path
 
           ipa = "input.ipa"
 
           with zipfile.ZipFile(ipa, "r") as z:
               plist_files = [
-                  name for name in z.namelist()
-                  if name.startswith("Payload/")
-                  and name.count("/") == 2
-                  and name.endswith(".app/Info.plist")
+                  x for x in z.namelist()
+                  if x.startswith("Payload/")
+                  and x.count("/") == 2
+                  and x.endswith(".app/Info.plist")
               ]
 
               if not plist_files:
@@ -143,223 +97,315 @@ jobs:
           )
           version = plist.get("CFBundleShortVersionString", "Unknown")
 
-          if not bundle_id:
-              print("❌ Bundle ID não encontrado")
-              sys.exit(1)
-
-          print(f"📱 App: {app_name}")
-          print(f"📦 Bundle ID: {bundle_id}")
-          print(f"🔢 Versão: {version}")
-
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"bundle_id={bundle_id}\n")
-              out.write(f"app_name={app_name}\n")
-              out.write(f"version={version}\n")
-          PY
-
-      - name: Find compatible addons
-        env:
-          BUNDLE_ID: ${{ steps.app.outputs.bundle_id }}
-          REQUESTED_ADDONS: ${{ inputs.addons }}
-        run: |
-          python <<'PY'
-          import json
-          import os
-          import sys
-          from pathlib import Path
-
-          bundle_id = os.environ["BUNDLE_ID"]
-          requested_raw = os.environ["REQUESTED_ADDONS"]
-
           with open("config/addons.json", "r", encoding="utf-8") as f:
               config = json.load(f)
 
           apps = config.get("apps", {})
 
           if bundle_id not in apps:
-              print(f"❌ Nenhum app cadastrado para o Bundle ID: {bundle_id}")
-              print()
-              print("Bundle IDs cadastrados:")
-
-              for registered in apps:
-                  print(f" - {registered}")
-
+              print(f"❌ App não cadastrado: {bundle_id}")
               sys.exit(1)
 
-          app = apps[bundle_id]
-          available = app.get("addons", [])
+          app_config = apps[bundle_id]
 
-          requested = [
-              item.strip()
-              for item in requested_raw.split(",")
-              if item.strip()
-          ]
+          requested = os.environ["REQUESTED_ADDON"].strip()
 
-          if not requested:
-              print("❌ Nenhum addon informado")
+          addon = next(
+              (
+                  a for a in app_config.get("addons", [])
+                  if a.get("name", "").lower() == requested.lower()
+              ),
+              None
+          )
+
+          if not addon:
+              print(f"❌ Addon não encontrado: {requested}")
+              print("Disponíveis:")
+              for a in app_config.get("addons", []):
+                  print(" -", a.get("name"))
               sys.exit(1)
 
-          selected = []
+          files = addon.get("files", [])
 
-          if len(requested) == 1 and requested[0].lower() == "all":
-              selected = available
-          else:
-              for requested_name in requested:
-                  match = next(
-                      (
-                          addon
-                          for addon in available
-                          if addon.get("name", "").lower()
-                          == requested_name.lower()
-                      ),
-                      None
-                  )
-
-                  if not match:
-                      print(f"❌ Addon não encontrado: {requested_name}")
-                      print()
-                      print("Addons disponíveis:")
-
-                      for addon in available:
-                          print(f" - {addon.get('name')}")
-
-                      sys.exit(1)
-
-                  selected.append(match)
-
-          paths = []
-
-          print("🧩 Addons selecionados:")
-
-          for addon in selected:
-              name = addon.get("name")
-              addon_type = addon.get("type")
-              file_path = addon.get("file")
-
-              if not file_path:
-                  print(f"❌ Caminho não definido para {name}")
+          for item in files:
+              path = item.get("path")
+              if not Path(path).exists():
+                  print(f"❌ Arquivo não encontrado: {path}")
                   sys.exit(1)
 
-              if not Path(file_path).exists():
-                  print(f"❌ Arquivo/pasta não encontrado: {file_path}")
-                  sys.exit(1)
+          with open("selected_addon.json", "w", encoding="utf-8") as f:
+              json.dump(addon, f, indent=2)
 
-              print(f" • {name} [{addon_type}]")
-              print(f"   {file_path}")
-
-              paths.append(file_path)
-
-          with open("selected_addons.txt", "w", encoding="utf-8") as f:
-              for path in paths:
-                  f.write(path + "\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"bundle_id={bundle_id}\n")
+              out.write(f"app_name={app_name}\n")
+              out.write(f"version={version}\n")
+              out.write(f"ipapatch={str(addon.get('ipapatch', False)).lower()}\n")
+              out.write(
+                  f"remove_extensions={str(addon.get('remove_extensions', False)).lower()}\n"
+              )
 
           print()
-          print(f"✅ {len(paths)} addon(s) preparado(s)")
+          print(f"📱 App: {app_name}")
+          print(f"📦 Bundle ID: {bundle_id}")
+          print(f"🔢 Versão: {version}")
+          print(f"🧩 Addon: {addon.get('name')}")
+          print(f"🩹 IPA Patch: {addon.get('ipapatch', False)}")
           PY
 
-      - name: Show extensions
+      - name: Install IPA Patch
+        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
         run: |
-          rm -rf ipa_check
-          unzip -q input.ipa -d ipa_check
+          echo "📥 Instalando IPA Patch..."
 
-          echo "🧩 Extensões existentes no IPA:"
+          curl \
+            --location \
+            --fail \
+            --output ipapatch \
+            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
 
-          EXTENSIONS=$(find ipa_check/Payload -type d -name "*.appex" -print)
+          chmod +x ipapatch
+          ./ipapatch --version
 
-          if [ -z "$EXTENSIONS" ]; then
-            echo "Nenhuma extensão encontrada."
-          else
-            echo "$EXTENSIONS"
-          fi
-
-          rm -rf ipa_check
-
-      - name: Inject addons with Cyan
-        env:
-          REMOVE_EXTENSIONS: ${{ inputs.remove_extensions }}
+      - name: Prepare package files
         run: |
-          echo "💉 Preparando injeção..."
+          python <<'PY'
+          import json
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
 
-          mapfile -t ADDONS < selected_addons.txt
+          with open("selected_addon.json", "r", encoding="utf-8") as f:
+              addon = json.load(f)
+
+          Path("prepared/inject").mkdir(parents=True, exist_ok=True)
+          Path("prepared/bundles").mkdir(parents=True, exist_ok=True)
+          Path("prepared/appex").mkdir(parents=True, exist_ok=True)
+
+          inject_files = []
+
+          for item in addon.get("files", []):
+              path = Path(item["path"])
+              action = item["action"]
+
+              if action == "inject":
+                  inject_files.append(str(path))
+
+              elif action == "bundle":
+                  target = Path("prepared/bundles")
+
+                  with zipfile.ZipFile(path, "r") as z:
+                      z.extractall(target)
+
+              elif action == "appex":
+                  target = Path("prepared/appex")
+
+                  with zipfile.ZipFile(path, "r") as z:
+                      z.extractall(target)
+
+          with open("inject_files.txt", "w", encoding="utf-8") as f:
+              for path in inject_files:
+                  f.write(path + "\n")
+
+          print("✅ Componentes preparados")
+          PY
+
+      - name: Inject dylibs and debs with Cyan
+        run: |
+          mapfile -t INJECT_FILES < inject_files.txt
 
           CYAN_ARGS=(
             -i input.ipa
             -o Cyan_Output.ipa
             -u
             -w
-            -f
           )
 
-          for addon in "${ADDONS[@]}"; do
-            CYAN_ARGS+=("$addon")
-          done
+          if [ "${#INJECT_FILES[@]}" -gt 0 ]; then
+            CYAN_ARGS+=("-f")
 
-          if [ "$REMOVE_EXTENSIONS" = "true" ]; then
-            echo "🗑️ Extensões serão removidas"
+            for file in "${INJECT_FILES[@]}"; do
+              CYAN_ARGS+=("$file")
+            done
+          fi
+
+          if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
             CYAN_ARGS+=("-e")
-          else
-            echo "🧩 Extensões serão preservadas"
           fi
 
           CYAN_ARGS+=("--overwrite")
 
           cyan "${CYAN_ARGS[@]}"
 
-          if [ ! -f "Cyan_Output.ipa" ]; then
-            echo "❌ Cyan não gerou o IPA"
-            exit 1
-          fi
+          echo "✅ Cyan concluído"
 
-          echo "✅ Injeção concluída"
+      - name: Add bundles and extensions
+        run: |
+          python <<'PY'
+          import os
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          source = "Cyan_Output.ipa"
+          temp = Path("ipa_work")
+
+          if temp.exists():
+              shutil.rmtree(temp)
+
+          temp.mkdir()
+
+          with zipfile.ZipFile(source, "r") as z:
+              z.extractall(temp)
+
+          apps = list((temp / "Payload").glob("*.app"))
+
+          if not apps:
+              raise SystemExit("❌ .app principal não encontrado")
+
+          app = apps[0]
+
+          bundles_dir = Path("prepared/bundles")
+          if bundles_dir.exists():
+              for item in bundles_dir.iterdir():
+                  destination = app / item.name
+
+                  if destination.exists():
+                      if destination.is_dir():
+                          shutil.rmtree(destination)
+                      else:
+                          destination.unlink()
+
+                  if item.is_dir():
+                      shutil.copytree(item, destination)
+                  else:
+                      shutil.copy2(item, destination)
+
+          appex_dir = Path("prepared/appex")
+          if appex_dir.exists():
+              plugins = app / "PlugIns"
+              plugins.mkdir(exist_ok=True)
+
+              for item in appex_dir.iterdir():
+                  destination = plugins / item.name
+
+                  if destination.exists():
+                      if destination.is_dir():
+                          shutil.rmtree(destination)
+                      else:
+                          destination.unlink()
+
+                  if item.is_dir():
+                      shutil.copytree(item, destination)
+                  else:
+                      shutil.copy2(item, destination)
+
+          with zipfile.ZipFile(
+              "Package_Output.ipa",
+              "w",
+              zipfile.ZIP_DEFLATED
+          ) as z:
+              for file in temp.rglob("*"):
+                  if file.is_file():
+                      z.write(file, file.relative_to(temp))
+
+          print("✅ Bundles e extensões adicionados")
+          PY
+
+      - name: Apply Info.plist changes
+        run: |
+          python <<'PY'
+          import json
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          with open("selected_addon.json", "r", encoding="utf-8") as f:
+              addon = json.load(f)
+
+          changes = addon.get("plist", {})
+
+          if not changes:
+              shutil.copy2("Package_Output.ipa", "Plist_Output.ipa")
+              print("ℹ️ Nenhuma alteração de Info.plist")
+              raise SystemExit(0)
+
+          temp = Path("plist_work")
+
+          if temp.exists():
+              shutil.rmtree(temp)
+
+          temp.mkdir()
+
+          with zipfile.ZipFile("Package_Output.ipa", "r") as z:
+              z.extractall(temp)
+
+          apps = list((temp / "Payload").glob("*.app"))
+          app = apps[0]
+
+          plist_path = app / "Info.plist"
+
+          with open(plist_path, "rb") as f:
+              plist = plistlib.load(f)
+
+          for key, value in changes.items():
+              plist[key] = value
+              print(f"✅ {key} = {value}")
+
+          with open(plist_path, "wb") as f:
+              plistlib.dump(plist, f, fmt=plistlib.FMT_BINARY)
+
+          with zipfile.ZipFile(
+              "Plist_Output.ipa",
+              "w",
+              zipfile.ZIP_DEFLATED
+          ) as z:
+              for file in temp.rglob("*"):
+                  if file.is_file():
+                      z.write(file, file.relative_to(temp))
+          PY
 
       - name: Apply IPA Patch to plugins only
-        if: ${{ inputs.apply_ipapatch }}
+        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
         run: |
           echo "🩹 Aplicando IPA Patch somente aos plugins..."
 
           ./ipapatch \
-            --input Cyan_Output.ipa \
+            --input Plist_Output.ipa \
             --output Final.ipa \
             --plugins-only \
             --noconfirm
 
-          if [ ! -f "Final.ipa" ]; then
-            echo "❌ IPA Patch não gerou o arquivo final"
-            exit 1
-          fi
+          echo "✅ IPA Patch aplicado"
 
-          echo "✅ IPA Patch concluído"
-
-      - name: Use Cyan output
-        if: ${{ !inputs.apply_ipapatch }}
+      - name: Use output without IPA Patch
+        if: ${{ steps.prepare.outputs.ipapatch != 'true' }}
         run: |
-          mv Cyan_Output.ipa Final.ipa
+          mv Plist_Output.ipa Final.ipa
 
       - name: Validate final IPA
         run: |
-          echo "🔎 Validando IPA final..."
-
-          if [ ! -f "Final.ipa" ]; then
-            echo "❌ IPA final não encontrado"
+          if [ ! -f Final.ipa ]; then
+            echo "❌ Final.ipa não encontrado"
             exit 1
           fi
 
-          if ! unzip -tq Final.ipa > /dev/null; then
-            echo "❌ IPA final inválido"
-            exit 1
-          fi
+          unzip -tq Final.ipa > /dev/null
 
           echo "✅ IPA final válido"
-          ls -lh Final.ipa
-
           echo ""
-          echo "📱 ${{ steps.app.outputs.app_name }}"
-          echo "🔢 ${{ steps.app.outputs.version }}"
-          echo "📦 ${{ steps.app.outputs.bundle_id }}"
+          echo "📱 ${{ steps.prepare.outputs.app_name }}"
+          echo "🔢 ${{ steps.prepare.outputs.version }}"
+          echo "📦 ${{ steps.prepare.outputs.bundle_id }}"
+          echo "🧩 ${{ inputs.addon }}"
+
+          ls -lh Final.ipa
 
       - name: Upload final IPA
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ steps.app.outputs.app_name }}-${{ steps.app.outputs.version }}-Injected
+          name: ${{ steps.prepare.outputs.app_name }}-${{ steps.prepare.outputs.version }}-${{ inputs.addon }}
           path: Final.ipa
           retention-days: 1
