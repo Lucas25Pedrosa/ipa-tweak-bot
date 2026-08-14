@@ -1,0 +1,482 @@
+name: Messenger 574 Portuguese Pack
+
+on:
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: "Link direto para o Messenger 574.0.0 (MSGPlusX) .ipa"
+        required: true
+        type: string
+      language_pack_url:
+        description: "Link direto para o FBLP português extraído do Messenger 574 oficial"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build-bootstrap:
+    name: Build Portuguese bootstrap dylib
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Create bootstrap source
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build
+
+          cat > build/MessengerPortugueseBootstrap.m <<'OBJC'
+          #import <Foundation/Foundation.h>
+
+          static NSString * const MPFileName =
+              @"beb8b2a724c4d86596dd48520bf328cb";
+
+          static NSString *MPSourcePath(void) {
+              NSString *resourcePath =
+                  [[NSBundle mainBundle] resourcePath];
+
+              return [[resourcePath
+                  stringByAppendingPathComponent:@"MessengerPortuguese"]
+                  stringByAppendingPathComponent:MPFileName];
+          }
+
+          static NSString *MPDestinationPath(void) {
+              NSString *home = NSHomeDirectory();
+
+              NSString *directory = [home
+                  stringByAppendingPathComponent:
+                      @"Library/cask/unscoped/"
+                       "dod_sessionless_storage_cache/v0"];
+
+              return [directory
+                  stringByAppendingPathComponent:MPFileName];
+          }
+
+          static void MPInstallLanguagePack(void) {
+              NSFileManager *fm =
+                  [NSFileManager defaultManager];
+
+              NSString *source = MPSourcePath();
+              NSString *destination =
+                  MPDestinationPath();
+              NSString *directory =
+                  [destination stringByDeletingLastPathComponent];
+
+              BOOL isDirectory = NO;
+
+              if (![fm fileExistsAtPath:source
+                            isDirectory:&isDirectory] ||
+                  isDirectory) {
+                  return;
+              }
+
+              NSError *error = nil;
+
+              if (![fm createDirectoryAtPath:directory
+                 withIntermediateDirectories:YES
+                                  attributes:nil
+                                       error:&error]) {
+                  return;
+              }
+
+              if ([fm fileExistsAtPath:destination]) {
+                  if ([fm contentsEqualAtPath:source
+                                      andPath:destination]) {
+                      return;
+                  }
+
+                  if (![fm removeItemAtPath:destination
+                                     error:&error]) {
+                      return;
+                  }
+              }
+
+              [fm copyItemAtPath:source
+                          toPath:destination
+                           error:&error];
+          }
+
+          __attribute__((constructor))
+          static void MPBootstrapInit(void) {
+              @autoreleasepool {
+                  MPInstallLanguagePack();
+              }
+          }
+          OBJC
+
+      - name: Compile arm64 iOS dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+
+          xcrun --sdk iphoneos clang \
+            -target arm64-apple-ios15.1 \
+            -arch arm64 \
+            -dynamiclib \
+            -Os \
+            -fobjc-arc \
+            -isysroot "$SDK_PATH" \
+            -framework Foundation \
+            -install_name "@rpath/MessengerPortugueseBootstrap.dylib" \
+            -Wl,-dead_strip \
+            build/MessengerPortugueseBootstrap.m \
+            -o build/MessengerPortugueseBootstrap.dylib
+
+          chmod 755 build/MessengerPortugueseBootstrap.dylib
+
+          file build/MessengerPortugueseBootstrap.dylib
+          shasum -a 256 build/MessengerPortugueseBootstrap.dylib
+
+          file build/MessengerPortugueseBootstrap.dylib \
+            | grep -qi "arm64"
+
+      - name: Upload bootstrap dylib
+        uses: actions/upload-artifact@v6
+        with:
+          name: messenger-portuguese-bootstrap
+          path: build/MessengerPortugueseBootstrap.dylib
+          if-no-files-found: error
+          retention-days: 3
+
+  patch-messenger:
+    name: Patch Messenger main executable only
+    needs: build-bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y curl file unzip zip
+
+      - name: Install IPA Patch 2.1.3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --location \
+            --fail \
+            --retry 3 \
+            --retry-delay 2 \
+            --output ipapatch \
+            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
+
+          chmod +x ipapatch
+          ./ipapatch --version
+
+      - name: Download bootstrap dylib
+        uses: actions/download-artifact@v7
+        with:
+          name: messenger-portuguese-bootstrap
+          path: bootstrap
+
+      - name: Download Messenger IPA and Portuguese FBLP
+        env:
+          IPA_URL: ${{ inputs.ipa_url }}
+          PACK_URL: ${{ inputs.language_pack_url }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --output input.ipa \
+            "$IPA_URL"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --retry-delay 2 \
+            --output portuguese.fblp \
+            "$PACK_URL"
+
+          unzip -tq input.ipa > /dev/null
+
+          echo "IPA:"
+          ls -lh input.ipa
+          sha256sum input.ipa
+
+          echo "Language pack:"
+          ls -lh portuguese.fblp
+          sha256sum portuguese.fblp
+
+      - name: Validate exact Portuguese pack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXPECTED_SHA256="918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
+          ACTUAL_SHA256="$(sha256sum portuguese.fblp | awk '{print $1}')"
+
+          if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
+            echo "❌ FBLP não corresponde ao pacote português extraído do Messenger 574"
+            echo "Esperado: $EXPECTED_SHA256"
+            echo "Recebido: $ACTUAL_SHA256"
+            exit 1
+          fi
+
+          python3 <<'PY'
+          from pathlib import Path
+
+          data = Path("portuguese.fblp").read_bytes()
+
+          if data[:4] != b"FBLP":
+              raise SystemExit(
+                  f"❌ Assinatura inválida: {data[:4]!r}"
+              )
+
+          print("✅ FBLP português validado")
+          print(f"Tamanho: {len(data)} bytes")
+          PY
+
+      - name: Extract and identify Messenger
+        id: messenger
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf baseline
+          mkdir -p baseline
+          unzip -q input.ipa -d baseline
+
+          python3 <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          payload = Path("baseline/Payload")
+          apps = list(payload.glob("*.app"))
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ Esperava 1 app principal; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          plist_path = app / "Info.plist"
+
+          with plist_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          executable = info.get("CFBundleExecutable")
+          short_version = str(
+              info.get("CFBundleShortVersionString", "")
+          )
+          build_version = str(
+              info.get("CFBundleVersion", "")
+          )
+          bundle_id = str(
+              info.get("CFBundleIdentifier", "")
+          )
+
+          if not executable:
+              raise SystemExit(
+                  "❌ CFBundleExecutable ausente"
+              )
+
+          if short_version != "574.0.0":
+              raise SystemExit(
+                  "❌ Este workflow é exclusivo para "
+                  f"Messenger 574.0.0; encontrado {short_version!r}"
+              )
+
+          main = app / executable
+
+          if not main.is_file():
+              raise SystemExit(
+                  f"❌ Executável principal ausente: {main}"
+              )
+
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a",
+              encoding="utf-8",
+          ) as out:
+              out.write(f"app_path={app}\n")
+              out.write(f"app_name={app.name}\n")
+              out.write(f"executable={executable}\n")
+              out.write(f"main_path={main}\n")
+              out.write(f"bundle_id={bundle_id}\n")
+              out.write(f"short_version={short_version}\n")
+              out.write(f"build_version={build_version}\n")
+
+          print("✅ Messenger identificado")
+          print(f"App: {app.name}")
+          print(f"Bundle ID: {bundle_id}")
+          print(f"Versão: {short_version}")
+          print(f"Build: {build_version}")
+          print(f"Executável: {main}")
+          PY
+
+      - name: Create isolated IPA with no app extensions
+        env:
+          APP_NAME: ${{ steps.messenger.outputs.app_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf isolated
+          cp -a baseline isolated
+
+          APP="isolated/Payload/$APP_NAME"
+
+          # Remove somente da cópia temporária.
+          # O IPA final continuará usando todas as extensões originais.
+          rm -rf "$APP/PlugIns"
+
+          (
+            cd isolated
+            zip -qry9 ../isolated-input.ipa Payload
+          )
+
+          unzip -tq isolated-input.ipa > /dev/null
+          echo "✅ IPA temporário sem PlugIns criado"
+
+      - name: Inject bootstrap into main executable
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -f bootstrap/MessengerPortugueseBootstrap.dylib
+          chmod 755 bootstrap/MessengerPortugueseBootstrap.dylib
+
+          ./ipapatch \
+            --input isolated-input.ipa \
+            --output isolated-patched.ipa \
+            --dylib bootstrap/MessengerPortugueseBootstrap.dylib \
+            --noconfirm
+
+          unzip -tq isolated-patched.ipa > /dev/null
+          echo "✅ Executável principal patchado"
+
+      - name: Merge only patched main binary into original IPA
+        env:
+          APP_NAME: ${{ steps.messenger.outputs.app_name }}
+          EXECUTABLE: ${{ steps.messenger.outputs.executable }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf isolated-patched
+          mkdir -p isolated-patched
+          unzip -q isolated-patched.ipa -d isolated-patched
+
+          PATCHED_APP="isolated-patched/Payload/$APP_NAME"
+          FINAL_APP="baseline/Payload/$APP_NAME"
+
+          test -f "$PATCHED_APP/$EXECUTABLE"
+
+          cp \
+            "$PATCHED_APP/$EXECUTABLE" \
+            "$FINAL_APP/$EXECUTABLE"
+
+          chmod 755 "$FINAL_APP/$EXECUTABLE"
+
+          mkdir -p "$FINAL_APP/Frameworks"
+
+          cp \
+            bootstrap/MessengerPortugueseBootstrap.dylib \
+            "$FINAL_APP/Frameworks/MessengerPortugueseBootstrap.dylib"
+
+          chmod 755 \
+            "$FINAL_APP/Frameworks/MessengerPortugueseBootstrap.dylib"
+
+          echo "✅ Somente o main executável foi substituído"
+          echo "✅ Extensões originais permanecem intactas"
+
+      - name: Embed Portuguese FBLP in app bundle
+        env:
+          APP_NAME: ${{ steps.messenger.outputs.app_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_APP="baseline/Payload/$APP_NAME"
+          RESOURCE_DIR="$FINAL_APP/MessengerPortuguese"
+          PACK_NAME="beb8b2a724c4d86596dd48520bf328cb"
+
+          mkdir -p "$RESOURCE_DIR"
+
+          cp \
+            portuguese.fblp \
+            "$RESOURCE_DIR/$PACK_NAME"
+
+          chmod 644 "$RESOURCE_DIR/$PACK_NAME"
+
+          echo "✅ FBLP embutido em:"
+          echo "   MessengerPortuguese/$PACK_NAME"
+
+      - name: Validate final structure
+        env:
+          APP_NAME: ${{ steps.messenger.outputs.app_name }}
+          EXECUTABLE: ${{ steps.messenger.outputs.executable }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          FINAL_APP="baseline/Payload/$APP_NAME"
+          MAIN="$FINAL_APP/$EXECUTABLE"
+          DYLIB="$FINAL_APP/Frameworks/MessengerPortugueseBootstrap.dylib"
+          PACK="$FINAL_APP/MessengerPortuguese/beb8b2a724c4d86596dd48520bf328cb"
+
+          test -f "$MAIN"
+          test -f "$DYLIB"
+          test -f "$PACK"
+
+          sha256sum "$PACK" \
+            | grep -F \
+              "918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
+
+          strings "$MAIN" \
+            | grep -F \
+              "@rpath/MessengerPortugueseBootstrap.dylib" \
+              > /dev/null
+
+          strings "$DYLIB" \
+            | grep -F \
+              "dod_sessionless_storage_cache/v0" \
+              > /dev/null
+
+          strings "$DYLIB" \
+            | grep -F \
+              "beb8b2a724c4d86596dd48520bf328cb" \
+              > /dev/null
+
+          echo "✅ Estrutura final validada"
+
+      - name: Build final IPA
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          (
+            cd baseline
+            zip -qry9 ../Messenger-574-MSGPlusX-Portuguese.ipa Payload
+          )
+
+          unzip -tq Messenger-574-MSGPlusX-Portuguese.ipa > /dev/null
+
+          echo "✅ IPA final criado"
+          ls -lh Messenger-574-MSGPlusX-Portuguese.ipa
+          sha256sum Messenger-574-MSGPlusX-Portuguese.ipa
+
+      - name: Upload final IPA
+        uses: actions/upload-artifact@v6
+        with:
+          name: Messenger-574-MSGPlusX-Portuguese
+          path: Messenger-574-MSGPlusX-Portuguese.ipa
+          if-no-files-found: error
+          retention-days: 3
