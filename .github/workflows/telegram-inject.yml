@@ -2,6 +2,12 @@ name: Telegram IPA Injector
 
 on:
   workflow_dispatch:
+    inputs:
+      addon:
+        description: "Tweak/addon opcional; vazio usa o padrão do app"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   inject:
@@ -75,6 +81,8 @@ jobs:
 
       - name: Detect app and select addon
         id: prepare
+        env:
+          REQUESTED_ADDON: ${{ inputs.addon }}
         run: |
           python <<'PY'
           import json
@@ -135,14 +143,46 @@ jobs:
           if not addons:
               raise SystemExit("❌ Nenhum addon cadastrado")
 
+          requested_name = os.environ.get(
+              "REQUESTED_ADDON",
+              "",
+          ).strip()
+
           default_name = app_config.get("default_addon")
 
-          if default_name:
+          if requested_name:
               addon = next(
                   (
                       item
                       for item in addons
-                      if item.get("name", "").lower() == default_name.lower()
+                      if item.get("name", "").lower()
+                      == requested_name.lower()
+                  ),
+                  None,
+              )
+
+              if addon is None:
+                  available = ", ".join(
+                      item.get("name", "?")
+                      for item in addons
+                  )
+                  raise SystemExit(
+                      "❌ Addon solicitado não encontrado: "
+                      f"{requested_name}. Disponíveis: {available}"
+                  )
+
+              print(
+                  "🎯 Addon solicitado manualmente: "
+                  f"{requested_name}"
+              )
+
+          elif default_name:
+              addon = next(
+                  (
+                      item
+                      for item in addons
+                      if item.get("name", "").lower()
+                      == default_name.lower()
                   ),
                   None,
               )
@@ -151,6 +191,11 @@ jobs:
                   raise SystemExit(
                       f"❌ default_addon inválido: {default_name}"
                   )
+
+              print(
+                  "⭐ Usando addon padrão: "
+                  f"{default_name}"
+              )
 
           elif len(addons) == 1:
               addon = addons[0]
