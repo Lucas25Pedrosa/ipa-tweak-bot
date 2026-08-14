@@ -205,6 +205,7 @@ jobs:
                   and ipapatch_mode not in {
                       "plugins-only",
                       "main-only",
+                      "all",
                   }
               ):
                   raise SystemExit(
@@ -1620,8 +1621,119 @@ jobs:
 
           echo "✅ IPA Patch main-only concluído"
 
+      - name: Apply IPA Patch to main app and original plugins
+        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'all' }}
+        run: |
+          echo "🩹 Aplicando IPA Patch"
+          echo "Modo: all"
+          echo "ℹ️ O app principal e todas as extensões originais serão processados."
+
+          rm -rf ipapatch_all_validate
+
+          ./ipapatch \
+            --input Layout_Output.ipa \
+            --output Patched_Output.ipa \
+            --noconfirm
+
+          if [ ! -f Patched_Output.ipa ]; then
+            echo "❌ IPA Patch não gerou Patched_Output.ipa"
+            exit 1
+          fi
+
+          mkdir -p ipapatch_all_validate
+          unzip -q Patched_Output.ipa -d ipapatch_all_validate
+
+          python <<'PY'
+          import plistlib
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("ipapatch_all_validate")
+          apps = list((work / "Payload").glob("*.app"))
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ Esperava 1 app principal; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          required = "@rpath/zxPluginsInject.dylib"
+
+          def executable_from_bundle(bundle: Path) -> Path:
+              plist_path = bundle / "Info.plist"
+              if not plist_path.is_file():
+                  raise SystemExit(
+                      f"❌ Info.plist ausente em {bundle}"
+                  )
+
+              with plist_path.open("rb") as f:
+                  plist = plistlib.load(f)
+
+              executable_name = plist.get("CFBundleExecutable")
+              if not executable_name:
+                  raise SystemExit(
+                      f"❌ CFBundleExecutable ausente em {bundle}"
+                  )
+
+              executable = bundle / executable_name
+              if not executable.is_file():
+                  raise SystemExit(
+                      f"❌ Executável ausente: {executable}"
+                  )
+
+              return executable
+
+          main_executable = executable_from_bundle(app)
+          main_dependencies = Executable(
+              str(main_executable)
+          ).get_dependencies()
+
+          if required not in main_dependencies:
+              raise SystemExit(
+                  "❌ IPA Patch não injetou zxPluginsInject "
+                  "no executável principal"
+              )
+
+          print(
+              "✅ App principal -> @rpath/zxPluginsInject.dylib"
+          )
+
+          extensions = []
+          for directory_name in ("PlugIns", "Extensions"):
+              directory = app / directory_name
+              if directory.is_dir():
+                  extensions.extend(
+                      sorted(directory.glob("*.appex"))
+                  )
+
+          for extension in extensions:
+              executable = executable_from_bundle(extension)
+              dependencies = Executable(
+                  str(executable)
+              ).get_dependencies()
+
+              if required not in dependencies:
+                  raise SystemExit(
+                      "❌ IPA Patch não injetou zxPluginsInject em "
+                      f"{extension.name}"
+                  )
+
+              print(
+                  f"✅ {extension.name} -> "
+                  "@rpath/zxPluginsInject.dylib"
+              )
+
+          print(
+              f"✅ Modo all validado em {len(extensions)} extensão(ões)"
+          )
+          PY
+
+          rm -rf ipapatch_all_validate
+          echo "✅ IPA Patch all concluído"
+
       - name: Apply IPA Patch to original plugins only
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode != 'main-only' }}
+        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'plugins-only' }}
         run: |
           echo "🩹 Aplicando IPA Patch"
           echo "Modo: plugins-only"
