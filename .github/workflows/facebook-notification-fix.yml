@@ -1,10 +1,10 @@
-name: Facebook Notification Fix - Standalone Test
+name: Facebook Notification Fix - V2 Diagnostic
 
 on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Link direto para o Facebook .ipa que será usado no teste"
+        description: "Link direto para o Facebook + Glow .ipa (antes da assinatura do Feather)"
         required: true
         default: "https://pub-4c58191013f0429aab20e217182b7f04.r2.dev/Facebook/Facebook%20-%20574.0.0.ipa"
         type: string
@@ -14,12 +14,12 @@ permissions:
 
 jobs:
   build-fix:
-    name: Build FacebookNotificationFix.dylib
+    name: Build diagnostic dylib
     runs-on: macos-latest
     timeout-minutes: 20
 
     steps:
-      - name: Create notification fix source
+      - name: Create no-op diagnostic source
         shell: bash
         run: |
           set -euo pipefail
@@ -28,678 +28,35 @@ jobs:
 
           cat > build/FacebookNotificationFix.m <<'OBJC'
           #import <Foundation/Foundation.h>
-          #import <Security/Security.h>
-          #import <CoreFoundation/CoreFoundation.h>
-          #import <objc/runtime.h>
-          #import <dlfcn.h>
 
-          // ============================================================
-          // Facebook Notification Sideload Fix - TEST BUILD
-          //
-          // Objetivo:
-          //   1. Mapear os App Groups originais da Meta para App Groups
-          //      realmente concedidos à assinatura usada no sideload.
-          //   2. Remover o access group original T84QZS65DQ.* das
-          //      consultas ao Keychain, permitindo o namespace concedido
-          //      pela assinatura atual.
-          //   3. Executar a mesma lógica no Facebook principal e na
-          //      NotificationServiceExtension.
-          //
-          // O mapeamento é descoberto em runtime pelos entitlements já
-          // aplicados pelo signer. Portanto não há App Group aleatório
-          // hardcoded no dylib.
-          // ============================================================
-
-          static NSString * const FBOriginalKeychainPrefix = @"T84QZS65DQ.";
-
-          static NSArray<NSString *> *FBOriginalGroups(void) {
-              static NSArray<NSString *> *groups;
-              static dispatch_once_t onceToken;
-
-              dispatch_once(&onceToken, ^{
-                  groups = @[
-                      @"group.com.facebook.Facebook",
-                      @"group.com.facebook.family",
-                      @"group.com.metaplatforms.family",
-                      @"group.com.facebook.msysstorage",
-                  ];
-              });
-
-              return groups;
-          }
-
-          typedef CFTypeRef FBSecTaskRef;
-          typedef FBSecTaskRef (*FBSecTaskCreateFromSelfFn)(CFAllocatorRef allocator);
-          typedef CFTypeRef (*FBSecTaskCopyValueForEntitlementFn)(
-              FBSecTaskRef task,
-              CFStringRef entitlement,
-              CFErrorRef *error
-          );
-
-          static NSArray<NSString *> *FBGrantedApplicationGroups(void) {
-              static NSArray<NSString *> *groups;
-              static dispatch_once_t onceToken;
-
-              dispatch_once(&onceToken, ^{
-                  NSMutableArray<NSString *> *result = [NSMutableArray array];
-
-                  FBSecTaskCreateFromSelfFn createTask =
-                      (FBSecTaskCreateFromSelfFn)dlsym(
-                          RTLD_DEFAULT,
-                          "SecTaskCreateFromSelf"
-                      );
-
-                  FBSecTaskCopyValueForEntitlementFn copyEntitlement =
-                      (FBSecTaskCopyValueForEntitlementFn)dlsym(
-                          RTLD_DEFAULT,
-                          "SecTaskCopyValueForEntitlement"
-                      );
-
-                  if (createTask != NULL && copyEntitlement != NULL) {
-                      FBSecTaskRef task = createTask(kCFAllocatorDefault);
-
-                      if (task != NULL) {
-                          CFTypeRef value = copyEntitlement(
-                              task,
-                              CFSTR("com.apple.security.application-groups"),
-                              NULL
-                          );
-
-                          if (
-                              value != NULL
-                              && CFGetTypeID(value) == CFArrayGetTypeID()
-                          ) {
-                              NSArray *array = (__bridge NSArray *)value;
-
-                              for (id item in array) {
-                                  if ([item isKindOfClass:[NSString class]]) {
-                                      [result addObject:(NSString *)item];
-                                  }
-                              }
-                          }
-
-                          if (value != NULL) {
-                              CFRelease(value);
-                          }
-
-                          CFRelease(task);
-                      }
-                  }
-
-                  [result sortUsingSelector:@selector(compare:)];
-                  groups = [result copy];
-
-                  NSLog(
-                      @"[FBNotifFix] Granted App Groups: %@",
-                      groups
-                  );
-              });
-
-              return groups ?: @[];
-          }
-
-          static NSDictionary<NSString *, NSString *> *FBGroupMap(void) {
-              static NSDictionary<NSString *, NSString *> *map;
-              static dispatch_once_t onceToken;
-
-              dispatch_once(&onceToken, ^{
-                  NSArray<NSString *> *originals = FBOriginalGroups();
-                  NSArray<NSString *> *granted = FBGrantedApplicationGroups();
-
-                  NSMutableDictionary<NSString *, NSString *> *result =
-                      [NSMutableDictionary dictionary];
-
-                  // Se o signer preservou um grupo original, usamos o
-                  // próprio grupo e não fazemos remapeamento desnecessário.
-                  for (NSString *original in originals) {
-                      if ([granted containsObject:original]) {
-                          result[original] = original;
-                      }
-                  }
-
-                  // Para os grupos que não existem mais após o sideload,
-                  // fazemos um mapeamento determinístico. Como o mesmo dylib
-                  // roda no app principal e na extensão, ambos enxergam o
-                  // mesmo destino.
-                  NSMutableArray<NSString *> *available =
-                      [granted mutableCopy];
-
-                  [available removeObjectsInArray:[result allValues]];
-
-                  NSUInteger index = 0;
-
-                  for (NSString *original in originals) {
-                      if (result[original] != nil) {
-                          continue;
-                      }
-
-                      if (index >= available.count) {
-                          break;
-                      }
-
-                      result[original] = available[index];
-                      index += 1;
-                  }
-
-                  map = [result copy];
-
-                  NSLog(
-                      @"[FBNotifFix] App Group map: %@",
-                      map
-                  );
-              });
-
-              return map ?: @{};
-          }
-
-          static NSString *FBMapApplicationGroup(NSString *identifier) {
-              if (identifier == nil) {
-                  return nil;
-              }
-
-              NSString *mapped = FBGroupMap()[identifier];
-
-              if (mapped == nil) {
-                  return identifier;
-              }
-
-              if (![mapped isEqualToString:identifier]) {
-                  NSLog(
-                      @"[FBNotifFix] App Group %@ -> %@",
-                      identifier,
-                      mapped
-                  );
-              }
-
-              return mapped;
-          }
-
-          static CFStringRef FBMapApplicationGroupCF(CFStringRef identifier) {
-              if (identifier == NULL) {
-                  return NULL;
-              }
-
-              if (CFGetTypeID(identifier) != CFStringGetTypeID()) {
-                  return identifier;
-              }
-
-              NSString *source = (__bridge NSString *)identifier;
-              NSString *mapped = FBMapApplicationGroup(source);
-
-              return (__bridge CFStringRef)mapped;
-          }
-
-          static BOOL FBIsOriginalFacebookKeychainGroup(CFTypeRef value) {
-              if (
-                  value == NULL
-                  || CFGetTypeID(value) != CFStringGetTypeID()
-              ) {
-                  return NO;
-              }
-
-              NSString *group = (__bridge NSString *)value;
-              return [group hasPrefix:FBOriginalKeychainPrefix];
-          }
-
-          static CFDictionaryRef FBCopyFixedKeychainDictionary(
-              CFDictionaryRef dictionary
-          ) {
-              if (dictionary == NULL) {
-                  return NULL;
-              }
-
-              CFMutableDictionaryRef copy = CFDictionaryCreateMutableCopy(
-                  kCFAllocatorDefault,
-                  0,
-                  dictionary
-              );
-
-              if (copy == NULL) {
-                  return CFRetain(dictionary);
-              }
-
-              CFTypeRef accessGroup = CFDictionaryGetValue(
-                  copy,
-                  kSecAttrAccessGroup
-              );
-
-              if (FBIsOriginalFacebookKeychainGroup(accessGroup)) {
-                  NSLog(
-                      @"[FBNotifFix] Removing unavailable Keychain group: %@",
-                      (__bridge id)accessGroup
-                  );
-
-                  CFDictionaryRemoveValue(
-                      copy,
-                      kSecAttrAccessGroup
-                  );
-              }
-
-              return copy;
-          }
-
-          // ============================================================
-          // Objective-C hooks: App Group containers and UserDefaults
-          // ============================================================
-
-          @interface NSFileManager (FBNotificationFix)
-          - (NSURL *)fbfix_containerURLForSecurityApplicationGroupIdentifier:
-              (NSString *)groupIdentifier;
-          @end
-
-          @implementation NSFileManager (FBNotificationFix)
-
-          - (NSURL *)fbfix_containerURLForSecurityApplicationGroupIdentifier:
-              (NSString *)groupIdentifier {
-              NSString *mapped = FBMapApplicationGroup(groupIdentifier);
-
-              return [self
-                  fbfix_containerURLForSecurityApplicationGroupIdentifier:mapped
-              ];
-          }
-
-          @end
-
-          @interface NSUserDefaults (FBNotificationFix)
-          - (instancetype)fbfix_initWithSuiteName:(NSString *)suiteName;
-          @end
-
-          @implementation NSUserDefaults (FBNotificationFix)
-
-          - (instancetype)fbfix_initWithSuiteName:(NSString *)suiteName {
-              NSString *mapped = FBMapApplicationGroup(suiteName);
-              return [self fbfix_initWithSuiteName:mapped];
-          }
-
-          @end
-
-          static void FBSwizzleInstanceMethod(
-              Class cls,
-              SEL originalSelector,
-              SEL replacementSelector
-          ) {
-              Method originalMethod = class_getInstanceMethod(
-                  cls,
-                  originalSelector
-              );
-
-              Method replacementMethod = class_getInstanceMethod(
-                  cls,
-                  replacementSelector
-              );
-
-              if (originalMethod == NULL || replacementMethod == NULL) {
-                  NSLog(
-                      @"[FBNotifFix] Swizzle unavailable: %@ / %@",
-                      NSStringFromSelector(originalSelector),
-                      NSStringFromSelector(replacementSelector)
-                  );
-                  return;
-              }
-
-              method_exchangeImplementations(
-                  originalMethod,
-                  replacementMethod
-              );
-          }
-
-          // ============================================================
-          // C interpose helpers
-          // ============================================================
-
-          #define FB_INTERPOSE(_replacement, _replacee) \
-              __attribute__((used)) static struct { \
-                  const void *replacement; \
-                  const void *replacee; \
-              } _fb_interpose_##_replacee \
-              __attribute__((section("__DATA,__interpose"))) = { \
-                  (const void *)(unsigned long)&_replacement, \
-                  (const void *)(unsigned long)&_replacee \
-              };
-
-          // ============================================================
-          // Keychain hooks
-          // ============================================================
-
-          static OSStatus FB_SecItemCopyMatching(
-              CFDictionaryRef query,
-              CFTypeRef *result
-          ) {
-              static OSStatus (*original)(
-                  CFDictionaryRef,
-                  CFTypeRef *
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))
-                      dlsym(RTLD_NEXT, "SecItemCopyMatching");
-              }
-
-              if (original == NULL) {
-                  return errSecUnimplemented;
-              }
-
-              CFDictionaryRef fixed = FBCopyFixedKeychainDictionary(query);
-              OSStatus status = original(fixed, result);
-
-              if (fixed != NULL) {
-                  CFRelease(fixed);
-              }
-
-              return status;
-          }
-
-          static OSStatus FB_SecItemAdd(
-              CFDictionaryRef attributes,
-              CFTypeRef *result
-          ) {
-              static OSStatus (*original)(
-                  CFDictionaryRef,
-                  CFTypeRef *
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (OSStatus (*)(CFDictionaryRef, CFTypeRef *))
-                      dlsym(RTLD_NEXT, "SecItemAdd");
-              }
-
-              if (original == NULL) {
-                  return errSecUnimplemented;
-              }
-
-              CFDictionaryRef fixed =
-                  FBCopyFixedKeychainDictionary(attributes);
-
-              OSStatus status = original(fixed, result);
-
-              if (fixed != NULL) {
-                  CFRelease(fixed);
-              }
-
-              return status;
-          }
-
-          static OSStatus FB_SecItemUpdate(
-              CFDictionaryRef query,
-              CFDictionaryRef attributesToUpdate
-          ) {
-              static OSStatus (*original)(
-                  CFDictionaryRef,
-                  CFDictionaryRef
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (OSStatus (*)(CFDictionaryRef, CFDictionaryRef))
-                      dlsym(RTLD_NEXT, "SecItemUpdate");
-              }
-
-              if (original == NULL) {
-                  return errSecUnimplemented;
-              }
-
-              CFDictionaryRef fixedQuery =
-                  FBCopyFixedKeychainDictionary(query);
-
-              CFDictionaryRef fixedAttributes =
-                  FBCopyFixedKeychainDictionary(attributesToUpdate);
-
-              OSStatus status = original(
-                  fixedQuery,
-                  fixedAttributes
-              );
-
-              if (fixedQuery != NULL) {
-                  CFRelease(fixedQuery);
-              }
-
-              if (fixedAttributes != NULL) {
-                  CFRelease(fixedAttributes);
-              }
-
-              return status;
-          }
-
-          static OSStatus FB_SecItemDelete(CFDictionaryRef query) {
-              static OSStatus (*original)(CFDictionaryRef) = NULL;
-
-              if (original == NULL) {
-                  original = (OSStatus (*)(CFDictionaryRef))
-                      dlsym(RTLD_NEXT, "SecItemDelete");
-              }
-
-              if (original == NULL) {
-                  return errSecUnimplemented;
-              }
-
-              CFDictionaryRef fixed = FBCopyFixedKeychainDictionary(query);
-              OSStatus status = original(fixed);
-
-              if (fixed != NULL) {
-                  CFRelease(fixed);
-              }
-
-              return status;
-          }
-
-          FB_INTERPOSE(FB_SecItemCopyMatching, SecItemCopyMatching)
-          FB_INTERPOSE(FB_SecItemAdd, SecItemAdd)
-          FB_INTERPOSE(FB_SecItemUpdate, SecItemUpdate)
-          FB_INTERPOSE(FB_SecItemDelete, SecItemDelete)
-
-          // ============================================================
-          // CFPreferences hooks
-          // ============================================================
-
-          static CFPropertyListRef FB_CFPreferencesCopyAppValue(
-              CFStringRef key,
-              CFStringRef applicationID
-          ) {
-              static CFPropertyListRef (*original)(
-                  CFStringRef,
-                  CFStringRef
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (CFPropertyListRef (*)(CFStringRef, CFStringRef))
-                      dlsym(RTLD_NEXT, "CFPreferencesCopyAppValue");
-              }
-
-              if (original == NULL) {
-                  return NULL;
-              }
-
-              return original(
-                  key,
-                  FBMapApplicationGroupCF(applicationID)
-              );
-          }
-
-          static void FB_CFPreferencesSetAppValue(
-              CFStringRef key,
-              CFPropertyListRef value,
-              CFStringRef applicationID
-          ) {
-              static void (*original)(
-                  CFStringRef,
-                  CFPropertyListRef,
-                  CFStringRef
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (void (*)(
-                      CFStringRef,
-                      CFPropertyListRef,
-                      CFStringRef
-                  ))dlsym(RTLD_NEXT, "CFPreferencesSetAppValue");
-              }
-
-              if (original == NULL) {
-                  return;
-              }
-
-              original(
-                  key,
-                  value,
-                  FBMapApplicationGroupCF(applicationID)
-              );
-          }
-
-          static Boolean FB_CFPreferencesAppSynchronize(
-              CFStringRef applicationID
-          ) {
-              static Boolean (*original)(CFStringRef) = NULL;
-
-              if (original == NULL) {
-                  original = (Boolean (*)(CFStringRef))
-                      dlsym(RTLD_NEXT, "CFPreferencesAppSynchronize");
-              }
-
-              if (original == NULL) {
-                  return false;
-              }
-
-              return original(
-                  FBMapApplicationGroupCF(applicationID)
-              );
-          }
-
-          static CFPropertyListRef FB_CFPreferencesCopyValue(
-              CFStringRef key,
-              CFStringRef applicationID,
-              CFStringRef userName,
-              CFStringRef hostName
-          ) {
-              static CFPropertyListRef (*original)(
-                  CFStringRef,
-                  CFStringRef,
-                  CFStringRef,
-                  CFStringRef
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (CFPropertyListRef (*)(
-                      CFStringRef,
-                      CFStringRef,
-                      CFStringRef,
-                      CFStringRef
-                  ))dlsym(RTLD_NEXT, "CFPreferencesCopyValue");
-              }
-
-              if (original == NULL) {
-                  return NULL;
-              }
-
-              return original(
-                  key,
-                  FBMapApplicationGroupCF(applicationID),
-                  userName,
-                  hostName
-              );
-          }
-
-          static void FB_CFPreferencesSetValue(
-              CFStringRef key,
-              CFPropertyListRef value,
-              CFStringRef applicationID,
-              CFStringRef userName,
-              CFStringRef hostName
-          ) {
-              static void (*original)(
-                  CFStringRef,
-                  CFPropertyListRef,
-                  CFStringRef,
-                  CFStringRef,
-                  CFStringRef
-              ) = NULL;
-
-              if (original == NULL) {
-                  original = (void (*)(
-                      CFStringRef,
-                      CFPropertyListRef,
-                      CFStringRef,
-                      CFStringRef,
-                      CFStringRef
-                  ))dlsym(RTLD_NEXT, "CFPreferencesSetValue");
-              }
-
-              if (original == NULL) {
-                  return;
-              }
-
-              original(
-                  key,
-                  value,
-                  FBMapApplicationGroupCF(applicationID),
-                  userName,
-                  hostName
-              );
-          }
-
-          FB_INTERPOSE(
-              FB_CFPreferencesCopyAppValue,
-              CFPreferencesCopyAppValue
-          )
-
-          FB_INTERPOSE(
-              FB_CFPreferencesSetAppValue,
-              CFPreferencesSetAppValue
-          )
-
-          FB_INTERPOSE(
-              FB_CFPreferencesAppSynchronize,
-              CFPreferencesAppSynchronize
-          )
-
-          FB_INTERPOSE(
-              FB_CFPreferencesCopyValue,
-              CFPreferencesCopyValue
-          )
-
-          FB_INTERPOSE(
-              FB_CFPreferencesSetValue,
-              CFPreferencesSetValue
-          )
-
-          // ============================================================
-          // Startup
-          // ============================================================
+          /*
+           * Facebook Notification Fix - V2 DIAGNOSTIC
+           *
+           * Esta versão é intencionalmente NO-OP:
+           * - não faz swizzle;
+           * - não altera App Groups;
+           * - não toca em Keychain;
+           * - não intercepta CFPreferences;
+           * - apenas comprova que o mesmo dylib pode ser carregado
+           *   pelo Facebook principal e pela NotificationServiceExtension.
+           */
 
           __attribute__((constructor))
-          static void FBNotificationFixInitialize(void) {
+          static void FacebookNotificationFixDiagnosticInit(void) {
               @autoreleasepool {
-                  NSString *bundleID = [NSBundle mainBundle].bundleIdentifier;
+                  NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+                  NSString *processName = [[NSProcessInfo processInfo] processName];
 
                   NSLog(
-                      @"[FBNotifFix] Loaded in %@",
-                      bundleID ?: @"unknown.bundle"
+                      @"[FBNotifDiag] dylib carregado | bundle=%@ | processo=%@",
+                      bundleID ?: @"unknown.bundle",
+                      processName ?: @"unknown.process"
                   );
-
-                  // Resolve the runtime mapping immediately so diagnostic
-                  // logs show the entitlements granted to this process.
-                  (void)FBGroupMap();
-
-                  FBSwizzleInstanceMethod(
-                      [NSFileManager class],
-                      @selector(
-                          containerURLForSecurityApplicationGroupIdentifier:
-                      ),
-                      @selector(
-                          fbfix_containerURLForSecurityApplicationGroupIdentifier:
-                      )
-                  );
-
-                  FBSwizzleInstanceMethod(
-                      [NSUserDefaults class],
-                      @selector(initWithSuiteName:),
-                      @selector(fbfix_initWithSuiteName:)
-                  );
-
-                  NSLog(@"[FBNotifFix] Hooks installed");
               }
           }
           OBJC
 
-          echo "✅ Source created"
+          echo "✅ Fonte de diagnóstico criada"
           wc -l build/FacebookNotificationFix.m
 
       - name: Compile iOS arm64 dylib
@@ -718,15 +75,15 @@ jobs:
             -fobjc-arc \
             -isysroot "$SDK_PATH" \
             -framework Foundation \
-            -framework Security \
-            -framework CoreFoundation \
             -install_name "@rpath/FacebookNotificationFix.dylib" \
             -Wl,-dead_strip \
             build/FacebookNotificationFix.m \
             -o build/FacebookNotificationFix.dylib
 
+          chmod 755 build/FacebookNotificationFix.dylib
+
           echo
-          echo "✅ Dylib compiled"
+          echo "✅ Dylib compilado"
           file build/FacebookNotificationFix.dylib
           ls -lh build/FacebookNotificationFix.dylib
           shasum -a 256 build/FacebookNotificationFix.dylib
@@ -734,14 +91,24 @@ jobs:
           file build/FacebookNotificationFix.dylib \
             | grep -qi "arm64" \
             || {
-              echo "❌ Dylib is not arm64"
+              echo "❌ Dylib não é arm64"
               exit 1
             }
 
-      - name: Upload built dylib
+      - name: Inspect dylib load commands
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          xcrun otool -L build/FacebookNotificationFix.dylib
+          xcrun otool -l build/FacebookNotificationFix.dylib \
+            | grep -A3 -E 'LC_ID_DYLIB|LC_BUILD_VERSION|LC_VERSION_MIN' \
+            || true
+
+      - name: Upload diagnostic dylib
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-notification-fix-dylib
+          name: facebook-notification-fix-v2-dylib
           path: build/FacebookNotificationFix.dylib
           if-no-files-found: error
           retention-days: 3
@@ -775,27 +142,39 @@ jobs:
             zip
 
           python -m pip install --upgrade pip
+
           pip install --force-reinstall \
             https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
 
           echo
-          echo "✅ Cyan / pyzule-rw installed"
+          echo "✅ Dependências instaladas"
           cyan --version
 
-      - name: Download FacebookNotificationFix.dylib
+      - name: Download diagnostic dylib
         uses: actions/download-artifact@v4
         with:
-          name: facebook-notification-fix-dylib
+          name: facebook-notification-fix-v2-dylib
           path: fix
 
-      - name: Validate dylib artifact
+      - name: Validate downloaded dylib
         shell: bash
         run: |
           set -euo pipefail
 
           test -f fix/FacebookNotificationFix.dylib
+
+          chmod 755 fix/FacebookNotificationFix.dylib
+
           file fix/FacebookNotificationFix.dylib
           ls -lh fix/FacebookNotificationFix.dylib
+          sha256sum fix/FacebookNotificationFix.dylib
+
+          file fix/FacebookNotificationFix.dylib \
+            | grep -qi "arm64" \
+            || {
+              echo "❌ Dylib baixado não é arm64"
+              exit 1
+            }
 
       - name: Download Facebook IPA
         env:
@@ -805,11 +184,11 @@ jobs:
           set -euo pipefail
 
           if [ -z "$IPA_URL" ]; then
-            echo "❌ ipa_url is empty"
+            echo "❌ ipa_url vazio"
             exit 1
           fi
 
-          echo "📥 Downloading Facebook IPA..."
+          echo "📥 Baixando Facebook IPA..."
 
           curl \
             --fail \
@@ -820,141 +199,184 @@ jobs:
             "$IPA_URL"
 
           if ! unzip -tq input.ipa > /dev/null; then
-            echo "❌ Downloaded file is not a valid IPA/ZIP"
+            echo "❌ Arquivo baixado não é um IPA/ZIP válido"
             exit 1
           fi
 
           echo
-          echo "✅ IPA downloaded"
+          echo "✅ IPA válido"
           ls -lh input.ipa
+          sha256sum input.ipa
 
-      - name: Identify Facebook and prepare work directory
-        id: app
+      - name: Extract and identify Facebook targets
+        id: identify
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf work output
-          mkdir -p work output
+          rm -rf work
+          mkdir -p work
+
           unzip -q input.ipa -d work
 
           python <<'PY'
           import os
           import plistlib
-          import re
           from pathlib import Path
 
           payload = Path("work/Payload")
-          apps = sorted(payload.glob("*.app"))
+          apps = list(payload.glob("*.app"))
 
           if len(apps) != 1:
               raise SystemExit(
-                  f"❌ Expected exactly one main .app; found {len(apps)}"
+                  f"❌ Esperava 1 app principal; encontrei {len(apps)}"
               )
 
           app = apps[0]
-          info_path = app / "Info.plist"
+          app_plist_path = app / "Info.plist"
 
-          with info_path.open("rb") as f:
-              info = plistlib.load(f)
+          with app_plist_path.open("rb") as f:
+              app_plist = plistlib.load(f)
 
-          bundle_id = info.get("CFBundleIdentifier")
-          version = info.get("CFBundleShortVersionString", "Unknown")
-          executable = info.get("CFBundleExecutable")
+          bundle_id = app_plist.get("CFBundleIdentifier")
+          executable_name = app_plist.get("CFBundleExecutable")
+          version = app_plist.get(
+              "CFBundleShortVersionString",
+              "Unknown",
+          )
 
           if bundle_id != "com.facebook.Facebook":
               raise SystemExit(
-                  f"❌ Expected com.facebook.Facebook; got {bundle_id}"
+                  "❌ O IPA não é o Facebook esperado. "
+                  f"Bundle ID encontrado: {bundle_id}"
               )
 
-          if not executable:
-              raise SystemExit("❌ Main CFBundleExecutable is missing")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable ausente no Facebook"
+              )
 
-          main_binary = app / executable
+          main_executable = app / executable_name
 
-          extension = (
-              app
-              / "PlugIns"
-              / "NotificationServiceExtension.appex"
+          if not main_executable.is_file():
+              raise SystemExit(
+                  f"❌ Executável principal não encontrado: {main_executable}"
+              )
+
+          plugins = app / "PlugIns"
+
+          if not plugins.is_dir():
+              raise SystemExit(
+                  "❌ Diretório PlugIns não encontrado"
+              )
+
+          candidates = []
+
+          for appex in sorted(plugins.glob("*.appex")):
+              plist_path = appex / "Info.plist"
+
+              if not plist_path.is_file():
+                  continue
+
+              try:
+                  with plist_path.open("rb") as f:
+                      plist = plistlib.load(f)
+              except Exception:
+                  continue
+
+              ext = plist.get("NSExtension") or {}
+              point = ext.get("NSExtensionPointIdentifier")
+              bid = plist.get("CFBundleIdentifier", "")
+              exe = plist.get("CFBundleExecutable")
+
+              is_notification_service = (
+                  point == "com.apple.usernotifications.service"
+                  or "NotificationServiceExtension" in bid
+                  or appex.name == "NotificationServiceExtension.appex"
+              )
+
+              if is_notification_service and exe:
+                  binary = appex / exe
+
+                  if binary.is_file():
+                      candidates.append(
+                          (
+                              appex,
+                              binary,
+                              bid,
+                              point,
+                          )
+                      )
+
+          if len(candidates) != 1:
+              print("Extensões encontradas:")
+              for appex in sorted(plugins.glob("*.appex")):
+                  print(f" - {appex.name}")
+
+              raise SystemExit(
+                  "❌ Esperava exatamente 1 NotificationServiceExtension; "
+                  f"encontrei {len(candidates)}"
+              )
+
+          notification_appex, notification_executable, ext_bid, ext_point = (
+              candidates[0]
           )
 
-          extension_info_path = extension / "Info.plist"
+          output = os.environ["GITHUB_OUTPUT"]
 
-          if not extension_info_path.is_file():
-              raise SystemExit(
-                  "❌ NotificationServiceExtension.appex was not found"
+          with open(output, "a", encoding="utf-8") as out:
+              out.write(f"app_path={app}\n")
+              out.write(f"main_executable={main_executable}\n")
+              out.write(
+                  "notification_appex="
+                  f"{notification_appex}\n"
               )
-
-          with extension_info_path.open("rb") as f:
-              extension_info = plistlib.load(f)
-
-          extension_executable = extension_info.get("CFBundleExecutable")
-
-          if not extension_executable:
-              raise SystemExit(
-                  "❌ NotificationServiceExtension CFBundleExecutable is missing"
+              out.write(
+                  "notification_executable="
+                  f"{notification_executable}\n"
               )
+              out.write(f"version={version}\n")
 
-          extension_binary = extension / extension_executable
-
-          if not main_binary.is_file():
-              raise SystemExit(f"❌ Main executable missing: {main_binary}")
-
-          if not extension_binary.is_file():
-              raise SystemExit(
-                  f"❌ Notification extension executable missing: {extension_binary}"
-              )
-
-          safe_version = re.sub(r"[^A-Za-z0-9._-]+", "_", version)
-          output_name = (
-              f"Facebook-{safe_version}-NotificationFix-TEST.ipa"
-          )
-
-          values = {
-              "app_path": str(app),
-              "main_binary": str(main_binary),
-              "extension_binary": str(extension_binary),
-              "version": version,
-              "output_name": output_name,
-          }
-
-          with open(
-              os.environ["GITHUB_OUTPUT"],
-              "a",
-              encoding="utf-8",
-          ) as out:
-              for key, value in values.items():
-                  out.write(f"{key}={value}\n")
-
-          print("✅ Facebook identified")
+          print()
+          print("✅ Facebook identificado")
           print(f"📦 Bundle ID: {bundle_id}")
-          print(f"🔢 Version: {version}")
-          print(f"▶️ Main: {main_binary}")
-          print(f"🔔 Extension: {extension_binary}")
+          print(f"🔢 Versão: {version}")
+          print(f"▶️ Executável principal: {main_executable}")
+          print()
+          print("✅ NotificationServiceExtension identificada")
+          print(f"📦 Bundle ID: {ext_bid}")
+          print(f"🧩 Extension point: {ext_point}")
+          print(f"▶️ Executável: {notification_executable}")
           PY
 
-      - name: Copy fix dylib into Facebook Frameworks
+      - name: Copy diagnostic dylib into Facebook Frameworks
         env:
-          APP_PATH: ${{ steps.app.outputs.app_path }}
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
         shell: bash
         run: |
           set -euo pipefail
 
           FRAMEWORKS="$APP_PATH/Frameworks"
+
           mkdir -p "$FRAMEWORKS"
 
           cp \
             fix/FacebookNotificationFix.dylib \
             "$FRAMEWORKS/FacebookNotificationFix.dylib"
 
-          echo "✅ Dylib copied to:"
-          echo "$FRAMEWORKS/FacebookNotificationFix.dylib"
-          ls -lh "$FRAMEWORKS/FacebookNotificationFix.dylib"
+          chmod 755 \
+            "$FRAMEWORKS/FacebookNotificationFix.dylib"
 
-      - name: Inject fix into Facebook and NotificationServiceExtension
+          echo "✅ Dylib copiado para:"
+          echo "$FRAMEWORKS/FacebookNotificationFix.dylib"
+
+          file \
+            "$FRAMEWORKS/FacebookNotificationFix.dylib"
+
+      - name: Inject diagnostic dylib into Facebook and NotificationServiceExtension
         env:
-          MAIN_BINARY: ${{ steps.app.outputs.main_binary }}
-          EXTENSION_BINARY: ${{ steps.app.outputs.extension_binary }}
+          MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
+          NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
         shell: bash
         run: |
           set -euo pipefail
@@ -968,86 +390,129 @@ jobs:
 
           targets = [
               (
-                  "Facebook main executable",
-                  Path(os.environ["MAIN_BINARY"]),
-                  "@executable_path/Frameworks/FacebookNotificationFix.dylib",
+                  "Facebook principal",
+                  Path(os.environ["MAIN_EXECUTABLE"]),
+                  "@rpath/FacebookNotificationFix.dylib",
               ),
               (
                   "NotificationServiceExtension",
-                  Path(os.environ["EXTENSION_BINARY"]),
+                  Path(os.environ["NOTIFICATION_EXECUTABLE"]),
                   "@executable_path/../../Frameworks/FacebookNotificationFix.dylib",
               ),
           ]
 
           for label, binary, dependency in targets:
               print()
-              print(f"🔧 {label}")
-              print(f"   Binary: {binary}")
-              print(f"   Load:   {dependency}")
+              print("=" * 72)
+              print(f"🎯 {label}")
+              print(f"Binário: {binary}")
+              print(f"Dependência: {dependency}")
 
               if not binary.is_file():
-                  raise SystemExit(f"❌ Binary not found: {binary}")
-
-              executable = Executable(str(binary))
-              dependencies = executable.get_dependencies()
-
-              if dependency in dependencies:
-                  print("   ℹ️ Dependency already present; skipping injection")
-                  continue
-
-              if not Path(executable.idylib).is_file():
                   raise SystemExit(
-                      "❌ Cyan insert_dylib helper was not found: "
-                      f"{executable.idylib}"
+                      f"❌ Binário não encontrado: {binary}"
                   )
 
-              # The IPA will be re-signed in Feather after this workflow.
-              # Remove the stale Mach-O signature before changing load commands.
-              executable.remove_signature()
+              before = Executable(
+                  str(binary)
+              ).get_dependencies()
 
-              result = subprocess.run(
-                  [
-                      executable.idylib,
-                      "--inplace",
-                      "--all-yes",
-                      dependency,
-                      str(binary),
-                  ],
-                  text=True,
-                  capture_output=True,
+              print(
+                  "Dependência já existia antes:",
+                  dependency in before,
               )
 
-              if result.stdout.strip():
-                  print(result.stdout)
+              if dependency not in before:
+                  executable = Executable(str(binary))
 
-              if result.stderr.strip():
-                  print(result.stderr)
+                  if not Path(executable.idylib).is_file():
+                      raise SystemExit(
+                          "❌ insert_dylib do Cyan não encontrado: "
+                          f"{executable.idylib}"
+                      )
 
-              if result.returncode != 0:
-                  raise SystemExit(
-                      f"❌ insert_dylib failed for {label}: "
-                      f"exit {result.returncode}"
+                  # A assinatura Mach-O antiga ficará inválida após alterar
+                  # os load commands. O IPA será assinado no Feather depois.
+                  executable.remove_signature()
+
+                  result = subprocess.run(
+                      [
+                          executable.idylib,
+                          "--inplace",
+                          "--all-yes",
+                          dependency,
+                          str(binary),
+                      ],
+                      text=True,
+                      capture_output=True,
                   )
 
-              verified = Executable(str(binary)).get_dependencies()
+                  if result.stdout:
+                      print(result.stdout)
 
-              if dependency not in verified:
+                  if result.stderr:
+                      print(result.stderr)
+
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "❌ insert_dylib falhou em "
+                          f"{label}: código {result.returncode}"
+                      )
+
+              after = Executable(
+                  str(binary)
+              ).get_dependencies()
+
+              if dependency not in after:
                   raise SystemExit(
-                      f"❌ Dependency validation failed for {label}"
+                      f"❌ Dependência não encontrada após injeção em {label}"
                   )
 
-              print("   ✅ Injection validated")
+              print(f"✅ Injeção validada em {label}")
 
           print()
-          print("✅ Fix is loaded by both processes")
+          print("✅ Os dois executáveis carregam o dylib diagnóstico")
           PY
 
-      - name: Structural validation
+      - name: Validate that V1 hooks are absent from diagnostic dylib
         env:
-          APP_PATH: ${{ steps.app.outputs.app_path }}
-          MAIN_BINARY: ${{ steps.app.outputs.main_binary }}
-          EXTENSION_BINARY: ${{ steps.app.outputs.extension_binary }}
-          VERSION: ${{ steps.app.outputs.version }}
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DYLIB="$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
+
+          echo "🔎 Procurando símbolos/strings proibidos da V1..."
+
+          FORBIDDEN=(
+            "SecItemCopyMatching"
+            "SecItemAdd"
+            "SecItemUpdate"
+            "SecItemDelete"
+            "CFPreferencesCopyAppValue"
+            "CFPreferencesSetAppValue"
+            "containerURLForSecurityApplicationGroupIdentifier"
+            "initWithSuiteName"
+            "method_exchangeImplementations"
+            "T84QZS65DQ"
+            "group.com.facebook"
+          )
+
+          for token in "${FORBIDDEN[@]}"; do
+            if grep -aFq "$token" "$DYLIB"; then
+              echo "❌ A V2 diagnóstico contém token proibido: $token"
+              exit 1
+            fi
+          done
+
+          echo "✅ Nenhum hook da V1 está presente"
+
+      - name: Validate Mach-O dependencies
+        env:
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
+          MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
+          NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1059,78 +524,145 @@ jobs:
           from cyan.tbhtypes.executable import Executable
 
           app = Path(os.environ["APP_PATH"])
-          main = Path(os.environ["MAIN_BINARY"])
-          extension = Path(os.environ["EXTENSION_BINARY"])
-          dylib = app / "Frameworks" / "FacebookNotificationFix.dylib"
-
-          main_dependency = (
-              "@executable_path/Frameworks/FacebookNotificationFix.dylib"
+          main = Path(os.environ["MAIN_EXECUTABLE"])
+          extension = Path(
+              os.environ["NOTIFICATION_EXECUTABLE"]
           )
-
-          extension_dependency = (
-              "@executable_path/../../Frameworks/FacebookNotificationFix.dylib"
+          dylib = (
+              app
+              / "Frameworks"
+              / "FacebookNotificationFix.dylib"
           )
-
-          errors = []
 
           if not dylib.is_file():
-              errors.append(f"Missing dylib: {dylib}")
+              raise SystemExit(
+                  "❌ FacebookNotificationFix.dylib ausente"
+              )
 
-          main_deps = Executable(str(main)).get_dependencies()
-          extension_deps = Executable(str(extension)).get_dependencies()
+          main_required = (
+              "@rpath/FacebookNotificationFix.dylib"
+          )
 
-          if main_dependency not in main_deps:
-              errors.append("Main executable is not loading the fix")
+          extension_required = (
+              "@executable_path/../../Frameworks/"
+              "FacebookNotificationFix.dylib"
+          )
 
-          if extension_dependency not in extension_deps:
-              errors.append("NotificationServiceExtension is not loading the fix")
+          main_deps = Executable(
+              str(main)
+          ).get_dependencies()
 
-          if errors:
-              for error in errors:
-                  print(f"❌ {error}")
-              raise SystemExit(1)
+          ext_deps = Executable(
+              str(extension)
+          ).get_dependencies()
 
-          report = Path("output/facebook-notification-fix-report.txt")
+          if main_required not in main_deps:
+              raise SystemExit(
+                  "❌ Dependência diagnóstico ausente no Facebook"
+              )
 
-          report.write_text(
-              "\n".join(
-                  [
-                      "Facebook Notification Fix - Standalone Test",
-                      "=============================================",
-                      f"Facebook version: {os.environ['VERSION']}",
-                      "",
-                      f"Dylib: {dylib.relative_to(app)}",
-                      "",
-                      "Main dependency:",
-                      f"  {main_dependency}",
-                      "",
-                      "NotificationServiceExtension dependency:",
-                      f"  {extension_dependency}",
-                      "",
-                      "Runtime behavior:",
-                      "  - remaps original Facebook App Groups to granted groups",
-                      "  - strips unavailable T84QZS65DQ.* Keychain access groups",
-                      "  - applies CFPreferences/App Group mapping in both processes",
-                      "",
-                      "IMPORTANT:",
-                      "  This IPA is intentionally unsigned after Mach-O patching.",
-                      "  Sign it with Feather before installation.",
-                      "",
-                  ]
-              ),
+          if extension_required not in ext_deps:
+              raise SystemExit(
+                  "❌ Dependência diagnóstico ausente na extensão"
+              )
+
+          print("✅ Facebook principal:")
+          print(f"   {main_required}")
+
+          print("✅ NotificationServiceExtension:")
+          print(f"   {extension_required}")
+
+          print("✅ Dylib físico:")
+          print(f"   {dylib}")
+          PY
+
+      - name: Create diagnostic report
+        env:
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
+          MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
+          NOTIFICATION_APPEX: ${{ steps.identify.outputs.notification_appex }}
+          NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
+          APP_VERSION: ${{ steps.identify.outputs.version }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p output
+
+          python <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          app = Path(os.environ["APP_PATH"])
+          dylib = (
+              app
+              / "Frameworks"
+              / "FacebookNotificationFix.dylib"
+          )
+
+          digest = hashlib.sha256(
+              dylib.read_bytes()
+          ).hexdigest()
+
+          report_lines = [
+              "Facebook Notification Fix - V2 Diagnostic",
+              "",
+              "Facebook version:",
+              f"  {os.environ['APP_VERSION']}",
+              "",
+              "Main executable:",
+              f"  {os.environ['MAIN_EXECUTABLE']}",
+              "",
+              "Notification appex:",
+              f"  {os.environ['NOTIFICATION_APPEX']}",
+              "",
+              "Notification executable:",
+              f"  {os.environ['NOTIFICATION_EXECUTABLE']}",
+              "",
+              "Injected dylib:",
+              f"  {dylib}",
+              "",
+              "Dylib SHA-256:",
+              f"  {digest}",
+              "",
+              "V2 behavior:",
+              "  - NO App Group remapping",
+              "  - NO Keychain hooks",
+              "  - NO CFPreferences hooks",
+              "  - NO Objective-C method swizzling",
+              "  - constructor only logs bundle/process information",
+              "",
+              "Purpose:",
+              "  Determine whether simply loading a custom dylib in both the Facebook",
+              "  main process and NotificationServiceExtension is stable.",
+              "",
+              "IMPORTANT:",
+              "  This IPA is intentionally unsigned after Mach-O patching.",
+              "  Sign it with Feather before installation.",
+              "",
+          ]
+          report = "\n".join(report_lines)
+          Path(
+              "output/facebook-notification-fix-v2-report.txt"
+          ).write_text(
+              report,
               encoding="utf-8",
           )
 
-          print("✅ Structural validation passed")
-          print(report.read_text(encoding="utf-8"))
+          print(report)
           PY
 
       - name: Repack test IPA
         env:
-          OUTPUT_NAME: ${{ steps.app.outputs.output_name }}
+          APP_VERSION: ${{ steps.identify.outputs.version }}
         shell: bash
         run: |
           set -euo pipefail
+
+          OUTPUT_NAME="Facebook-${APP_VERSION}-NotifFix-V2-Diagnostic.ipa"
+
+          rm -f "output/$OUTPUT_NAME"
 
           (
             cd work
@@ -1138,21 +670,21 @@ jobs:
           )
 
           if ! unzip -tq "output/$OUTPUT_NAME" > /dev/null; then
-            echo "❌ Repacked IPA failed ZIP validation"
+            echo "❌ IPA final inválido"
             exit 1
           fi
 
-          echo "✅ Test IPA created"
+          echo
+          echo "✅ IPA de diagnóstico criado"
           ls -lh "output/$OUTPUT_NAME"
           sha256sum "output/$OUTPUT_NAME"
 
       - name: Upload test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-notification-fix-test
+          name: facebook-notification-fix-v2-diagnostic
           path: |
             output/*.ipa
-            output/facebook-notification-fix-report.txt
+            output/facebook-notification-fix-v2-report.txt
           if-no-files-found: error
-          compression-level: 0
           retention-days: 3
