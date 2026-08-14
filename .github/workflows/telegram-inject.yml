@@ -284,12 +284,14 @@ jobs:
           appex = prepared / "appex"
           icons = prepared / "icons"
           frameworks = prepared / "frameworks"
+          inject = prepared / "inject"
 
           for directory in (
               bundles,
               appex,
               icons,
               frameworks,
+              inject,
           ):
               directory.mkdir(parents=True)
 
@@ -302,7 +304,38 @@ jobs:
               print(f"📦 {path.name} -> {action}")
 
               if action == "inject":
-                  inject_files.append(str(path))
+                  if path.suffix.lower() == ".zip":
+                      target = inject / path.stem
+                      target.mkdir(parents=True, exist_ok=True)
+
+                      with zipfile.ZipFile(path, "r") as z:
+                          z.extractall(target)
+
+                      candidates = [
+                          item
+                          for item in target.rglob("*")
+                          if item.is_file()
+                          and item.suffix.lower() in {
+                              ".dylib",
+                              ".deb",
+                          }
+                      ]
+
+                      if len(candidates) != 1:
+                          raise SystemExit(
+                              "❌ ZIP de injeção deve conter "
+                              "exatamente um .dylib ou .deb: "
+                              f"{path}"
+                          )
+
+                      extracted = candidates[0]
+                      inject_files.append(str(extracted))
+                      print(
+                          "   ↳ extraído para injeção: "
+                          f"{extracted}"
+                      )
+                  else:
+                      inject_files.append(str(path))
 
               elif action == "bundle":
                   with zipfile.ZipFile(path, "r") as z:
