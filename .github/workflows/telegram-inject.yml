@@ -330,6 +330,7 @@ jobs:
           appex = prepared / "appex"
           icons = prepared / "icons"
           frameworks = prepared / "frameworks"
+          root_files = prepared / "root"
           inject = prepared / "inject"
 
           for directory in (
@@ -337,6 +338,7 @@ jobs:
               appex,
               icons,
               frameworks,
+              root_files,
               inject,
           ):
               directory.mkdir(parents=True)
@@ -399,6 +401,10 @@ jobs:
                   with zipfile.ZipFile(path, "r") as z:
                       z.extractall(frameworks)
 
+              elif action == "root":
+                  with zipfile.ZipFile(path, "r") as z:
+                      z.extractall(root_files)
+
               else:
                   raise SystemExit(
                       f"❌ Ação desconhecida: {action}"
@@ -418,6 +424,7 @@ jobs:
           print(f"✅ {len(list(appex.iterdir()))} appex")
           print(f"✅ {len(list(icons.iterdir()))} ícone(s)")
           print(f"✅ {len(list(frameworks.iterdir()))} framework(s)")
+          print(f"✅ {len(list(root_files.iterdir()))} item(ns) de raiz")
           PY
 
       # =========================================================
@@ -1319,6 +1326,10 @@ jobs:
                   "sideloadbypass1.dylib",
                   "sideloadbypass2.dylib",
               ],
+              "net.whatsapp.WhatsApp": [
+                  "Watusi.dylib",
+                  "libWatusiToolsSL.dylib",
+              ],
           }
 
           work = Path("layout_work")
@@ -1803,16 +1814,24 @@ jobs:
           echo "ℹ️ IPA Patch não necessário para este app"
 
       # =========================================================
-      # 10. BUNDLES E APPEX - OUTROS APPS
+      # 10. ARQUIVOS EXTRAS - OUTROS APPS
       # =========================================================
 
-      - name: Add bundles and extra extensions
+      - name: Add root files, frameworks, bundles and extra extensions
         if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
         run: |
           python <<'PY'
+          import json
           import shutil
           import zipfile
           from pathlib import Path
+
+          with open(
+              "selected_addon.json",
+              "r",
+              encoding="utf-8",
+          ) as f:
+              addon = json.load(f)
 
           work = Path(
               "package_work"
@@ -1839,6 +1858,88 @@ jobs:
               )
 
           app = apps[0]
+
+          root_source = Path(
+              "prepared/root"
+          )
+
+          if root_source.exists():
+              for item in root_source.iterdir():
+                  destination = (
+                      app
+                      / item.name
+                  )
+
+                  if destination.exists():
+                      if destination.is_dir():
+                          shutil.rmtree(
+                              destination
+                          )
+                      else:
+                          destination.unlink()
+
+                  if item.is_dir():
+                      shutil.copytree(
+                          item,
+                          destination,
+                      )
+                  else:
+                      shutil.copy2(
+                          item,
+                          destination,
+                      )
+
+                  print(
+                      f"📁 Raiz: {item.name}"
+                  )
+
+          frameworks_source = Path(
+              "prepared/frameworks"
+          )
+
+          if (
+              frameworks_source.exists()
+              and any(
+                  frameworks_source.iterdir()
+              )
+          ):
+              frameworks_destination = (
+                  app
+                  / "Frameworks"
+              )
+
+              frameworks_destination.mkdir(
+                  exist_ok=True
+              )
+
+              for item in frameworks_source.iterdir():
+                  destination = (
+                      frameworks_destination
+                      / item.name
+                  )
+
+                  if destination.exists():
+                      if destination.is_dir():
+                          shutil.rmtree(
+                              destination
+                          )
+                      else:
+                          destination.unlink()
+
+                  if item.is_dir():
+                      shutil.copytree(
+                          item,
+                          destination,
+                      )
+                  else:
+                      shutil.copy2(
+                          item,
+                          destination,
+                      )
+
+                  print(
+                      f"🧱 Framework: {item.name}"
+                  )
 
           bundle_source = Path(
               "prepared/bundles"
@@ -1922,6 +2023,39 @@ jobs:
                       f"🧩 APPEX extra: {item.name}"
                   )
 
+          for relative_path in addon.get(
+              "remove_paths",
+              [],
+          ):
+              relative = Path(
+                  relative_path
+              )
+
+              if (
+                  relative.is_absolute()
+                  or ".." in relative.parts
+              ):
+                  raise SystemExit(
+                      "❌ remove_paths contém caminho inválido: "
+                      f"{relative_path}"
+                  )
+
+              target = app / relative
+
+              if target.exists():
+                  if target.is_dir():
+                      shutil.rmtree(target)
+                  else:
+                      target.unlink()
+
+                  print(
+                      f"🧹 Removido: {relative_path}"
+                  )
+              else:
+                  print(
+                      f"ℹ️ Caminho já ausente: {relative_path}"
+                  )
+
           output = Path(
               "Package_Output.ipa"
           )
@@ -1942,7 +2076,7 @@ jobs:
                       )
 
           print(
-              "✅ Bundles e APPEX extras adicionados"
+              "✅ Arquivos extras adicionados"
           )
           PY
 
@@ -2070,6 +2204,221 @@ jobs:
       # =========================================================
       # 12. VALIDAÇÃO
       # =========================================================
+
+      - name: Validate WhatsApp Watusi Fouad layout
+        if: ${{ steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("whatsapp_validate")
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+          with zipfile.ZipFile(
+              "Final.ipa",
+              "r",
+          ) as z:
+              z.extractall(work)
+
+          apps = list(
+              (work / "Payload").glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ WhatsApp principal não identificado"
+              )
+
+          app = apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              plist = plistlib.load(f)
+
+          if plist.get("CFBundleIdentifier") != "net.whatsapp.WhatsApp":
+              raise SystemExit(
+                  "❌ Bundle ID do WhatsApp inesperado"
+              )
+
+          executable_name = plist.get("CFBundleExecutable")
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable do WhatsApp ausente"
+              )
+
+          executable_path = app / executable_name
+          dependencies = Executable(
+              str(executable_path)
+          ).get_dependencies()
+
+          required_main = {
+              "@executable_path/Watusi.dylib",
+              "@executable_path/libWatusiToolsSL.dylib",
+          }
+
+          missing_main = sorted(
+              required_main - set(dependencies)
+          )
+
+          if missing_main:
+              raise SystemExit(
+                  "❌ Dependência principal ausente: "
+                  + ", ".join(missing_main)
+              )
+
+          forbidden_main = {
+              "@rpath/Watusi.dylib",
+              "@rpath/libWatusiToolsSL.dylib",
+              "@executable_path/ContactSync.dylib",
+              "@executable_path/OnlineNotify.dylib",
+              "@executable_path/Stalky.dylib",
+              "@rpath/ContactSync.dylib",
+              "@rpath/OnlineNotify.dylib",
+              "@rpath/Stalky.dylib",
+              "@rpath/zxPluginsInject.dylib",
+          }
+
+          unexpected = sorted(
+              forbidden_main & set(dependencies)
+          )
+
+          if unexpected:
+              raise SystemExit(
+                  "❌ Dependência inesperada no WhatsApp: "
+                  + ", ".join(unexpected)
+              )
+
+          required_root = [
+              "Watusi.dylib",
+              "libWatusiToolsSL.dylib",
+              "ContactSync.dylib",
+              "OnlineNotify.dylib",
+              "Stalky.dylib",
+              "Watusi.bundle",
+              "WatusiTools.bundle",
+              "ContactSync.bundle",
+              "OnlineNotify.bundle",
+              "Stalky.bundle",
+          ]
+
+          for name in required_root:
+              if not (app / name).exists():
+                  raise SystemExit(
+                      f"❌ Componente Watusi ausente na raiz: {name}"
+                  )
+
+          vendor = (
+              app
+              / "Frameworks"
+              / "WSVendor.framework"
+              / "WSVendor"
+          )
+
+          if not vendor.is_file():
+              raise SystemExit(
+                  "❌ WSVendor.framework ausente"
+              )
+
+          migration = (
+              app
+              / "Extensions"
+              / "AppMigrationExtension.appex"
+          )
+
+          if migration.exists():
+              raise SystemExit(
+                  "❌ AppMigrationExtension.appex deveria ter sido removida"
+              )
+
+          expected_plugins = {
+              "BroadcastUploadExtension.appex",
+              "Intents.appex",
+              "NotificationExtension.appex",
+              "ServiceExtension.appex",
+              "ShareExtension.appex",
+              "WidgetExtension.appex",
+          }
+
+          plugins = app / "PlugIns"
+          actual_plugins = {
+              item.name
+              for item in plugins.glob("*.appex")
+          }
+
+          if actual_plugins != expected_plugins:
+              raise SystemExit(
+                  "❌ Conjunto de extensões do WhatsApp mudou. "
+                  f"Esperado: {sorted(expected_plugins)}; "
+                  f"encontrado: {sorted(actual_plugins)}"
+              )
+
+          forbidden_plugin_tokens = (
+              "Watusi.dylib",
+              "libWatusiToolsSL.dylib",
+              "ContactSync.dylib",
+              "OnlineNotify.dylib",
+              "Stalky.dylib",
+              "zxPluginsInject.dylib",
+          )
+
+          for extension in sorted(plugins.glob("*.appex")):
+              plist_path = extension / "Info.plist"
+
+              with plist_path.open("rb") as f:
+                  extension_plist = plistlib.load(f)
+
+              extension_executable_name = extension_plist.get(
+                  "CFBundleExecutable"
+              )
+
+              if not extension_executable_name:
+                  raise SystemExit(
+                      f"❌ CFBundleExecutable ausente em {extension.name}"
+                  )
+
+              extension_executable = (
+                  extension
+                  / extension_executable_name
+              )
+
+              extension_dependencies = Executable(
+                  str(extension_executable)
+              ).get_dependencies()
+
+              bad = [
+                  dependency
+                  for dependency in extension_dependencies
+                  if any(
+                      token in dependency
+                      for token in forbidden_plugin_tokens
+                  )
+              ]
+
+              if bad:
+                  raise SystemExit(
+                      "❌ Tweak injetado indevidamente em "
+                      f"{extension.name}: {bad}"
+                  )
+
+          print(
+              "✅ WhatsApp segue o layout Watusi/Fouad auditado"
+          )
+          print(
+              "✅ 6 extensões originais preservadas sem Watusi/IPA Patch"
+          )
+          print(
+              "✅ AppMigrationExtension.appex removida seletivamente"
+          )
+          PY
 
       - name: Validate final IPA
         run: |
