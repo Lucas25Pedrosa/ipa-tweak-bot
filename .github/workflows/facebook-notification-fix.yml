@@ -1,4 +1,4 @@
-name: Facebook Notification Fix - V5 Rich Notification Probe
+name: Facebook Notification Fix - V6 Safe Pass-Through Probe
 
 on:
   workflow_dispatch:
@@ -19,7 +19,7 @@ jobs:
     timeout-minutes: 20
 
     steps:
-      - name: Create narrow rich-notification probe source
+      - name: Create safe pass-through probe source
         shell: bash
         run: |
           set -euo pipefail
@@ -31,104 +31,64 @@ jobs:
           #import <objc/runtime.h>
 
           /*
-           * Facebook Notification Fix - V5 RICH NOTIFICATION PROBE
+           * Facebook Notification Fix - V6 SAFE PASS-THROUGH PROBE
            *
-           * Primeiro teste funcional no pipeline real:
+           * Objetivo:
+           * - manter exatamente o mesmo loader estável do IPA Patch;
+           * - carregar somente na NotificationServiceExtension;
+           * - interceptar o método de entrada da FBNotificationService;
+           * - NÃO embrulhar o contentHandler;
+           * - NÃO alterar request;
+           * - NÃO alterar content;
+           * - NÃO alterar App Groups;
+           * - NÃO alterar Keychain;
+           * - NÃO alterar CFPreferences;
+           * - NÃO alterar o Facebook principal.
            *
-           * - carrega SOMENTE na NotificationServiceExtension;
-           * - usa o mesmo IPA Patch estável da V4;
-           * - NÃO mexe em App Groups;
-           * - NÃO mexe em Keychain;
-           * - NÃO mexe em CFPreferences;
-           * - NÃO mexe no Facebook principal;
-           * - intercepta somente:
+           * O hook simplesmente chama o método original com os MESMOS
+           * argumentos recebidos.
            *
-           *   -[FBNotificationService
-           *      didReceiveNotificationRequest:withContentHandler:]
-           *
-           * O processamento original continua normalmente.
-           *
-           * Quando o contentHandler original é chamado, o V5 adiciona
-           * "[V5] " no início do corpo FINAL da notificação.
+           * Interpretação:
+           * - se as notificações visíveis voltarem, o problema da V5 era
+           *   especificamente o wrapper do contentHandler;
+           * - se continuarem sem aparecer, o simples hook desse método já
+           *   interfere e devemos abandonar esse ponto de interceptação.
            */
 
-          typedef void (^FBV5ContentHandler)(UNNotificationContent *content);
+          typedef void (^FBV6ContentHandler)(UNNotificationContent *content);
 
-          typedef void (*FBV5ReceiveIMP)(
+          typedef void (*FBV6ReceiveIMP)(
               id self,
               SEL _cmd,
               UNNotificationRequest *request,
-              FBV5ContentHandler contentHandler
+              FBV6ContentHandler contentHandler
           );
 
-          static FBV5ReceiveIMP gFBV5OriginalReceive = NULL;
-          static BOOL gFBV5Installed = NO;
+          static FBV6ReceiveIMP gFBV6OriginalReceive = NULL;
+          static BOOL gFBV6Installed = NO;
 
-          static void FBV5Receive(
+          static void FBV6Receive(
               id self,
               SEL _cmd,
               UNNotificationRequest *request,
-              FBV5ContentHandler contentHandler
+              FBV6ContentHandler contentHandler
           ) {
-              FBV5ReceiveIMP original = gFBV5OriginalReceive;
+              FBV6ReceiveIMP original = gFBV6OriginalReceive;
 
               if (!original) {
                   return;
               }
 
-              if (!contentHandler) {
-                  original(
-                      self,
-                      _cmd,
-                      request,
-                      contentHandler
-                  );
-                  return;
-              }
-
-              FBV5ContentHandler wrappedHandler = ^(
-                  UNNotificationContent *content
-              ) {
-                  @autoreleasepool {
-                      if (!content) {
-                          contentHandler(content);
-                          return;
-                      }
-
-                      UNMutableNotificationContent *mutableContent =
-                          [content mutableCopy];
-
-                      if (!mutableContent) {
-                          contentHandler(content);
-                          return;
-                      }
-
-                      NSString *body = mutableContent.body ?: @"";
-
-                      if (![body hasPrefix:@"[V5] "]) {
-                          if (body.length > 0) {
-                              mutableContent.body =
-                                  [@"[V5] " stringByAppendingString:body];
-                          } else {
-                              mutableContent.body =
-                                  @"[V5] NotificationServiceExtension executou";
-                          }
-                      }
-
-                      contentHandler(mutableContent);
-                  }
-              };
-
               original(
                   self,
                   _cmd,
                   request,
-                  wrappedHandler
+                  contentHandler
               );
           }
 
-          static void FBV5InstallHook(void) {
-              if (gFBV5Installed) {
+          static void FBV6InstallHook(void) {
+              if (gFBV6Installed) {
                   return;
               }
 
@@ -163,30 +123,26 @@ jobs:
               const char *types =
                   method_getTypeEncoding(method);
 
-              gFBV5OriginalReceive =
-                  (FBV5ReceiveIMP)originalIMP;
+              gFBV6OriginalReceive =
+                  (FBV6ReceiveIMP)originalIMP;
 
-              /*
-               * Se o método for herdado, instala o hook só nesta classe.
-               * Se o método for próprio da classe, troca apenas esse IMP.
-               */
               if (!class_addMethod(
                       targetClass,
                       selector,
-                      (IMP)FBV5Receive,
+                      (IMP)FBV6Receive,
                       types
                   )) {
                   method_setImplementation(
                       method,
-                      (IMP)FBV5Receive
+                      (IMP)FBV6Receive
                   );
               }
 
-              gFBV5Installed = YES;
+              gFBV6Installed = YES;
           }
 
           __attribute__((constructor))
-          static void FBV5Init(void) {
+          static void FBV6Init(void) {
               @autoreleasepool {
                   NSString *bundleID =
                       [[NSBundle mainBundle] bundleIdentifier];
@@ -196,12 +152,12 @@ jobs:
                       return;
                   }
 
-                  FBV5InstallHook();
+                  FBV6InstallHook();
               }
           }
           OBJC
 
-          echo "✅ Fonte V5 criada"
+          echo "✅ Fonte V6 criada"
           wc -l build/FacebookNotificationFix.m
 
       - name: Compile iOS arm64 dylib
@@ -242,7 +198,7 @@ jobs:
               exit 1
             }
 
-      - name: Validate V5 dylib dependencies and scope
+      - name: Validate V6 dylib dependencies and scope
         shell: bash
         run: |
           set -euo pipefail
@@ -261,7 +217,7 @@ jobs:
           if strings build/FacebookNotificationFix.dylib \
             | grep -Eq \
               'SecItem|CFPreferences|containerURLForSecurityApplicationGroupIdentifier|T84QZS65DQ|group\.com\.facebook'; then
-            echo "❌ V5 contém hook/identificador fora do escopo"
+            echo "❌ V6 contém hook/identificador fora do escopo"
             exit 1
           fi
 
@@ -273,16 +229,12 @@ jobs:
             | grep -F "didReceiveNotificationRequest:withContentHandler:" \
             > /dev/null
 
-          strings build/FacebookNotificationFix.dylib \
-            | grep -F "[V5] " \
-            > /dev/null
+          echo "✅ V6 contém somente o hook pass-through de UserNotifications"
 
-          echo "✅ V5 contém somente o probe estreito de UserNotifications"
-
-      - name: Upload V5 probe dylib
+      - name: Upload V6 probe dylib
         uses: actions/upload-artifact@v6
         with:
-          name: facebook-notification-fix-v5-probe-dylib
+          name: facebook-notification-fix-v6-pass-through-dylib
           path: build/FacebookNotificationFix.dylib
           if-no-files-found: error
           retention-days: 3
@@ -334,10 +286,10 @@ jobs:
           echo "✅ IPA Patch instalado"
           ./ipapatch --version
 
-      - name: Download V5 probe dylib
+      - name: Download V6 probe dylib
         uses: actions/download-artifact@v7
         with:
-          name: facebook-notification-fix-v5-probe-dylib
+          name: facebook-notification-fix-v6-pass-through-dylib
           path: fix
 
       - name: Validate downloaded dylib
@@ -816,7 +768,7 @@ jobs:
 
           echo "🩹 Aplicando o MESMO injetor do IPA Patch"
           echo "🩹 Modo: plugins-only"
-          echo "🧩 Dylib custom: FacebookNotificationFix.dylib (probe V5)"
+          echo "🧩 Dylib custom: FacebookNotificationFix.dylib (probe V6)"
 
           ./ipapatch \
             --input isolated-input.ipa \
@@ -929,7 +881,7 @@ jobs:
           echo "✅ Apenas o executável da NSE foi substituído"
           echo "✅ Dylib custom copiado para Frameworks"
 
-      - name: Validate V5 structure
+      - name: Validate V6 structure
         env:
           APP_PATH: ${{ steps.identify.outputs.app_path }}
           MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
@@ -1147,7 +1099,7 @@ jobs:
                       f"{appex.name}"
                   )
 
-          print("✅ V5 validada:")
+          print("✅ V6 validada:")
           print(
               " - Facebook principal: sem fix"
           )
@@ -1179,15 +1131,15 @@ jobs:
           sha256sum "$MAIN_EXECUTABLE"
 
           echo
-          echo "🔎 SHA NSE V5:"
+          echo "🔎 SHA NSE V6:"
           sha256sum "$NOTIFICATION_EXECUTABLE"
 
           echo
-          echo "🔎 SHA dylib V5:"
+          echo "🔎 SHA dylib V6:"
           sha256sum \
             "$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
 
-      - name: Repack V5 IPA
+      - name: Repack V6 IPA
         env:
           APP_VERSION: ${{ steps.identify.outputs.version }}
         shell: bash
@@ -1196,7 +1148,7 @@ jobs:
 
           mkdir -p output
 
-          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V5-RichNotificationProbe-UNSIGNED.ipa"
+          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V6-SafePassThrough-UNSIGNED.ipa"
 
           (
             cd baseline
@@ -1207,68 +1159,67 @@ jobs:
             "output/$OUTPUT_NAME" \
             > /dev/null
 
-          cat > output/facebook-notification-fix-v5-report.txt <<'REPORT'
-          Facebook Notification Fix - V5 RICH NOTIFICATION PROBE
+          cat > output/facebook-notification-fix-v6-report.txt <<'REPORT'
+          Facebook Notification Fix - V6 SAFE PASS-THROUGH PROBE
 
-          OBJETIVO DESTA RODADA
-          ---------------------
-          Este é o primeiro teste no pipeline REAL de notificações.
+          OBJETIVO
+          --------
+          Isolar se o problema observado na V5 foi causado pelo wrapper do
+          contentHandler.
 
-          Durante a preparação da V5 foi confirmado no código-fonte do
-          zxPluginsInject que o IPA Patch já corrige App Group e Keychain.
-          Por isso NÃO duplicamos esses hooks.
-
-          O QUE A V5 FAZ
+          O QUE A V6 FAZ
           ---------------
-          - Mantém o mesmo método de injeção do IPA Patch que abriu na V4.
+          - Mantém o mesmo IPA Patch estável da V4/V5.
           - O Facebook principal NÃO recebe o fix.
           - Somente NotificationServiceExtension recebe FacebookNotificationFix.
           - O zxPluginsInject original continua presente.
           - Glow continua intacto no Facebook principal.
-          - O dylib intercepta somente:
+          - O hook intercepta somente:
               -[FBNotificationService
                  didReceiveNotificationRequest:withContentHandler:]
-          - O processamento original da extensão continua.
-          - Quando o contentHandler é chamado, a V5 adiciona "[V5] "
-            no início do corpo final da notificação.
+          - O hook chama o método original imediatamente usando:
+              * o MESMO request;
+              * o MESMO contentHandler.
+          - Nenhum conteúdo é modificado.
+          - Nenhum badge é modificado.
+          - Nenhum App Group é modificado.
+          - Nenhum acesso ao Keychain é modificado.
+          - Nenhum CFPreferences é modificado.
 
           COMO INTERPRETAR
           ----------------
-          1. Se chegar uma notificação com "[V5]" no corpo:
-             A NotificationServiceExtension executou e chegou ao
-             contentHandler. A próxima etapa será investigar por que o
-             conteúdo enriquecido original não está sendo produzido.
+          1. Facebook abre + notificações visíveis voltam:
+             O wrapper do contentHandler da V5 foi a causa do bloqueio das
+             notificações. O próximo teste deve usar outro ponto de observação.
 
-          2. Se continuar chegando exatamente:
-             "Você tem uma nova notificação."
-             sem "[V5]":
-             O conteúdo exibido não passou pelo contentHandler da
-             FBNotificationService. Isso aponta para falha antes do
-             processamento final da extensão, ausência de mutable-content,
-             timeout/crash da extensão ou limitação de assinatura/provisionamento.
+          2. Facebook abre + badges chegam + notificações continuam ausentes:
+             O simples hook desse método já interfere. Devemos abandonar
+             didReceiveNotificationRequest:withContentHandler: como ponto
+             de interceptação.
 
           NODE 24
           -------
-          A V5 usa versões Node 24 das actions de artifact:
           - actions/upload-artifact@v6
           - actions/download-artifact@v7
+          - actions/checkout@v5
+          - actions/setup-python@v6
 
           IMPORTANTE
           ----------
-          O IPA final está sem assinatura válida após a alteração.
+          O IPA final fica sem assinatura válida após a alteração.
           Assine no Feather antes de instalar.
           REPORT
 
-          echo "✅ IPA V5 criado"
+          echo "✅ IPA V6 criado"
           ls -lh "output/$OUTPUT_NAME"
           sha256sum "output/$OUTPUT_NAME"
 
-      - name: Upload V5 test IPA
+      - name: Upload V6 test IPA
         uses: actions/upload-artifact@v6
         with:
-          name: facebook-notification-fix-v5-rich-notification-probe
+          name: facebook-notification-fix-v6-safe-pass-through
           path: |
             output/*.ipa
-            output/facebook-notification-fix-v5-report.txt
+            output/facebook-notification-fix-v6-report.txt
           if-no-files-found: error
           retention-days: 3
