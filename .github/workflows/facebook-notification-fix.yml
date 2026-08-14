@@ -1,4 +1,4 @@
-name: Facebook Notification Fix - V4 IPA Patch Loader
+name: Facebook Notification Fix - V5 Rich Notification Probe
 
 on:
   workflow_dispatch:
@@ -14,50 +14,195 @@ permissions:
 
 jobs:
   build-fix:
-    name: Build minimal diagnostic dylib
+    name: Build narrow UserNotifications probe
     runs-on: macos-latest
     timeout-minutes: 20
 
     steps:
-      - name: Create minimal C source
+      - name: Create narrow rich-notification probe source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
 
-          cat > build/FacebookNotificationFix.c <<'C'
+          cat > build/FacebookNotificationFix.m <<'OBJC'
+          #import <Foundation/Foundation.h>
+          #import <UserNotifications/UserNotifications.h>
+          #import <objc/runtime.h>
+
           /*
-           * Facebook Notification Fix - V4 IPA PATCH LOADER
+           * Facebook Notification Fix - V5 RICH NOTIFICATION PROBE
            *
-           * Diagnóstico deliberadamente mínimo:
-           * - C puro;
-           * - sem Foundation;
-           * - sem Objective-C;
-           * - sem hooks;
-           * - sem App Groups;
-           * - sem Keychain;
-           * - sem CFPreferences.
+           * Primeiro teste funcional no pipeline real:
            *
-           * O objetivo desta rodada é testar APENAS o método de injeção
-           * do IPA Patch que já é usado com sucesso nas extensões do
-           * Facebook, sem usar o injetor manual das V2/V3.
+           * - carrega SOMENTE na NotificationServiceExtension;
+           * - usa o mesmo IPA Patch estável da V4;
+           * - NÃO mexe em App Groups;
+           * - NÃO mexe em Keychain;
+           * - NÃO mexe em CFPreferences;
+           * - NÃO mexe no Facebook principal;
+           * - intercepta somente:
+           *
+           *   -[FBNotificationService
+           *      didReceiveNotificationRequest:withContentHandler:]
+           *
+           * O processamento original continua normalmente.
+           *
+           * Quando o contentHandler original é chamado, o V5 adiciona
+           * "[V5] " no início do corpo FINAL da notificação.
            */
 
-          static volatile int g_fb_notification_fix_loaded = 0;
+          typedef void (^FBV5ContentHandler)(UNNotificationContent *content);
+
+          typedef void (*FBV5ReceiveIMP)(
+              id self,
+              SEL _cmd,
+              UNNotificationRequest *request,
+              FBV5ContentHandler contentHandler
+          );
+
+          static FBV5ReceiveIMP gFBV5OriginalReceive = NULL;
+          static BOOL gFBV5Installed = NO;
+
+          static void FBV5Receive(
+              id self,
+              SEL _cmd,
+              UNNotificationRequest *request,
+              FBV5ContentHandler contentHandler
+          ) {
+              FBV5ReceiveIMP original = gFBV5OriginalReceive;
+
+              if (!original) {
+                  return;
+              }
+
+              if (!contentHandler) {
+                  original(
+                      self,
+                      _cmd,
+                      request,
+                      contentHandler
+                  );
+                  return;
+              }
+
+              FBV5ContentHandler wrappedHandler = ^(
+                  UNNotificationContent *content
+              ) {
+                  @autoreleasepool {
+                      if (!content) {
+                          contentHandler(content);
+                          return;
+                      }
+
+                      UNMutableNotificationContent *mutableContent =
+                          [content mutableCopy];
+
+                      if (!mutableContent) {
+                          contentHandler(content);
+                          return;
+                      }
+
+                      NSString *body = mutableContent.body ?: @"";
+
+                      if (![body hasPrefix:@"[V5] "]) {
+                          if (body.length > 0) {
+                              mutableContent.body =
+                                  [@"[V5] " stringByAppendingString:body];
+                          } else {
+                              mutableContent.body =
+                                  @"[V5] NotificationServiceExtension executou";
+                          }
+                      }
+
+                      contentHandler(mutableContent);
+                  }
+              };
+
+              original(
+                  self,
+                  _cmd,
+                  request,
+                  wrappedHandler
+              );
+          }
+
+          static void FBV5InstallHook(void) {
+              if (gFBV5Installed) {
+                  return;
+              }
+
+              Class targetClass =
+                  objc_getClass("FBNotificationService");
+
+              if (!targetClass) {
+                  return;
+              }
+
+              SEL selector = sel_registerName(
+                  "didReceiveNotificationRequest:withContentHandler:"
+              );
+
+              Method method =
+                  class_getInstanceMethod(
+                      targetClass,
+                      selector
+                  );
+
+              if (!method) {
+                  return;
+              }
+
+              IMP originalIMP =
+                  method_getImplementation(method);
+
+              if (!originalIMP) {
+                  return;
+              }
+
+              const char *types =
+                  method_getTypeEncoding(method);
+
+              gFBV5OriginalReceive =
+                  (FBV5ReceiveIMP)originalIMP;
+
+              /*
+               * Se o método for herdado, instala o hook só nesta classe.
+               * Se o método for próprio da classe, troca apenas esse IMP.
+               */
+              if (!class_addMethod(
+                      targetClass,
+                      selector,
+                      (IMP)FBV5Receive,
+                      types
+                  )) {
+                  method_setImplementation(
+                      method,
+                      (IMP)FBV5Receive
+                  );
+              }
+
+              gFBV5Installed = YES;
+          }
 
           __attribute__((constructor))
-          static void FBNotificationFixLoaderDiagnosticInit(void) {
-              g_fb_notification_fix_loaded = 1;
-          }
+          static void FBV5Init(void) {
+              @autoreleasepool {
+                  NSString *bundleID =
+                      [[NSBundle mainBundle] bundleIdentifier];
 
-          __attribute__((visibility("default")))
-          int FBNotificationFixDiagnosticMarker(void) {
-              return g_fb_notification_fix_loaded;
-          }
-          C
+                  if (![bundleID isEqualToString:
+                          @"com.facebook.Facebook.NotificationServiceExtension"]) {
+                      return;
+                  }
 
-          echo "✅ Fonte mínima criada"
-          wc -l build/FacebookNotificationFix.c
+                  FBV5InstallHook();
+              }
+          }
+          OBJC
+
+          echo "✅ Fonte V5 criada"
+          wc -l build/FacebookNotificationFix.m
 
       - name: Compile iOS arm64 dylib
         shell: bash
@@ -72,10 +217,14 @@ jobs:
             -arch arm64 \
             -dynamiclib \
             -Os \
+            -fobjc-arc \
+            -fblocks \
             -isysroot "$SDK_PATH" \
+            -framework Foundation \
+            -framework UserNotifications \
             -install_name "@rpath/FacebookNotificationFix.dylib" \
             -Wl,-dead_strip \
-            build/FacebookNotificationFix.c \
+            build/FacebookNotificationFix.m \
             -o build/FacebookNotificationFix.dylib
 
           chmod 755 build/FacebookNotificationFix.dylib
@@ -93,7 +242,7 @@ jobs:
               exit 1
             }
 
-      - name: Validate minimal dylib
+      - name: Validate V5 dylib dependencies and scope
         shell: bash
         run: |
           set -euo pipefail
@@ -101,24 +250,45 @@ jobs:
           echo "🔎 Dependências do dylib:"
           xcrun otool -L build/FacebookNotificationFix.dylib
 
-          if xcrun otool -L build/FacebookNotificationFix.dylib \
-            | grep -Eq 'Foundation|CoreFoundation|Security|UIKit|libobjc'; then
-            echo "❌ O dylib mínimo trouxe framework/ObjC inesperado"
+          xcrun otool -L build/FacebookNotificationFix.dylib \
+            | grep -F "Foundation.framework/Foundation" \
+            > /dev/null
+
+          xcrun otool -L build/FacebookNotificationFix.dylib \
+            | grep -F "UserNotifications.framework/UserNotifications" \
+            > /dev/null
+
+          if strings build/FacebookNotificationFix.dylib \
+            | grep -Eq \
+              'SecItem|CFPreferences|containerURLForSecurityApplicationGroupIdentifier|T84QZS65DQ|group\.com\.facebook'; then
+            echo "❌ V5 contém hook/identificador fora do escopo"
             exit 1
           fi
 
-          echo "✅ Dylib é C puro e mínimo"
+          strings build/FacebookNotificationFix.dylib \
+            | grep -F "FBNotificationService" \
+            > /dev/null
 
-      - name: Upload diagnostic dylib
-        uses: actions/upload-artifact@v4
+          strings build/FacebookNotificationFix.dylib \
+            | grep -F "didReceiveNotificationRequest:withContentHandler:" \
+            > /dev/null
+
+          strings build/FacebookNotificationFix.dylib \
+            | grep -F "[V5] " \
+            > /dev/null
+
+          echo "✅ V5 contém somente o probe estreito de UserNotifications"
+
+      - name: Upload V5 probe dylib
+        uses: actions/upload-artifact@v6
         with:
-          name: facebook-notification-fix-v4-dylib
+          name: facebook-notification-fix-v5-probe-dylib
           path: build/FacebookNotificationFix.dylib
           if-no-files-found: error
           retention-days: 3
 
   patch-facebook:
-    name: Patch NotificationServiceExtension via IPA Patch
+    name: Patch NSE via stable IPA Patch loader
     needs: build-fix
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -164,10 +334,10 @@ jobs:
           echo "✅ IPA Patch instalado"
           ./ipapatch --version
 
-      - name: Download diagnostic dylib
-        uses: actions/download-artifact@v4
+      - name: Download V5 probe dylib
+        uses: actions/download-artifact@v7
         with:
-          name: facebook-notification-fix-v4-dylib
+          name: facebook-notification-fix-v5-probe-dylib
           path: fix
 
       - name: Validate downloaded dylib
@@ -300,6 +470,9 @@ jobs:
               point = extension.get(
                   "NSExtensionPointIdentifier"
               )
+              principal_class = extension.get(
+                  "NSExtensionPrincipalClass"
+              )
               bid = plist.get(
                   "CFBundleIdentifier",
                   "",
@@ -308,6 +481,15 @@ jobs:
 
               if not exe:
                   continue
+
+              if (
+                  point == "com.apple.usernotifications.service"
+                  and principal_class != "FBNotificationService"
+              ):
+                  raise SystemExit(
+                      "❌ Principal class inesperada na NSE: "
+                      f"{principal_class}"
+                  )
 
               is_notification_service = (
                   point == "com.apple.usernotifications.service"
@@ -391,6 +573,7 @@ jobs:
           )
           print(f"Bundle ID: {ext_bid}")
           print(f"Extension point: {ext_point}")
+          print("Principal class: FBNotificationService")
           print(
               f"Executável: {notification_executable}"
           )
@@ -543,9 +726,25 @@ jobs:
                   "❌ Frameworks/zxPluginsInject.dylib ausente"
               )
 
+          nse_bytes = nse.read_bytes()
+
+          if b"FBNotificationService" not in nse_bytes:
+              raise SystemExit(
+                  "❌ FBNotificationService não encontrada na NSE"
+              )
+
+          if (
+              b"didReceiveNotificationRequest:withContentHandler:"
+              not in nse_bytes
+          ):
+              raise SystemExit(
+                  "❌ Selector de UserNotifications não encontrado na NSE"
+              )
+
           print(
               "✅ Baseline validada: "
-              "Glow no main + zxPluginsInject na NSE"
+              "Glow no main + zxPluginsInject na NSE + "
+              "FBNotificationService presente"
           )
           PY
 
@@ -617,7 +816,7 @@ jobs:
 
           echo "🩹 Aplicando o MESMO injetor do IPA Patch"
           echo "🩹 Modo: plugins-only"
-          echo "🧩 Dylib custom: FacebookNotificationFix.dylib"
+          echo "🧩 Dylib custom: FacebookNotificationFix.dylib (probe V5)"
 
           ./ipapatch \
             --input isolated-input.ipa \
@@ -730,7 +929,7 @@ jobs:
           echo "✅ Apenas o executável da NSE foi substituído"
           echo "✅ Dylib custom copiado para Frameworks"
 
-      - name: Validate V4 structure
+      - name: Validate V5 structure
         env:
           APP_PATH: ${{ steps.identify.outputs.app_path }}
           MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
@@ -948,13 +1147,13 @@ jobs:
                       f"{appex.name}"
                   )
 
-          print("✅ V4 validada:")
+          print("✅ V5 validada:")
           print(
               " - Facebook principal: sem fix"
           )
           print(
               " - NotificationServiceExtension: "
-              "fix WEAK via IPA Patch"
+              "probe WEAK via IPA Patch"
           )
           print(
               " - zxPluginsInject original preservado"
@@ -980,15 +1179,15 @@ jobs:
           sha256sum "$MAIN_EXECUTABLE"
 
           echo
-          echo "🔎 SHA NSE V4:"
+          echo "🔎 SHA NSE V5:"
           sha256sum "$NOTIFICATION_EXECUTABLE"
 
           echo
-          echo "🔎 SHA dylib V4:"
+          echo "🔎 SHA dylib V5:"
           sha256sum \
             "$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
 
-      - name: Repack V4 IPA
+      - name: Repack V5 IPA
         env:
           APP_VERSION: ${{ steps.identify.outputs.version }}
         shell: bash
@@ -997,7 +1196,7 @@ jobs:
 
           mkdir -p output
 
-          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V4-IPAPatchLoader-UNSIGNED.ipa"
+          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V5-RichNotificationProbe-UNSIGNED.ipa"
 
           (
             cd baseline
@@ -1008,54 +1207,68 @@ jobs:
             "output/$OUTPUT_NAME" \
             > /dev/null
 
-          cat > output/facebook-notification-fix-v4-report.txt <<'REPORT'
-          Facebook Notification Fix - V4 IPA PATCH LOADER
+          cat > output/facebook-notification-fix-v5-report.txt <<'REPORT'
+          Facebook Notification Fix - V5 RICH NOTIFICATION PROBE
 
           OBJETIVO DESTA RODADA
           ---------------------
-          Testar exclusivamente o método de injeção do IPA Patch que já
-          funciona nas extensões do Facebook.
+          Este é o primeiro teste no pipeline REAL de notificações.
 
-          O QUE FOI FEITO
-          ----------------
-          - FacebookNotificationFix.dylib é C puro e NO-OP.
+          Durante a preparação da V5 foi confirmado no código-fonte do
+          zxPluginsInject que o IPA Patch já corrige App Group e Keychain.
+          Por isso NÃO duplicamos esses hooks.
+
+          O QUE A V5 FAZ
+          ---------------
+          - Mantém o mesmo método de injeção do IPA Patch que abriu na V4.
           - O Facebook principal NÃO recebe o fix.
-          - Somente NotificationServiceExtension recebe o fix.
-          - A injeção é feita pelo ipapatch v2.1.3 usando:
-              --plugins-only
-              --dylib FacebookNotificationFix.dylib
-          - O IPA Patch gera LC_LOAD_WEAK_DYLIB @rpath para o fix.
-          - O zxPluginsInject.dylib que já existia na NSE é preservado.
-          - Glow no Facebook principal é preservado.
-          - As demais extensões não recebem o novo fix.
+          - Somente NotificationServiceExtension recebe FacebookNotificationFix.
+          - O zxPluginsInject original continua presente.
+          - Glow continua intacto no Facebook principal.
+          - O dylib intercepta somente:
+              -[FBNotificationService
+                 didReceiveNotificationRequest:withContentHandler:]
+          - O processamento original da extensão continua.
+          - Quando o contentHandler é chamado, a V5 adiciona "[V5] "
+            no início do corpo final da notificação.
+
+          COMO INTERPRETAR
+          ----------------
+          1. Se chegar uma notificação com "[V5]" no corpo:
+             A NotificationServiceExtension executou e chegou ao
+             contentHandler. A próxima etapa será investigar por que o
+             conteúdo enriquecido original não está sendo produzido.
+
+          2. Se continuar chegando exatamente:
+             "Você tem uma nova notificação."
+             sem "[V5]":
+             O conteúdo exibido não passou pelo contentHandler da
+             FBNotificationService. Isso aponta para falha antes do
+             processamento final da extensão, ausência de mutable-content,
+             timeout/crash da extensão ou limitação de assinatura/provisionamento.
+
+          NODE 24
+          -------
+          A V5 usa versões Node 24 das actions de artifact:
+          - actions/upload-artifact@v6
+          - actions/download-artifact@v7
 
           IMPORTANTE
           ----------
           O IPA final está sem assinatura válida após a alteração.
           Assine no Feather antes de instalar.
-
-          RESULTADO ESPERADO
-          ------------------
-          - Se o Facebook ABRIR:
-            a técnica do IPA Patch é compatível e podemos implementar o
-            primeiro hook real usando esse mesmo caminho.
-
-          - Se o Facebook CRASHAR:
-            o problema não é apenas o injetor manual das V2/V3; precisaremos
-            comparar a NSE assinada do V4 com a baseline estável antes de
-            avançar.
           REPORT
 
-          echo "✅ IPA V4 criado"
+          echo "✅ IPA V5 criado"
           ls -lh "output/$OUTPUT_NAME"
           sha256sum "output/$OUTPUT_NAME"
 
-      - name: Upload V4 test IPA
-        uses: actions/upload-artifact@v4
+      - name: Upload V5 test IPA
+        uses: actions/upload-artifact@v6
         with:
-          name: facebook-notification-fix-v4-ipapatch-loader
+          name: facebook-notification-fix-v5-rich-notification-probe
           path: |
             output/*.ipa
-            output/facebook-notification-fix-v4-report.txt
+            output/facebook-notification-fix-v5-report.txt
           if-no-files-found: error
           retention-days: 3
