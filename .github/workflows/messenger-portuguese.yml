@@ -7,10 +7,6 @@ on:
         description: "Link direto para o Messenger 574.0.0 (MSGPlusX) .ipa"
         required: true
         type: string
-      language_pack_url:
-        description: "Link direto para o FBLP português extraído do Messenger 574 oficial"
-        required: true
-        type: string
 
 permissions:
   contents: read
@@ -150,6 +146,9 @@ jobs:
     timeout-minutes: 45
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
       - name: Install dependencies
         shell: bash
         run: |
@@ -179,10 +178,9 @@ jobs:
           name: messenger-portuguese-bootstrap
           path: bootstrap
 
-      - name: Download Messenger IPA and Portuguese FBLP
+      - name: Download Messenger IPA and load Portuguese FBLP
         env:
           IPA_URL: ${{ inputs.ipa_url }}
-          PACK_URL: ${{ inputs.language_pack_url }}
         shell: bash
         run: |
           set -euo pipefail
@@ -195,13 +193,10 @@ jobs:
             --output input.ipa \
             "$IPA_URL"
 
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --retry-delay 2 \
-            --output portuguese.fblp \
-            "$PACK_URL"
+          PACK_SOURCE="addons/messenger-portuguese/beb8b2a724c4d86596dd48520bf328cb"
+
+          test -f "$PACK_SOURCE"
+          cp "$PACK_SOURCE" portuguese.fblp
 
           unzip -tq input.ipa > /dev/null
 
@@ -209,7 +204,7 @@ jobs:
           ls -lh input.ipa
           sha256sum input.ipa
 
-          echo "Language pack:"
+          echo "Language pack from repository:"
           ls -lh portuguese.fblp
           sha256sum portuguese.fblp
 
