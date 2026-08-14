@@ -1,4 +1,4 @@
-name: Facebook Notification Fix - V3 Weak Loader
+name: Facebook Notification Fix - V4 IPA Patch Loader
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
 
           cat > build/FacebookNotificationFix.c <<'C'
           /*
-           * Facebook Notification Fix - V3 WEAK LOADER
+           * Facebook Notification Fix - V4 IPA PATCH LOADER
            *
            * Diagnóstico deliberadamente mínimo:
            * - C puro;
@@ -38,8 +38,9 @@ jobs:
            * - sem Keychain;
            * - sem CFPreferences.
            *
-           * Existe apenas um constructor C que altera uma variável local.
-           * Se o dylib carregar, nenhum framework de alto nível é tocado.
+           * O objetivo desta rodada é testar APENAS o método de injeção
+           * do IPA Patch que já é usado com sucesso nas extensões do
+           * Facebook, sem usar o injetor manual das V2/V3.
            */
 
           static volatile int g_fb_notification_fix_loaded = 0;
@@ -92,7 +93,7 @@ jobs:
               exit 1
             }
 
-      - name: Validate minimal dylib dependencies
+      - name: Validate minimal dylib
         shell: bash
         run: |
           set -euo pipefail
@@ -102,7 +103,7 @@ jobs:
 
           if xcrun otool -L build/FacebookNotificationFix.dylib \
             | grep -Eq 'Foundation|CoreFoundation|Security|UIKit|libobjc'; then
-            echo "❌ O dylib mínimo trouxe dependência de framework/ObjC inesperada"
+            echo "❌ O dylib mínimo trouxe framework/ObjC inesperado"
             exit 1
           fi
 
@@ -111,13 +112,13 @@ jobs:
       - name: Upload diagnostic dylib
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-notification-fix-v3-dylib
+          name: facebook-notification-fix-v4-dylib
           path: build/FacebookNotificationFix.dylib
           if-no-files-found: error
           retention-days: 3
 
   patch-facebook:
-    name: Patch Facebook IPA with weak loader
+    name: Patch NotificationServiceExtension via IPA Patch
     needs: build-fix
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -131,31 +132,42 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install dependencies
+      - name: Install system dependencies
         shell: bash
         run: |
           set -euo pipefail
 
           sudo apt-get update
           sudo apt-get install -y \
-            binutils \
             curl \
             file \
             unzip \
             zip
 
-          python -m pip install --upgrade pip
-          pip install --force-reinstall \
-            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
-
-          echo
           echo "✅ Dependências instaladas"
-          cyan --version
+
+      - name: Install IPA Patch 2.1.3
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          curl \
+            --location \
+            --fail \
+            --retry 3 \
+            --retry-delay 2 \
+            --output ipapatch \
+            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
+
+          chmod +x ipapatch
+
+          echo "✅ IPA Patch instalado"
+          ./ipapatch --version
 
       - name: Download diagnostic dylib
         uses: actions/download-artifact@v4
         with:
-          name: facebook-notification-fix-v3-dylib
+          name: facebook-notification-fix-v4-dylib
           path: fix
 
       - name: Validate downloaded dylib
@@ -165,8 +177,16 @@ jobs:
 
           test -f fix/FacebookNotificationFix.dylib
           chmod 755 fix/FacebookNotificationFix.dylib
+
           file fix/FacebookNotificationFix.dylib
           sha256sum fix/FacebookNotificationFix.dylib
+
+          file fix/FacebookNotificationFix.dylib \
+            | grep -qi "arm64" \
+            || {
+              echo "❌ Dylib baixado não é arm64"
+              exit 1
+            }
 
       - name: Download Facebook IPA
         env:
@@ -181,6 +201,7 @@ jobs:
           fi
 
           echo "📥 Baixando Facebook IPA..."
+
           curl \
             --fail \
             --location \
@@ -190,26 +211,34 @@ jobs:
             "$IPA_URL"
 
           unzip -tq input.ipa > /dev/null
+
           echo "✅ IPA válido"
           ls -lh input.ipa
           sha256sum input.ipa
 
-      - name: Extract and identify Facebook targets
-        id: identify
+      - name: Extract baseline IPA
         shell: bash
         run: |
           set -euo pipefail
 
-          rm -rf work
-          mkdir -p work
-          unzip -q input.ipa -d work
+          rm -rf baseline
+          mkdir -p baseline
+          unzip -q input.ipa -d baseline
+
+          echo "✅ IPA extraído"
+
+      - name: Identify Facebook and NotificationServiceExtension
+        id: identify
+        shell: bash
+        run: |
+          set -euo pipefail
 
           python <<'PY'
           import os
           import plistlib
           from pathlib import Path
 
-          payload = Path("work/Payload")
+          payload = Path("baseline/Payload")
           apps = list(payload.glob("*.app"))
 
           if len(apps) != 1:
@@ -224,7 +253,10 @@ jobs:
 
           bundle_id = app_plist.get("CFBundleIdentifier")
           executable_name = app_plist.get("CFBundleExecutable")
-          version = app_plist.get("CFBundleShortVersionString", "Unknown")
+          version = app_plist.get(
+              "CFBundleShortVersionString",
+              "Unknown",
+          )
 
           if bundle_id != "com.facebook.Facebook":
               raise SystemExit(
@@ -232,19 +264,29 @@ jobs:
               )
 
           if not executable_name:
-              raise SystemExit("❌ CFBundleExecutable ausente")
+              raise SystemExit(
+                  "❌ CFBundleExecutable ausente no Facebook"
+              )
 
           main_executable = app / executable_name
+
           if not main_executable.is_file():
               raise SystemExit(
                   f"❌ Executável principal ausente: {main_executable}"
               )
 
           plugins = app / "PlugIns"
+
+          if not plugins.is_dir():
+              raise SystemExit(
+                  "❌ Diretório PlugIns ausente"
+              )
+
           candidates = []
 
           for appex in sorted(plugins.glob("*.appex")):
               plist_path = appex / "Info.plist"
+
               if not plist_path.is_file():
                   continue
 
@@ -255,8 +297,13 @@ jobs:
                   continue
 
               extension = plist.get("NSExtension") or {}
-              point = extension.get("NSExtensionPointIdentifier")
-              bid = plist.get("CFBundleIdentifier", "")
+              point = extension.get(
+                  "NSExtensionPointIdentifier"
+              )
+              bid = plist.get(
+                  "CFBundleIdentifier",
+                  "",
+              )
               exe = plist.get("CFBundleExecutable")
 
               if not exe:
@@ -265,61 +312,429 @@ jobs:
               is_notification_service = (
                   point == "com.apple.usernotifications.service"
                   or "NotificationServiceExtension" in bid
-                  or appex.name == "NotificationServiceExtension.appex"
+                  or appex.name
+                  == "NotificationServiceExtension.appex"
               )
 
               binary = appex / exe
-              if is_notification_service and binary.is_file():
-                  candidates.append((appex, binary, bid, point))
+
+              if (
+                  is_notification_service
+                  and binary.is_file()
+              ):
+                  candidates.append(
+                      (
+                          appex,
+                          binary,
+                          bid,
+                          point,
+                          exe,
+                      )
+                  )
 
           if len(candidates) != 1:
+              print("Extensões encontradas:")
+
+              for appex in sorted(
+                  plugins.glob("*.appex")
+              ):
+                  print(f" - {appex.name}")
+
               raise SystemExit(
                   "❌ Esperava 1 NotificationServiceExtension; "
                   f"encontrei {len(candidates)}"
               )
 
-          notification_appex, notification_executable, ext_bid, ext_point = (
-              candidates[0]
-          )
+          (
+              notification_appex,
+              notification_executable,
+              ext_bid,
+              ext_point,
+              ext_executable_name,
+          ) = candidates[0]
 
-          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as out:
-              out.write(f"app_path={app}\n")
-              out.write(f"main_executable={main_executable}\n")
-              out.write(f"notification_appex={notification_appex}\n")
-              out.write(f"notification_executable={notification_executable}\n")
-              out.write(f"version={version}\n")
+          with open(
+              os.environ["GITHUB_OUTPUT"],
+              "a",
+              encoding="utf-8",
+          ) as out:
+              out.write(
+                  f"app_path={app}\n"
+              )
+              out.write(
+                  f"main_executable={main_executable}\n"
+              )
+              out.write(
+                  "notification_appex="
+                  f"{notification_appex}\n"
+              )
+              out.write(
+                  "notification_executable="
+                  f"{notification_executable}\n"
+              )
+              out.write(
+                  "notification_executable_name="
+                  f"{ext_executable_name}\n"
+              )
+              out.write(
+                  f"version={version}\n"
+              )
 
+          print()
           print("✅ Facebook identificado")
           print(f"Bundle ID: {bundle_id}")
           print(f"Versão: {version}")
           print(f"Main: {main_executable}")
-          print(f"NSE bundle: {ext_bid}")
-          print(f"NSE point: {ext_point}")
-          print(f"NSE executable: {notification_executable}")
+          print()
+          print(
+              "✅ NotificationServiceExtension identificada"
+          )
+          print(f"Bundle ID: {ext_bid}")
+          print(f"Extension point: {ext_point}")
+          print(
+              f"Executável: {notification_executable}"
+          )
           PY
 
-      - name: Copy minimal dylib into Facebook Frameworks
+      - name: Validate stable baseline before V4
         env:
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
+          MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
+          NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python <<'PY'
+          import os
+          import struct
+          from pathlib import Path
+
+          LC_LOAD_DYLIB = 0x0000000C
+          LC_LOAD_WEAK_DYLIB = 0x80000018
+          MH_MAGIC_64 = 0xFEEDFACF
+
+          main = Path(
+              os.environ["MAIN_EXECUTABLE"]
+          )
+          nse = Path(
+              os.environ["NOTIFICATION_EXECUTABLE"]
+          )
+          app = Path(
+              os.environ["APP_PATH"]
+          )
+
+          def dependencies(path: Path):
+              data = path.read_bytes()
+
+              if len(data) < 32:
+                  raise RuntimeError(
+                      f"Mach-O pequeno: {path}"
+                  )
+
+              magic = struct.unpack_from(
+                  "<I",
+                  data,
+                  0,
+              )[0]
+
+              if magic != MH_MAGIC_64:
+                  raise RuntimeError(
+                      "Esperava Mach-O arm64 thin: "
+                      f"{path} magic={magic:#x}"
+                  )
+
+              ncmds = struct.unpack_from(
+                  "<I",
+                  data,
+                  16,
+              )[0]
+
+              offset = 32
+              result = []
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      data,
+                      offset,
+                  )
+
+                  if (
+                      cmdsize < 8
+                      or offset + cmdsize > len(data)
+                  ):
+                      raise RuntimeError(
+                          f"Load command inválido em {path}"
+                      )
+
+                  if cmd in (
+                      LC_LOAD_DYLIB,
+                      LC_LOAD_WEAK_DYLIB,
+                  ):
+                      nameoff = struct.unpack_from(
+                          "<I",
+                          data,
+                          offset + 8,
+                      )[0]
+
+                      start = offset + nameoff
+                      end = data.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+
+                      if end == -1:
+                          end = offset + cmdsize
+
+                      name = data[
+                          start:end
+                      ].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+
+                      result.append(
+                          (cmd, name)
+                      )
+
+                  offset += cmdsize
+
+              return result
+
+          main_deps = dependencies(main)
+          nse_deps = dependencies(nse)
+
+          if not any(
+              "Glow.dylib" in name
+              for _, name in main_deps
+          ):
+              raise SystemExit(
+                  "❌ Glow não encontrado no Facebook principal"
+              )
+
+          if not any(
+              name == "@rpath/zxPluginsInject.dylib"
+              for _, name in nse_deps
+          ):
+              raise SystemExit(
+                  "❌ Baseline não contém "
+                  "@rpath/zxPluginsInject.dylib na NSE"
+              )
+
+          if any(
+              "FacebookNotificationFix.dylib" in name
+              for _, name in main_deps + nse_deps
+          ):
+              raise SystemExit(
+                  "❌ Baseline já contém "
+                  "FacebookNotificationFix.dylib"
+              )
+
+          zx = (
+              app
+              / "Frameworks"
+              / "zxPluginsInject.dylib"
+          )
+
+          if not zx.is_file():
+              raise SystemExit(
+                  "❌ Frameworks/zxPluginsInject.dylib ausente"
+              )
+
+          print(
+              "✅ Baseline validada: "
+              "Glow no main + zxPluginsInject na NSE"
+          )
+          PY
+
+      - name: Build isolated IPA containing only NotificationServiceExtension
+        env:
+          NOTIFICATION_APPEX: ${{ steps.identify.outputs.notification_appex }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf isolated isolated-preserved-plugins
+          cp -a baseline isolated
+          mkdir -p isolated-preserved-plugins
+
+          ISOLATED_NOTIFICATION_APPEX="$(
+            python - <<'PY'
+          import os
+          from pathlib import Path
+
+          original = Path(
+              os.environ["NOTIFICATION_APPEX"]
+          )
+          rel = original.relative_to("baseline")
+          print(Path("isolated") / rel)
+          PY
+          )"
+
+          PLUGINS_DIR="$(
+            dirname "$ISOLATED_NOTIFICATION_APPEX"
+          )"
+
+          echo "🔎 Mantendo somente:"
+          echo "$ISOLATED_NOTIFICATION_APPEX"
+
+          shopt -s nullglob
+
+          for appex in "$PLUGINS_DIR"/*.appex; do
+            if [ "$appex" = "$ISOLATED_NOTIFICATION_APPEX" ]; then
+              continue
+            fi
+
+            mv \
+              "$appex" \
+              isolated-preserved-plugins/
+          done
+
+          remaining=("$PLUGINS_DIR"/*.appex)
+
+          if [ "${#remaining[@]}" -ne 1 ]; then
+            echo "❌ Esperava exatamente 1 appex no IPA isolado"
+            printf '%s\n' "${remaining[@]}"
+            exit 1
+          fi
+
+          echo "✅ Somente NotificationServiceExtension ficou no IPA isolado"
+
+          (
+            cd isolated
+            zip -qry9 ../isolated-input.ipa Payload
+          )
+
+          unzip -tq isolated-input.ipa > /dev/null
+          ls -lh isolated-input.ipa
+
+      - name: Patch isolated NotificationServiceExtension using IPA Patch custom dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "🩹 Aplicando o MESMO injetor do IPA Patch"
+          echo "🩹 Modo: plugins-only"
+          echo "🧩 Dylib custom: FacebookNotificationFix.dylib"
+
+          ./ipapatch \
+            --input isolated-input.ipa \
+            --output isolated-patched.ipa \
+            --dylib fix/FacebookNotificationFix.dylib \
+            --plugins-only \
+            --noconfirm
+
+          test -f isolated-patched.ipa
+          unzip -tq isolated-patched.ipa > /dev/null
+
+          echo "✅ IPA Patch concluiu a injeção isolada"
+          ls -lh isolated-patched.ipa
+          sha256sum isolated-patched.ipa
+
+      - name: Extract patched NotificationServiceExtension
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf isolated-patched
+          mkdir -p isolated-patched
+          unzip -q isolated-patched.ipa -d isolated-patched
+
+          echo "✅ IPA isolado patchado extraído"
+
+      - name: Copy only IPA Patch-patched NSE binary back to full baseline
+        env:
+          NOTIFICATION_APPEX: ${{ steps.identify.outputs.notification_appex }}
+          NOTIFICATION_EXECUTABLE_NAME: ${{ steps.identify.outputs.notification_executable_name }}
           APP_PATH: ${{ steps.identify.outputs.app_path }}
         shell: bash
         run: |
           set -euo pipefail
 
-          FRAMEWORKS="$APP_PATH/Frameworks"
-          mkdir -p "$FRAMEWORKS"
+          PATCHED_NSE_BINARY="$(
+            python - <<'PY'
+          import os
+          from pathlib import Path
+
+          original_appex = Path(
+              os.environ["NOTIFICATION_APPEX"]
+          )
+
+          rel_appex = original_appex.relative_to(
+              "baseline"
+          )
+
+          patched_appex = (
+              Path("isolated-patched")
+              / rel_appex
+          )
+
+          binary = (
+              patched_appex
+              / os.environ[
+                  "NOTIFICATION_EXECUTABLE_NAME"
+              ]
+          )
+
+          print(binary)
+          PY
+          )"
+
+          ORIGINAL_NSE_BINARY="$(
+            python - <<'PY'
+          import os
+          from pathlib import Path
+
+          appex = Path(
+              os.environ["NOTIFICATION_APPEX"]
+          )
+
+          print(
+              appex
+              / os.environ[
+                  "NOTIFICATION_EXECUTABLE_NAME"
+              ]
+          )
+          PY
+          )"
+
+          if [ ! -f "$PATCHED_NSE_BINARY" ]; then
+            echo "❌ Binário NSE patchado ausente:"
+            echo "$PATCHED_NSE_BINARY"
+            exit 1
+          fi
+
+          if [ ! -f "$ORIGINAL_NSE_BINARY" ]; then
+            echo "❌ Binário NSE baseline ausente:"
+            echo "$ORIGINAL_NSE_BINARY"
+            exit 1
+          fi
+
+          cp \
+            "$PATCHED_NSE_BINARY" \
+            "$ORIGINAL_NSE_BINARY"
+
+          chmod 755 "$ORIGINAL_NSE_BINARY"
+
+          mkdir -p "$APP_PATH/Frameworks"
 
           cp \
             fix/FacebookNotificationFix.dylib \
-            "$FRAMEWORKS/FacebookNotificationFix.dylib"
+            "$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
 
-          chmod 755 "$FRAMEWORKS/FacebookNotificationFix.dylib"
+          chmod 755 \
+            "$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
 
-          echo "✅ Dylib copiado"
-          file "$FRAMEWORKS/FacebookNotificationFix.dylib"
+          echo "✅ Apenas o executável da NSE foi substituído"
+          echo "✅ Dylib custom copiado para Frameworks"
 
-      - name: Inject dylib and convert both load commands to WEAK
+      - name: Validate V4 structure
         env:
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
           MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
+          NOTIFICATION_APPEX: ${{ steps.identify.outputs.notification_appex }}
           NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
         shell: bash
         run: |
@@ -327,242 +742,253 @@ jobs:
 
           python <<'PY'
           import os
+          import plistlib
           import struct
-          import subprocess
           from pathlib import Path
-
-          from cyan.tbhtypes.executable import Executable
 
           LC_LOAD_DYLIB = 0x0000000C
           LC_LOAD_WEAK_DYLIB = 0x80000018
           MH_MAGIC_64 = 0xFEEDFACF
 
-          targets = [
-              (
-                  "Facebook principal",
-                  Path(os.environ["MAIN_EXECUTABLE"]),
-                  "@rpath/FacebookNotificationFix.dylib",
-              ),
-              (
-                  "NotificationServiceExtension",
-                  Path(os.environ["NOTIFICATION_EXECUTABLE"]),
-                  "@executable_path/../../Frameworks/FacebookNotificationFix.dylib",
-              ),
-          ]
+          app = Path(os.environ["APP_PATH"])
+          main = Path(
+              os.environ["MAIN_EXECUTABLE"]
+          )
+          nse = Path(
+              os.environ["NOTIFICATION_EXECUTABLE"]
+          )
+          target_appex = Path(
+              os.environ["NOTIFICATION_APPEX"]
+          )
 
-          def read_dylib_commands(path: Path):
+          fix = (
+              app
+              / "Frameworks"
+              / "FacebookNotificationFix.dylib"
+          )
+
+          if not fix.is_file():
+              raise SystemExit(
+                  "❌ FacebookNotificationFix.dylib "
+                  "ausente em Frameworks"
+              )
+
+          def dependencies(path: Path):
               data = path.read_bytes()
 
               if len(data) < 32:
-                  raise RuntimeError(f"Mach-O muito pequeno: {path}")
-
-              magic = struct.unpack_from("<I", data, 0)[0]
-              if magic != MH_MAGIC_64:
                   raise RuntimeError(
-                      f"Esperava Mach-O 64-bit thin em {path}; magic={magic:#x}"
+                      f"Mach-O pequeno: {path}"
                   )
 
-              ncmds = struct.unpack_from("<I", data, 16)[0]
+              magic = struct.unpack_from(
+                  "<I",
+                  data,
+                  0,
+              )[0]
+
+              if magic != MH_MAGIC_64:
+                  raise RuntimeError(
+                      f"Mach-O não suportado: {path}"
+                  )
+
+              ncmds = struct.unpack_from(
+                  "<I",
+                  data,
+                  16,
+              )[0]
+
               offset = 32
-              commands = []
+              result = []
 
               for _ in range(ncmds):
-                  cmd, cmdsize = struct.unpack_from("<II", data, offset)
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      data,
+                      offset,
+                  )
 
-                  if cmdsize < 8 or offset + cmdsize > len(data):
+                  if (
+                      cmdsize < 8
+                      or offset + cmdsize > len(data)
+                  ):
                       raise RuntimeError(
-                          f"Load command inválido em {path} @ {offset}"
+                          f"Load command inválido em {path}"
                       )
 
-                  if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB):
-                      name_offset = struct.unpack_from("<I", data, offset + 8)[0]
-                      start = offset + name_offset
-                      end_limit = offset + cmdsize
-                      end = data.find(b"\0", start, end_limit)
+                  if cmd in (
+                      LC_LOAD_DYLIB,
+                      LC_LOAD_WEAK_DYLIB,
+                  ):
+                      nameoff = struct.unpack_from(
+                          "<I",
+                          data,
+                          offset + 8,
+                      )[0]
+
+                      start = offset + nameoff
+                      end = data.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
 
                       if end == -1:
-                          end = end_limit
+                          end = offset + cmdsize
 
-                      name = data[start:end].decode("utf-8", errors="replace")
-                      commands.append((offset, cmd, name))
+                      name = data[
+                          start:end
+                      ].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+
+                      result.append(
+                          (cmd, name)
+                      )
 
                   offset += cmdsize
 
-              return commands
+              return result
 
-          def convert_dependency_to_weak(path: Path, dependency: str):
-              commands = read_dylib_commands(path)
-              matches = [item for item in commands if item[2] == dependency]
+          main_deps = dependencies(main)
+          nse_deps = dependencies(nse)
 
-              if len(matches) != 1:
-                  raise RuntimeError(
-                      f"Esperava 1 load command para {dependency} em {path}; "
-                      f"encontrei {len(matches)}"
-                  )
+          custom = (
+              "@rpath/FacebookNotificationFix.dylib"
+          )
 
-              offset, cmd, _ = matches[0]
+          main_custom = [
+              cmd
+              for cmd, name in main_deps
+              if name == custom
+          ]
 
-              if cmd == LC_LOAD_WEAK_DYLIB:
-                  print(f"ℹ️ {dependency} já era WEAK em {path}")
-                  return
+          if main_custom:
+              raise SystemExit(
+                  "❌ O Facebook principal foi alterado "
+                  "pelo V4; isso não deveria acontecer"
+              )
 
-              if cmd != LC_LOAD_DYLIB:
-                  raise RuntimeError(
-                      f"Load command inesperado {cmd:#x} para {dependency}"
-                  )
+          nse_custom = [
+              cmd
+              for cmd, name in nse_deps
+              if name == custom
+          ]
 
-              with path.open("r+b") as f:
-                  f.seek(offset)
-                  f.write(struct.pack("<I", LC_LOAD_WEAK_DYLIB))
+          if nse_custom != [
+              LC_LOAD_WEAK_DYLIB
+          ]:
+              raise SystemExit(
+                  "❌ A NSE não contém exatamente 1 "
+                  "LC_LOAD_WEAK_DYLIB para o fix: "
+                  f"{nse_custom}"
+              )
 
-              verified = [
-                  item
-                  for item in read_dylib_commands(path)
-                  if item[2] == dependency
-              ]
+          zx = [
+              cmd
+              for cmd, name in nse_deps
+              if name
+              == "@rpath/zxPluginsInject.dylib"
+          ]
 
-              if len(verified) != 1 or verified[0][1] != LC_LOAD_WEAK_DYLIB:
-                  raise RuntimeError(
-                      f"Falha ao converter {dependency} para WEAK em {path}"
-                  )
+          if not zx:
+              raise SystemExit(
+                  "❌ zxPluginsInject deixou de existir "
+                  "na NSE"
+              )
 
-              print(f"✅ WEAK: {dependency}")
+          if not any(
+              "Glow.dylib" in name
+              for _, name in main_deps
+          ):
+              raise SystemExit(
+                  "❌ Glow deixou de existir no main"
+              )
 
-          for label, binary, dependency in targets:
-              print()
-              print("=" * 72)
-              print(f"🎯 {label}")
-              print(f"Binário: {binary}")
-              print(f"Dependência: {dependency}")
+          plugins = app / "PlugIns"
+
+          for appex in sorted(
+              plugins.glob("*.appex")
+          ):
+              if appex == target_appex:
+                  continue
+
+              plist_path = appex / "Info.plist"
+
+              if not plist_path.is_file():
+                  continue
+
+              try:
+                  with plist_path.open("rb") as f:
+                      plist = plistlib.load(f)
+              except Exception:
+                  continue
+
+              exe = plist.get(
+                  "CFBundleExecutable"
+              )
+
+              if not exe:
+                  continue
+
+              binary = appex / exe
 
               if not binary.is_file():
-                  raise SystemExit(f"❌ Binário ausente: {binary}")
+                  continue
 
-              existing = Executable(str(binary)).get_dependencies()
+              deps = dependencies(binary)
 
-              if dependency not in existing:
-                  executable = Executable(str(binary))
-
-                  if not Path(executable.idylib).is_file():
-                      raise SystemExit(
-                          f"❌ insert_dylib ausente: {executable.idylib}"
-                      )
-
-                  executable.remove_signature()
-
-                  result = subprocess.run(
-                      [
-                          executable.idylib,
-                          "--inplace",
-                          "--all-yes",
-                          dependency,
-                          str(binary),
-                      ],
-                      text=True,
-                      capture_output=True,
-                  )
-
-                  if result.stdout:
-                      print(result.stdout)
-                  if result.stderr:
-                      print(result.stderr)
-
-                  if result.returncode != 0:
-                      raise SystemExit(
-                          f"❌ insert_dylib falhou em {label}: {result.returncode}"
-                      )
-
-              if dependency not in Executable(str(binary)).get_dependencies():
+              if any(
+                  name == custom
+                  for _, name in deps
+              ):
                   raise SystemExit(
-                      f"❌ Dependência não apareceu após injeção em {label}"
+                      "❌ Fix apareceu em outra extensão: "
+                      f"{appex.name}"
                   )
 
-              convert_dependency_to_weak(binary, dependency)
-
-          print()
-          print("✅ Ambos os load commands foram convertidos para WEAK")
+          print("✅ V4 validada:")
+          print(
+              " - Facebook principal: sem fix"
+          )
+          print(
+              " - NotificationServiceExtension: "
+              "fix WEAK via IPA Patch"
+          )
+          print(
+              " - zxPluginsInject original preservado"
+          )
+          print(
+              " - Glow original preservado"
+          )
+          print(
+              " - demais extensões: sem fix"
+          )
           PY
 
-      - name: Validate weak load commands and baseline tweaks
+      - name: Show final hashes
         env:
+          APP_PATH: ${{ steps.identify.outputs.app_path }}
           MAIN_EXECUTABLE: ${{ steps.identify.outputs.main_executable }}
           NOTIFICATION_EXECUTABLE: ${{ steps.identify.outputs.notification_executable }}
         shell: bash
         run: |
           set -euo pipefail
 
-          python <<'PY'
-          import os
-          import struct
-          from pathlib import Path
-
-          LC_LOAD_DYLIB = 0x0000000C
-          LC_LOAD_WEAK_DYLIB = 0x80000018
-          MH_MAGIC_64 = 0xFEEDFACF
-
-          checks = [
-              (
-                  Path(os.environ["MAIN_EXECUTABLE"]),
-                  "@rpath/FacebookNotificationFix.dylib",
-              ),
-              (
-                  Path(os.environ["NOTIFICATION_EXECUTABLE"]),
-                  "@executable_path/../../Frameworks/FacebookNotificationFix.dylib",
-              ),
-          ]
-
-          def find_cmd(path, wanted):
-              data = path.read_bytes()
-              if struct.unpack_from("<I", data, 0)[0] != MH_MAGIC_64:
-                  raise RuntimeError(f"Mach-O não suportado: {path}")
-
-              ncmds = struct.unpack_from("<I", data, 16)[0]
-              offset = 32
-              found = []
-
-              for _ in range(ncmds):
-                  cmd, cmdsize = struct.unpack_from("<II", data, offset)
-
-                  if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB):
-                      nameoff = struct.unpack_from("<I", data, offset + 8)[0]
-                      start = offset + nameoff
-                      end = data.find(b"\0", start, offset + cmdsize)
-                      if end == -1:
-                          end = offset + cmdsize
-                      name = data[start:end].decode("utf-8", errors="replace")
-                      if name == wanted:
-                          found.append(cmd)
-
-                  offset += cmdsize
-
-              return found
-
-          for path, dependency in checks:
-              cmds = find_cmd(path, dependency)
-              if cmds != [LC_LOAD_WEAK_DYLIB]:
-                  raise SystemExit(
-                      f"❌ {dependency} não está WEAK em {path}: {cmds}"
-                  )
-              print(f"✅ WEAK confirmado: {path.name} -> {dependency}")
-
-          print("✅ Validação estrutural V3 concluída")
-          PY
+          echo "🔎 SHA main:"
+          sha256sum "$MAIN_EXECUTABLE"
 
           echo
-          echo "🔎 Main custom deps:"
-          strings "$MAIN_EXECUTABLE" \
-            | grep -E 'Glow\.dylib|FacebookNotificationFix\.dylib|CydiaSubstrate' \
-            | sort -u \
-            || true
+          echo "🔎 SHA NSE V4:"
+          sha256sum "$NOTIFICATION_EXECUTABLE"
 
           echo
-          echo "🔎 NSE custom deps:"
-          strings "$NOTIFICATION_EXECUTABLE" \
-            | grep -E 'zxPluginsInject\.dylib|FacebookNotificationFix\.dylib' \
-            | sort -u \
-            || true
+          echo "🔎 SHA dylib V4:"
+          sha256sum \
+            "$APP_PATH/Frameworks/FacebookNotificationFix.dylib"
 
-      - name: Repack V3 diagnostic IPA
+      - name: Repack V4 IPA
         env:
           APP_VERSION: ${{ steps.identify.outputs.version }}
         shell: bash
@@ -571,46 +997,65 @@ jobs:
 
           mkdir -p output
 
-          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V3-WeakLoader-UNSIGNED.ipa"
+          OUTPUT_NAME="Facebook-${APP_VERSION}-NotificationFix-V4-IPAPatchLoader-UNSIGNED.ipa"
 
           (
-            cd work
+            cd baseline
             zip -qry9 "../output/$OUTPUT_NAME" Payload
           )
 
-          unzip -tq "output/$OUTPUT_NAME" > /dev/null
+          unzip -tq \
+            "output/$OUTPUT_NAME" \
+            > /dev/null
 
-          cat > output/facebook-notification-fix-v3-report.txt <<'REPORT'
-          Facebook Notification Fix - V3 WEAK LOADER
+          cat > output/facebook-notification-fix-v4-report.txt <<'REPORT'
+          Facebook Notification Fix - V4 IPA PATCH LOADER
 
-          Objetivo deste build:
-          - testar somente a carga do dylib;
-          - dylib C puro, sem Foundation/ObjC/hooks;
-          - load command WEAK no Facebook principal;
-          - load command WEAK na NotificationServiceExtension;
-          - Glow e zxPluginsInject permanecem intactos.
+          OBJETIVO DESTA RODADA
+          ---------------------
+          Testar exclusivamente o método de injeção do IPA Patch que já
+          funciona nas extensões do Facebook.
 
-          IMPORTANTE:
-          Este IPA está sem assinatura após a alteração Mach-O.
+          O QUE FOI FEITO
+          ----------------
+          - FacebookNotificationFix.dylib é C puro e NO-OP.
+          - O Facebook principal NÃO recebe o fix.
+          - Somente NotificationServiceExtension recebe o fix.
+          - A injeção é feita pelo ipapatch v2.1.3 usando:
+              --plugins-only
+              --dylib FacebookNotificationFix.dylib
+          - O IPA Patch gera LC_LOAD_WEAK_DYLIB @rpath para o fix.
+          - O zxPluginsInject.dylib que já existia na NSE é preservado.
+          - Glow no Facebook principal é preservado.
+          - As demais extensões não recebem o novo fix.
+
+          IMPORTANTE
+          ----------
+          O IPA final está sem assinatura válida após a alteração.
           Assine no Feather antes de instalar.
 
-          Resultado esperado do teste:
-          - se o Facebook abrir, a V2 caiu por causa da carga obrigatória
-            e/ou inicialização Foundation da V2;
-          - se ainda cair, precisamos do crash log do iOS porque até uma
-            dependência WEAK e um dylib C mínimo estarão envolvidos.
+          RESULTADO ESPERADO
+          ------------------
+          - Se o Facebook ABRIR:
+            a técnica do IPA Patch é compatível e podemos implementar o
+            primeiro hook real usando esse mesmo caminho.
+
+          - Se o Facebook CRASHAR:
+            o problema não é apenas o injetor manual das V2/V3; precisaremos
+            comparar a NSE assinada do V4 com a baseline estável antes de
+            avançar.
           REPORT
 
-          echo "✅ IPA V3 criado"
+          echo "✅ IPA V4 criado"
           ls -lh "output/$OUTPUT_NAME"
           sha256sum "output/$OUTPUT_NAME"
 
-      - name: Upload V3 test IPA
+      - name: Upload V4 test IPA
         uses: actions/upload-artifact@v4
         with:
-          name: facebook-notification-fix-v3-weak-loader
+          name: facebook-notification-fix-v4-ipapatch-loader
           path: |
             output/*.ipa
-            output/facebook-notification-fix-v3-report.txt
+            output/facebook-notification-fix-v4-report.txt
           if-no-files-found: error
           retention-days: 3
