@@ -228,9 +228,9 @@ jobs:
 
           data = Path("portuguese.fblp").read_bytes()
 
-          if data[:4] != b"FBLP":
+          if data[4:8] != b"FBLP":
               raise SystemExit(
-                  f"❌ Assinatura inválida: {data[:4]!r}"
+                  f"❌ Assinatura inválida: {data[:8]!r}"
               )
 
           print("✅ FBLP português validado")
