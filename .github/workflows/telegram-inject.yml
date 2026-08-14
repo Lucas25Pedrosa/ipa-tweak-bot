@@ -1,1938 +1,244 @@
-name: Telegram IPA Injector
-
-on:
-  workflow_dispatch:
-
-jobs:
-  inject:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-
-    steps:
-      # =========================================================
-      # 1. AMBIENTE
-      # =========================================================
-
-      - name: Checkout repository
-        uses: actions/checkout@v5
-
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: "3.12"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            binutils \
-            tar \
-            zip \
-            unzip \
-            curl
-
-      - name: Install Python dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install telethon
-          pip install --force-reinstall \
-            https://github.com/asdfzxcvbn/pyzule-rw/archive/main.zip
-
-          echo "✅ Dependências instaladas"
-          cyan --version
-
-      # =========================================================
-      # 2. TELEGRAM -> INPUT.IPA
-      # =========================================================
-
-      - name: Download latest IPA from Telegram
-        env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
-        run: |
-          python telegram_download.py
-
-      - name: Validate downloaded IPA
-        run: |
-          if [ ! -f input.ipa ]; then
-            echo "❌ input.ipa não encontrado"
-            exit 1
-          fi
-
-          if ! unzip -tq input.ipa > /dev/null; then
-            echo "❌ input.ipa não é um IPA válido"
-            exit 1
-          fi
-
-          echo "✅ IPA original válido"
-          ls -lh input.ipa
-
-      # =========================================================
-      # 3. DETECTAR APP E TWEAK
-      # =========================================================
-
-      - name: Detect app and select addon
-        id: prepare
-        run: |
-          python <<'PY'
-          import json
-          import os
-          import plistlib
-          import sys
-          import zipfile
-          from pathlib import Path
-
-          with zipfile.ZipFile("input.ipa", "r") as z:
-              plist_files = [
-                  name
-                  for name in z.namelist()
-                  if name.startswith("Payload/")
-                  and name.count("/") == 2
-                  and name.endswith(".app/Info.plist")
-              ]
-
-              if len(plist_files) != 1:
-                  raise SystemExit(
-                      f"❌ Esperava 1 app principal; encontrei {len(plist_files)}"
-                  )
-
-              with z.open(plist_files[0]) as f:
-                  plist = plistlib.load(f)
-
-          bundle_id = plist.get("CFBundleIdentifier")
-          app_name = (
-              plist.get("CFBundleDisplayName")
-              or plist.get("CFBundleName")
-              or "Unknown"
-          )
-          version = plist.get("CFBundleShortVersionString", "Unknown")
-
-          if not bundle_id:
-              raise SystemExit("❌ Bundle ID não encontrado")
-
-          with open("config/addons.json", "r", encoding="utf-8") as f:
-              config = json.load(f)
-
-          apps = config.get("apps", {})
-
-          if bundle_id not in apps:
-              print()
-              print("❌ Aplicativo não cadastrado")
-              print(f"Bundle ID: {bundle_id}")
-              print()
-              print("Aplicativos cadastrados:")
-
-              for bid, data in apps.items():
-                  print(f" • {data.get('name')} ({bid})")
-
-              sys.exit(1)
-
-          app_config = apps[bundle_id]
-          addons = app_config.get("addons", [])
-
-          if not addons:
-              raise SystemExit("❌ Nenhum addon cadastrado")
-
-          default_name = app_config.get("default_addon")
-
-          if default_name:
-              addon = next(
-                  (
-                      item
-                      for item in addons
-                      if item.get("name", "").lower() == default_name.lower()
-                  ),
-                  None,
-              )
-
-              if addon is None:
-                  raise SystemExit(
-                      f"❌ default_addon inválido: {default_name}"
-                  )
-
-          elif len(addons) == 1:
-              addon = addons[0]
-
-          else:
-              raise SystemExit(
-                  "❌ Mais de um addon cadastrado "
-                  "e nenhum default_addon definido"
-              )
-
-          for item in addon.get("files", []):
-              path = item.get("path")
-
-              if not path:
-                  raise SystemExit("❌ Componente sem path")
-
-              if not Path(path).exists():
-                  raise SystemExit(f"❌ Arquivo ausente: {path}")
-
-          with open(
-              "selected_addon.json",
-              "w",
-              encoding="utf-8",
-          ) as f:
-              json.dump(
-                  addon,
-                  f,
-                  ensure_ascii=False,
-                  indent=2,
-              )
-
-          with open(
-              os.environ["GITHUB_OUTPUT"],
-              "a",
-              encoding="utf-8",
-          ) as out:
-              out.write(f"bundle_id={bundle_id}\n")
-              out.write(f"app_name={app_name}\n")
-              out.write(f"version={version}\n")
-              out.write(f"addon_name={addon.get('name')}\n")
-              ipapatch_enabled = addon.get("ipapatch", False)
-              if ipapatch_enabled:
-                  ipapatch_mode = addon.get(
-                      "ipapatch_mode",
-                      "plugins-only",
-                  )
-              else:
-                  ipapatch_mode = "none"
-
-              if (
-                  ipapatch_enabled
-                  and ipapatch_mode not in {
-                      "plugins-only",
-                      "main-only",
-                  }
-              ):
-                  raise SystemExit(
-                      "❌ ipapatch_mode inválido: "
-                      f"{ipapatch_mode}"
-                  )
-
-              out.write(
-                  "ipapatch="
-                  f"{str(ipapatch_enabled).lower()}\n"
-              )
-              out.write(
-                  "ipapatch_mode="
-                  f"{ipapatch_mode}\n"
-              )
-              out.write(
-                  "remove_extensions="
-                  f"{str(addon.get('remove_extensions', False)).lower()}\n"
-              )
-
-          print()
-          print("✅ Aplicativo identificado")
-          print(f"📱 Nome: {app_name}")
-          print(f"📦 Bundle ID: {bundle_id}")
-          print(f"🔢 Versão: {version}")
-          print(f"🧩 Tweak: {addon.get('name')}")
-          print(f"🩹 IPA Patch: {addon.get('ipapatch', False)}")
-          print(
-              "🩹 Modo IPA Patch: "
-              f"{ipapatch_mode}"
-          )
-          PY
-
-      # =========================================================
-      # 4. IPAPATCH
-      # =========================================================
-
-      - name: Install IPA Patch
-        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
-        run: |
-          echo "📥 Instalando IPA Patch..."
-
-          curl \
-            --location \
-            --fail \
-            --output ipapatch \
-            https://github.com/asdfzxcvbn/ipapatch/releases/download/v2.1.3/ipapatch.linux-amd64
-
-          chmod +x ipapatch
-          ./ipapatch --version
-
-      # =========================================================
-      # 5. PREPARAR COMPONENTES
-      # =========================================================
-
-      - name: Prepare addon components
-        run: |
-          python <<'PY'
-          import json
-          import shutil
-          import zipfile
-          from pathlib import Path
-
-          with open(
-              "selected_addon.json",
-              "r",
-              encoding="utf-8",
-          ) as f:
-              addon = json.load(f)
-
-          prepared = Path("prepared")
-
-          if prepared.exists():
-              shutil.rmtree(prepared)
-
-          bundles = prepared / "bundles"
-          appex = prepared / "appex"
-          icons = prepared / "icons"
-          frameworks = prepared / "frameworks"
-
-          for directory in (
-              bundles,
-              appex,
-              icons,
-              frameworks,
-          ):
-              directory.mkdir(parents=True)
-
-          inject_files = []
-
-          for item in addon.get("files", []):
-              path = Path(item["path"])
-              action = item["action"]
-
-              print(f"📦 {path.name} -> {action}")
-
-              if action == "inject":
-                  inject_files.append(str(path))
-
-              elif action == "bundle":
-                  with zipfile.ZipFile(path, "r") as z:
-                      z.extractall(bundles)
-
-              elif action == "appex":
-                  with zipfile.ZipFile(path, "r") as z:
-                      z.extractall(appex)
-
-              elif action == "icons":
-                  with zipfile.ZipFile(path, "r") as z:
-                      z.extractall(icons)
-
-              elif action == "frameworks":
-                  with zipfile.ZipFile(path, "r") as z:
-                      z.extractall(frameworks)
-
-              else:
-                  raise SystemExit(
-                      f"❌ Ação desconhecida: {action}"
-                  )
-
-          with open(
-              "inject_files.txt",
-              "w",
-              encoding="utf-8",
-          ) as f:
-              for path in inject_files:
-                  f.write(path + "\n")
-
-          print()
-          print(f"✅ {len(inject_files)} arquivo(s) de injeção")
-          print(f"✅ {len(list(bundles.iterdir()))} bundle(s)")
-          print(f"✅ {len(list(appex.iterdir()))} appex")
-          print(f"✅ {len(list(icons.iterdir()))} ícone(s)")
-          print(f"✅ {len(list(frameworks.iterdir()))} framework(s)")
-          PY
-
-      # =========================================================
-      # 6. INSTAGRAM / REGRAM - PERFIL OFICIAL FOUAD
-      # =========================================================
-
-      - name: Install Regram using Fouad layout
-        if: ${{ steps.prepare.outputs.bundle_id == 'com.burbn.instagram' }}
-        env:
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
-        run: |
-          python <<'PY'
-          import os
-          import plistlib
-          import shutil
-          import subprocess
-          from pathlib import Path
-
-          from cyan.tbhtypes.executable import Executable
-
-          work = Path("regram_work")
-
-          if work.exists():
-              shutil.rmtree(work)
-
-          work.mkdir()
-
-          subprocess.run(
-              [
-                  "unzip",
-                  "-q",
-                  "input.ipa",
-                  "-d",
-                  str(work),
-              ],
-              check=True,
-          )
-
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
-
-          if len(apps) != 1:
-              raise SystemExit(
-                  f"❌ Esperava 1 .app; encontrei {len(apps)}"
-              )
-
-          app = apps[0]
-          plist_path = app / "Info.plist"
-
-          with open(plist_path, "rb") as f:
-              plist = plistlib.load(f)
-
-          if plist.get("CFBundleIdentifier") != "com.burbn.instagram":
-              raise SystemExit(
-                  "❌ Perfil Regram acionado para Bundle ID incorreto"
-              )
-
-          version = plist.get(
-              "CFBundleShortVersionString",
-              "Unknown",
-          )
-
-          print(f"📱 Instagram {version}")
-
-          if version != "442.0.0":
-              print(
-                  "⚠️ Esta integração foi auditada contra "
-                  "Instagram 442.0.0. Continuando com as "
-                  "validações estruturais."
-              )
-
-          # -----------------------------------------------------
-          # ARQUIVOS OFICIAIS DO REGRAM
-          # -----------------------------------------------------
-
-          inject_paths = [
-              Path(line.strip())
-              for line in Path(
-                  "inject_files.txt"
-              ).read_text(
-                  encoding="utf-8"
-              ).splitlines()
-              if line.strip()
-          ]
-
-          inject_by_name = {
-              path.name: path
-              for path in inject_paths
-          }
-
-          required_dylibs = [
-              "RegramExtension.dylib",
-              "Regram.dylib",
-          ]
-
-          for name in required_dylibs:
-              source = inject_by_name.get(name)
-
-              if source is None or not source.exists():
-                  raise SystemExit(
-                      f"❌ Dylib oficial ausente: {name}"
-                  )
-
-              shutil.copy2(
-                  source,
-                  app / name,
-              )
-
-              print(
-                  f"✅ {name} copiada para a raiz do Instagram.app"
-              )
-
-          # -----------------------------------------------------
-          # REGRAM.BUNDLE OFICIAL
-          # -----------------------------------------------------
-
-          bundle_source = (
-              Path("prepared/bundles")
-              / "Regram.bundle"
-          )
-
-          if not bundle_source.is_dir():
-              raise SystemExit(
-                  "❌ Regram.bundle oficial não encontrado"
-              )
-
-          bundle_destination = (
-              app / "Regram.bundle"
-          )
-
-          if bundle_destination.exists():
-              shutil.rmtree(
-                  bundle_destination
-              )
-
-          shutil.copytree(
-              bundle_source,
-              bundle_destination,
-          )
-
-          print("✅ Regram.bundle oficial adicionado")
-
-          # -----------------------------------------------------
-          # 20 ÍCONES OFICIAIS
-          # -----------------------------------------------------
-
-          expected_icons = [
-              "2010@2x.png",
-              "2010@3x.png",
-              "2010-iPad@2x.png",
-              "2010-iPadPro@2x.png",
-              "2011@2x.png",
-              "2011@3x.png",
-              "2011-iPad@2x.png",
-              "2011-iPadPro@2x.png",
-              "Regram@2x.png",
-              "Regram@3x.png",
-              "Regram-iPad@2x.png",
-              "Regram-iPadPro@2x.png",
-              "Regram2@2x.png",
-              "Regram2@3x.png",
-              "Regram2-iPad@2x.png",
-              "Regram2-iPadPro@2x.png",
-              "Regram-Dark@2x.png",
-              "Regram-Dark@3x.png",
-              "Regram-Dark-iPad@2x.png",
-              "Regram-Dark-iPadPro@2x.png",
-          ]
-
-          icon_source = Path(
-              "prepared/icons"
-          )
-
-          for name in expected_icons:
-              source = icon_source / name
-
-              if not source.is_file():
-                  raise SystemExit(
-                      f"❌ Ícone oficial ausente: {name}"
-                  )
-
-              shutil.copy2(
-                  source,
-                  app / name,
-              )
-
-          print(
-              "✅ 20 ícones oficiais adicionados"
-          )
-
-          # -----------------------------------------------------
-          # FFMPEGKIT OFICIAL
-          # -----------------------------------------------------
-
-          expected_frameworks = [
-              "ffmpegkit.framework",
-              "libavcodec.framework",
-              "libavdevice.framework",
-              "libavfilter.framework",
-              "libavformat.framework",
-              "libavutil.framework",
-              "libswresample.framework",
-              "libswscale.framework",
-          ]
-
-          frameworks_source = Path(
-              "prepared/frameworks"
-          )
-
-          frameworks_destination = (
-              app / "Frameworks"
-          )
-
-          frameworks_destination.mkdir(
-              exist_ok=True
-          )
-
-          for name in expected_frameworks:
-              source = (
-                  frameworks_source
-                  / name
-              )
-
-              if not source.is_dir():
-                  raise SystemExit(
-                      f"❌ Framework oficial ausente: {name}"
-                  )
-
-              destination = (
-                  frameworks_destination
-                  / name
-              )
-
-              if destination.exists():
-                  if destination.is_dir():
-                      shutil.rmtree(
-                          destination
-                      )
-                  else:
-                      destination.unlink()
-
-              shutil.copytree(
-                  source,
-                  destination,
-              )
-
-              print(
-                  f"✅ Framework instalado: {name}"
-              )
-
-          # -----------------------------------------------------
-          # INJEÇÃO FORTE LC_LOAD_DYLIB
-          # -----------------------------------------------------
-
-          def strong_inject(
-              binary: Path,
-              dependency: str,
-          ) -> None:
-              if not binary.is_file():
-                  raise RuntimeError(
-                      f"Executável não encontrado: {binary}"
-                  )
-
-              executable = Executable(
-                  str(binary)
-              )
-
-              if not Path(
-                  executable.idylib
-              ).is_file():
-                  raise RuntimeError(
-                      "insert_dylib do Cyan não encontrado"
-                  )
-
-              current_dependencies = (
-                  executable.get_dependencies()
-              )
-
-              if dependency in current_dependencies:
-                  print(
-                      f"ℹ️ Dependência já existe em "
-                      f"{binary.name}: {dependency}"
-                  )
-                  return
-
-              entitlements = (
-                  binary.parent
-                  / f".{binary.name}.regram.entitlements"
-              )
-
-              ent_proc = subprocess.run(
-                  [
-                      executable.ldid,
-                      "-e",
-                      str(binary),
-                  ],
-                  capture_output=True,
-              )
-
-              entitlements.write_bytes(
-                  ent_proc.stdout
-              )
-
-              executable.remove_signature()
-
-              result = subprocess.run(
-                  [
-                      executable.idylib,
-                      "--inplace",
-                      "--all-yes",
-                      dependency,
-                      str(binary),
-                  ],
-                  capture_output=True,
-                  text=True,
-              )
-
-              if result.returncode != 0:
-                  raise RuntimeError(
-                      "Falha ao adicionar LC_LOAD_DYLIB "
-                      f"em {binary}:\n"
-                      f"{result.stderr}"
-                  )
-
-              if entitlements.stat().st_size > 0:
-                  zero_requirements = (
-                      Path(
-                          executable.install_dir
-                      )
-                      / "extras"
-                      / "zero.requirements"
-                  )
-
-                  sign_result = subprocess.run(
-                      [
-                          executable.ldid,
-                          f"-S{entitlements}",
-                          "-M",
-                          "-Cadhoc",
-                          f"-Q{zero_requirements}",
-                          str(binary),
-                      ],
-                      capture_output=True,
-                      text=True,
-                  )
-
-                  if sign_result.returncode != 0:
-                      raise RuntimeError(
-                          "Falha ao restaurar entitlements "
-                          f"em {binary}:\n"
-                          f"{sign_result.stderr}"
-                      )
-
-              else:
-                  if not executable.fakesign():
-                      raise RuntimeError(
-                          f"Falha ao fazer fakesign em {binary}"
-                      )
-
-              entitlements.unlink(
-                  missing_ok=True
-              )
-
-              verified = Executable(
-                  str(binary)
-              ).get_dependencies()
-
-              if dependency not in verified:
-                  raise RuntimeError(
-                      "Dependência não apareceu após "
-                      f"a injeção: {dependency}"
-                  )
-
-              print(
-                  f"✅ LC_LOAD_DYLIB forte: "
-                  f"{binary.name} -> {dependency}"
-              )
-
-          main_executable_name = plist.get(
-              "CFBundleExecutable"
-          )
-
-          if not main_executable_name:
-              raise SystemExit(
-                  "❌ CFBundleExecutable do Instagram ausente"
-              )
-
-          main_executable = (
-              app
-              / main_executable_name
-          )
-
-          # Mesma ordem observada no IPA do Fouad.
-          strong_inject(
-              main_executable,
-              "@executable_path/RegramExtension.dylib",
-          )
-
-          strong_inject(
-              main_executable,
-              "@executable_path/Regram.dylib",
-          )
-
-          # -----------------------------------------------------
-          # REGRAMEXTENSION EM TODAS AS EXTENSÕES ORIGINAIS
-          # -----------------------------------------------------
-
-          original_appex = []
-
-          for directory_name in (
-              "PlugIns",
-              "Extensions",
-          ):
-              directory = (
-                  app
-                  / directory_name
-              )
-
-              if directory.exists():
-                  original_appex.extend(
-                      sorted(
-                          directory.glob(
-                              "*.appex"
-                          )
-                      )
-                  )
-
-          if len(original_appex) != 8:
-              print(
-                  "❌ Extensões encontradas:"
-              )
-
-              for bundle in original_appex:
-                  print(
-                      f" • {bundle.relative_to(app)}"
-                  )
-
-              raise SystemExit(
-                  "❌ O layout auditado possui exatamente "
-                  f"8 extensões originais; encontrei "
-                  f"{len(original_appex)}"
-              )
-
-          for extension in original_appex:
-              extension_plist_path = (
-                  extension
-                  / "Info.plist"
-              )
-
-              if not extension_plist_path.is_file():
-                  raise SystemExit(
-                      "❌ Info.plist ausente em "
-                      f"{extension}"
-                  )
-
-              with open(
-                  extension_plist_path,
-                  "rb",
-              ) as f:
-                  extension_plist = (
-                      plistlib.load(f)
-                  )
-
-              executable_name = (
-                  extension_plist.get(
-                      "CFBundleExecutable"
-                  )
-              )
-
-              if not executable_name:
-                  raise SystemExit(
-                      "❌ CFBundleExecutable ausente em "
-                      f"{extension.name}"
-                  )
-
-              extension_executable = (
-                  extension
-                  / executable_name
-              )
-
-              strong_inject(
-                  extension_executable,
-                  "@executable_path/../../RegramExtension.dylib",
-              )
-
-          print(
-              "✅ RegramExtension injetada nas "
-              "8 extensões originais"
-          )
-
-          # -----------------------------------------------------
-          # OPEN IN REGRAM - APPEX OFICIAL
-          # -----------------------------------------------------
-
-          appex_source = (
-              Path("prepared/appex")
-              / "OpenInRegramExtension.appex"
-          )
-
-          if not appex_source.is_dir():
-              raise SystemExit(
-                  "❌ OpenInRegramExtension.appex "
-                  "oficial não encontrada"
-              )
-
-          plugins = (
-              app
-              / "PlugIns"
-          )
-
-          plugins.mkdir(
-              exist_ok=True
-          )
-
-          appex_destination = (
-              plugins
-              / appex_source.name
-          )
-
-          if appex_destination.exists():
-              shutil.rmtree(
-                  appex_destination
-              )
-
-          shutil.copytree(
-              appex_source,
-              appex_destination,
-          )
-
-          print(
-              "✅ OpenInRegramExtension.appex "
-              "adicionada intacta"
-          )
-
-          # Validação da ligação interna da appex oficial.
-          with open(
-              appex_destination
-              / "Info.plist",
-              "rb",
-          ) as f:
-              extra_plist = plistlib.load(f)
-
-          extra_executable_name = (
-              extra_plist.get(
-                  "CFBundleExecutable"
-              )
-          )
-
-          if not extra_executable_name:
-              raise SystemExit(
-                  "❌ Executável da OpenInRegramExtension "
-                  "não encontrado no Info.plist"
-              )
-
-          extra_executable = (
-              appex_destination
-              / extra_executable_name
-          )
-
-          extra_dependencies = Executable(
-              str(extra_executable)
-          ).get_dependencies()
-
-          required_extra_dependency = (
-              "@executable_path/../../"
-              "RegramExtension.dylib"
-          )
-
-          if required_extra_dependency not in extra_dependencies:
-              raise SystemExit(
-                  "❌ OpenInRegramExtension não aponta "
-                  "para RegramExtension.dylib"
-              )
-
-          print(
-              "✅ OpenInRegramExtension -> "
-              "../../RegramExtension.dylib confirmado"
-          )
-
-          # -----------------------------------------------------
-          # INFOPLIST - MESMAS ALTERAÇÕES DO FOUAD
-          # -----------------------------------------------------
-
-          url_types = plist.get(
-              "CFBundleURLTypes",
-              [],
-          )
-
-          url_target = None
-
-          for item in url_types:
-              schemes = item.get(
-                  "CFBundleURLSchemes",
-                  [],
-              )
-
-              if (
-                  item.get(
-                      "CFBundleURLName"
-                  )
-                  == "com.burbn.instagram"
-                  or "instagram" in schemes
-              ):
-                  url_target = item
-                  break
-
-          if url_target is None:
-              raise SystemExit(
-                  "❌ Entrada original CFBundleURLTypes "
-                  "do Instagram não encontrada"
-              )
-
-          schemes = url_target.setdefault(
-              "CFBundleURLSchemes",
-              [],
-          )
-
-          if "regram" not in schemes:
-              schemes.append(
-                  "regram"
-              )
-
-          icon_entries = {
-              "2010": {
-                  "CFBundleIconFiles": [
-                      "2010@2x",
-                      "2010@3x",
-                      "2010-iPad@2x",
-                      "2010-iPadPro@2x",
-                  ]
-              },
-              "2011": {
-                  "CFBundleIconFiles": [
-                      "2011@2x",
-                      "2011@3x",
-                      "2011-iPad@2x",
-                      "2011-iPadPro@2x",
-                  ]
-              },
-              "Regram": {
-                  "CFBundleIconFiles": [
-                      "Regram@2x",
-                      "Regram@3x",
-                      "Regram-iPad@2x",
-                      "Regram-iPadPro@2x",
-                  ]
-              },
-              "Regram-2": {
-                  "CFBundleIconFiles": [
-                      "Regram2@2x",
-                      "Regram2@3x",
-                      "Regram2-iPad@2x",
-                      "Regram2-iPadPro@2x",
-                  ]
-              },
-              "Regram-Dark": {
-                  "CFBundleIconFiles": [
-                      "Regram-Dark@2x",
-                      "Regram-Dark@3x",
-                      "Regram-Dark-iPad@2x",
-                      "Regram-Dark-iPadPro@2x",
-                  ]
-              },
-          }
-
-          bundle_icons = plist.get(
-              "CFBundleIcons"
-          )
-
-          if not isinstance(
-              bundle_icons,
-              dict,
-          ):
-              raise SystemExit(
-                  "❌ CFBundleIcons original não encontrado"
-              )
-
-          alternate_icons = (
-              bundle_icons.setdefault(
-                  "CFBundleAlternateIcons",
-                  {},
-              )
-          )
-
-          alternate_icons.update(
-              icon_entries
-          )
-
-          # O IPA oficial do Fouad altera apenas CFBundleIcons.
-          # Não adicionamos os cinco ícones em CFBundleIcons~ipad.
-
-          plist["NSAppTransportSecurity"] = {
-              "NSAllowsArbitraryLoads": True
-          }
-
-          plist[
-              "UISupportsDocumentBrowser"
-          ] = True
-
-          plist[
-              "UIRequiredDeviceCapabilities"
-          ] = [
-              "arm64"
-          ]
-
-          # Não removemos DecryptedBy: isso é metadado externo
-          # do processo de descriptografia, não parte funcional
-          # do Regram.
-
-          with open(
-              plist_path,
-              "wb",
-          ) as f:
-              plistlib.dump(
-                  plist,
-                  f,
-                  fmt=plistlib.FMT_BINARY,
-                  sort_keys=False,
-              )
-
-          print("✅ regram:// registrado")
-          print(
-              "✅ 5 CFBundleAlternateIcons registrados"
-          )
-          print(
-              "✅ Ajustes adicionais de Info.plist "
-              "do Fouad aplicados"
-          )
-
-          # -----------------------------------------------------
-          # VALIDAÇÃO FINAL DO PERFIL REGRAM
-          # -----------------------------------------------------
-
-          main_dependencies = Executable(
-              str(main_executable)
-          ).get_dependencies()
-
-          required_main = [
-              "@executable_path/RegramExtension.dylib",
-              "@executable_path/Regram.dylib",
-          ]
-
-          for dependency in required_main:
-              if dependency not in main_dependencies:
-                  raise SystemExit(
-                      "❌ Dependência principal ausente: "
-                      f"{dependency}"
-                  )
-
-          all_extensions = []
-
-          for directory_name in (
-              "PlugIns",
-              "Extensions",
-          ):
-              directory = (
-                  app
-                  / directory_name
-              )
-
-              if directory.exists():
-                  all_extensions.extend(
-                      sorted(
-                          directory.glob(
-                              "*.appex"
-                          )
-                      )
-                  )
-
-          if len(all_extensions) != 9:
-              raise SystemExit(
-                  "❌ Esperava 9 extensões após "
-                  f"adicionar o Regram; encontrei "
-                  f"{len(all_extensions)}"
-              )
-
-          print(
-              "✅ Estrutura final: "
-              "8 extensões originais + 1 Regram"
-          )
-
-          # -----------------------------------------------------
-          # REEMPACOTAR
-          # -----------------------------------------------------
-
-          final_path = (
-              Path.cwd()
-              / "Final.ipa"
-          )
-
-          if final_path.exists():
-              final_path.unlink()
-
-          subprocess.run(
-              [
-                  "zip",
-                  "-qry",
-                  str(final_path),
-                  ".",
-              ],
-              cwd=work,
-              check=True,
-          )
-
-          if not final_path.is_file():
-              raise SystemExit(
-                  "❌ Final.ipa não foi criado"
-              )
-
-          print()
-          print(
-              "✅ Regram instalado seguindo o "
-              "layout oficial do Fouad"
-          )
-          PY
-
-      # =========================================================
-      # 7. CYAN - OUTROS APPS
-      # =========================================================
-
-      - name: Inject with Cyan
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
-        run: |
-          mapfile -t INJECT_FILES < inject_files.txt
-
-          CYAN_ARGS=(
-            -i input.ipa
-            -o Cyan_Output.ipa
-            -u
-            -w
-          )
-
-          if [ "${#INJECT_FILES[@]}" -gt 0 ]; then
-            CYAN_ARGS+=("-f")
-
-            for FILE in "${INJECT_FILES[@]}"; do
-              CYAN_ARGS+=("$FILE")
-            done
-          fi
-
-          if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
-            echo "🧹 Extensões serão removidas"
-            CYAN_ARGS+=("-e")
-          else
-            echo "🧩 Extensões originais serão preservadas"
-          fi
-
-          CYAN_ARGS+=("--overwrite")
-
-          echo "💉 Executando Cyan..."
-          cyan "${CYAN_ARGS[@]}"
-
-          if [ ! -f Cyan_Output.ipa ]; then
-            echo "❌ Cyan não gerou Cyan_Output.ipa"
-            exit 1
-          fi
-
-          echo "✅ Cyan concluído"
-
-      # =========================================================
-      # 8. LAYOUT DOS OUTROS APPS
-      # =========================================================
-
-      - name: Reproduce functional dylib layout
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
-        env:
-          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
-        run: |
-          python <<'PY'
-          import os
-          import plistlib
-          import shutil
-          import zipfile
-          from pathlib import Path
-
-          from cyan.tbhtypes.executable import Executable
-
-          bundle_id = os.environ["BUNDLE_ID"]
-
-          ROOT_DYLIBS = {
-              "com.facebook.Facebook": [
-                  "Glow.dylib",
-              ],
-              "com.zhiliaoapp.musically": [
-                  "___RXTikTok.dylib",
-              ],
-              "ph.telegra.Telegraph": [
-                  "sideloadFixerLol.dylib",
-                  "TelegramChatFixer.dylib",
-                  "TelegramNotificationFix.dylib",
-                  "TelegramScreenshotBypass.dylib",
-              ],
-              "com.dr1ven.eraser": [
-                  "link_file_0.dylib",
-              ],
-              "com.letterboxd.LetterboxdApp": [
-                  "LetterboxdPatch.dylib",
-                  "sideloadbypass1.dylib",
-                  "sideloadbypass2.dylib",
-              ],
-          }
-
-          work = Path("layout_work")
-
-          if work.exists():
-              shutil.rmtree(work)
-
-          work.mkdir()
-
-          with zipfile.ZipFile(
-              "Cyan_Output.ipa",
-              "r",
-          ) as z:
-              z.extractall(work)
-
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
-
-          if len(apps) != 1:
-              raise SystemExit(
-                  "❌ .app principal não identificado"
-              )
-
-          app = apps[0]
-          plist_path = app / "Info.plist"
-
-          with open(
-              plist_path,
-              "rb",
-          ) as f:
-              plist = plistlib.load(f)
-
-          executable_name = plist.get(
-              "CFBundleExecutable"
-          )
-
-          if not executable_name:
-              raise SystemExit(
-                  "❌ CFBundleExecutable ausente"
-              )
-
-          executable_path = (
-              app
-              / executable_name
-          )
-
-          executable = Executable(
-              str(executable_path)
-          )
-
-          dylibs = ROOT_DYLIBS.get(
-              bundle_id,
-              [],
-          )
-
-          if dylibs:
-              executable.remove_signature()
-
-          for dylib_name in dylibs:
-              source = (
-                  app
-                  / "Frameworks"
-                  / dylib_name
-              )
-
-              destination = (
-                  app
-                  / dylib_name
-              )
-
-              if source.exists():
-                  if destination.exists():
-                      destination.unlink()
-
-                  shutil.move(
-                      source,
-                      destination,
-                  )
-
-                  print(
-                      f"✅ Frameworks/{dylib_name} -> raiz"
-                  )
-
-              elif destination.exists():
-                  print(
-                      f"ℹ️ {dylib_name} já está na raiz"
-                  )
-
-              else:
-                  raise SystemExit(
-                      f"❌ {dylib_name} não encontrado"
-                  )
-
-              old_load = (
-                  f"@rpath/{dylib_name}"
-              )
-
-              new_load = (
-                  f"@executable_path/{dylib_name}"
-              )
-
-              executable.change_dependency(
-                  old_load,
-                  new_load,
-              )
-
-              print(
-                  f"✅ {old_load} -> {new_load}"
-              )
-
-          output = Path(
-              "Layout_Output.ipa"
-          )
-
-          if output.exists():
-              output.unlink()
-
-          with zipfile.ZipFile(
-              output,
-              "w",
-              compression=zipfile.ZIP_DEFLATED,
-          ) as z:
-              for file in work.rglob("*"):
-                  if file.is_file():
-                      z.write(
-                          file,
-                          file.relative_to(work),
-                      )
-
-          print(
-              "✅ Layout das dylibs concluído"
-          )
-          PY
-
-      # =========================================================
-      # 9. IPAPATCH - OUTROS APPS
-      # =========================================================
-
-      - name: Apply IPA Patch to main executable only
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'main-only' }}
-        run: |
-          echo "🩹 Aplicando IPA Patch"
-          echo "Modo: main-only"
-          echo "ℹ️ As extensões originais serão retiradas temporariamente"
-          echo "   e restauradas intactas após o patch do app principal."
-
-          rm -rf ipapatch_main_work ipapatch_plugins_backup ipapatch_patched_work
-          mkdir -p ipapatch_main_work ipapatch_plugins_backup ipapatch_patched_work
-
-          unzip -q Layout_Output.ipa -d ipapatch_main_work
-
-          python <<'PY'
-          import hashlib
-          import json
-          import shutil
-          from pathlib import Path
-
-          work = Path("ipapatch_main_work")
-          backup_root = Path("ipapatch_plugins_backup")
-
-          apps = list((work / "Payload").glob("*.app"))
-          if len(apps) != 1:
-              raise SystemExit(
-                  f"❌ Esperava 1 app principal; encontrei {len(apps)}"
-              )
-
-          app = apps[0]
-          rel_app = app.relative_to(work)
-          manifest = {}
-
-          def sha256(path: Path) -> str:
-              h = hashlib.sha256()
-              with path.open("rb") as f:
-                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                      h.update(chunk)
-              return h.hexdigest()
-
-          for directory_name in ("PlugIns", "Extensions"):
-              source = app / directory_name
-              if not source.exists():
-                  continue
-
-              destination = backup_root / rel_app / directory_name
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              shutil.move(str(source), str(destination))
-
-              for file in destination.rglob("*"):
-                  if file.is_file():
-                      key = str(file.relative_to(backup_root))
-                      manifest[key] = sha256(file)
-
-              print(
-                  f"✅ {directory_name} reservado temporariamente"
-              )
-
-          if not manifest:
-              raise SystemExit(
-                  "❌ Nenhuma extensão original encontrada para preservar"
-              )
-
-          Path("ipapatch_plugins_manifest.json").write_text(
-              json.dumps(manifest, indent=2, sort_keys=True),
-              encoding="utf-8",
-          )
-
-          print(
-              f"✅ {len(manifest)} arquivo(s) das extensões "
-              "registrados para validação"
-          )
-          PY
-
-          (
-            cd ipapatch_main_work
-            zip -qry ../MainOnly_Input.ipa .
-          )
-
-          ./ipapatch \
-            --input MainOnly_Input.ipa \
-            --output MainOnly_Patched.ipa \
-            --noconfirm
-
-          if [ ! -f MainOnly_Patched.ipa ]; then
-            echo "❌ IPA Patch não gerou MainOnly_Patched.ipa"
-            exit 1
-          fi
-
-          unzip -q MainOnly_Patched.ipa -d ipapatch_patched_work
-
-          python <<'PY'
-          import hashlib
-          import json
-          import plistlib
-          import shutil
-          from pathlib import Path
-
-          from cyan.tbhtypes.executable import Executable
-
-          patched_work = Path("ipapatch_patched_work")
-          backup_root = Path("ipapatch_plugins_backup")
-          manifest = json.loads(
-              Path("ipapatch_plugins_manifest.json").read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          apps = list((patched_work / "Payload").glob("*.app"))
-          if len(apps) != 1:
-              raise SystemExit(
-                  f"❌ Esperava 1 app principal após IPA Patch; "
-                  f"encontrei {len(apps)}"
-              )
-
-          app = apps[0]
-          rel_app = app.relative_to(patched_work)
-
-          with (app / "Info.plist").open("rb") as f:
-              plist = plistlib.load(f)
-
-          executable_name = plist.get("CFBundleExecutable")
-          if not executable_name:
-              raise SystemExit("❌ CFBundleExecutable ausente")
-
-          executable_path = app / executable_name
-          dependencies = Executable(
-              str(executable_path)
-          ).get_dependencies()
-
-          required = "@rpath/zxPluginsInject.dylib"
-          if required not in dependencies:
-              raise SystemExit(
-                  "❌ IPA Patch não injetou zxPluginsInject "
-                  "no executável principal"
-              )
-
-          zx = app / "Frameworks" / "zxPluginsInject.dylib"
-          if not zx.is_file():
-              raise SystemExit(
-                  "❌ Frameworks/zxPluginsInject.dylib ausente"
-              )
-
-          print(
-              "✅ Executável principal -> "
-              "@rpath/zxPluginsInject.dylib"
-          )
-          print(
-              "✅ Frameworks/zxPluginsInject.dylib adicionado "
-              "pelo IPA Patch"
-          )
-
-          for directory_name in ("PlugIns", "Extensions"):
-              backup = backup_root / rel_app / directory_name
-              if not backup.exists():
-                  continue
-
-              destination = app / directory_name
-              if destination.exists():
-                  if destination.is_dir():
-                      shutil.rmtree(destination)
-                  else:
-                      destination.unlink()
-
-              destination.parent.mkdir(parents=True, exist_ok=True)
-              shutil.copytree(backup, destination)
-              print(
-                  f"✅ {directory_name} original restaurado intacto"
-              )
-
-          def sha256(path: Path) -> str:
-              h = hashlib.sha256()
-              with path.open("rb") as f:
-                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                      h.update(chunk)
-              return h.hexdigest()
-
-          for relative, expected_hash in manifest.items():
-              restored = patched_work / relative
-              if not restored.is_file():
-                  raise SystemExit(
-                      f"❌ Arquivo restaurado ausente: {relative}"
-                  )
-
-              actual_hash = sha256(restored)
-              if actual_hash != expected_hash:
-                  raise SystemExit(
-                      "❌ Extensão original foi alterada: "
-                      f"{relative}"
-                  )
-
-          print(
-              "✅ Hashes confirmados: extensões originais "
-              "permanecem byte por byte intactas"
-          )
-          PY
-
-          (
-            cd ipapatch_patched_work
-            zip -qry ../Patched_Output.ipa .
-          )
-
-          if [ ! -f Patched_Output.ipa ]; then
-            echo "❌ Patched_Output.ipa não foi criado"
-            exit 1
-          fi
-
-          echo "✅ IPA Patch main-only concluído"
-
-      - name: Apply IPA Patch to original plugins only
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode != 'main-only' }}
-        run: |
-          echo "🩹 Aplicando IPA Patch"
-          echo "Modo: plugins-only"
-
-          ./ipapatch \
-            --input Layout_Output.ipa \
-            --output Patched_Output.ipa \
-            --plugins-only \
-            --noconfirm
-
-          if [ ! -f Patched_Output.ipa ]; then
-            echo "❌ IPA Patch não gerou Patched_Output.ipa"
-            exit 1
-          fi
-
-          echo "✅ IPA Patch plugins-only concluído"
-
-      - name: Skip IPA Patch when not required
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch != 'true' }}
-        run: |
-          cp Layout_Output.ipa Patched_Output.ipa
-          echo "ℹ️ IPA Patch não necessário para este app"
-
-      # =========================================================
-      # 10. BUNDLES E APPEX - OUTROS APPS
-      # =========================================================
-
-      - name: Add bundles and extra extensions
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
-        run: |
-          python <<'PY'
-          import shutil
-          import zipfile
-          from pathlib import Path
-
-          work = Path(
-              "package_work"
-          )
-
-          if work.exists():
-              shutil.rmtree(work)
-
-          work.mkdir()
-
-          with zipfile.ZipFile(
-              "Patched_Output.ipa",
-              "r",
-          ) as z:
-              z.extractall(work)
-
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
-
-          if len(apps) != 1:
-              raise SystemExit(
-                  "❌ App principal não encontrado"
-              )
-
-          app = apps[0]
-
-          bundle_source = Path(
-              "prepared/bundles"
-          )
-
-          if bundle_source.exists():
-              for item in bundle_source.iterdir():
-                  destination = (
-                      app
-                      / item.name
-                  )
-
-                  if destination.exists():
-                      if destination.is_dir():
-                          shutil.rmtree(
-                              destination
-                          )
-                      else:
-                          destination.unlink()
-
-                  if item.is_dir():
-                      shutil.copytree(
-                          item,
-                          destination,
-                      )
-                  else:
-                      shutil.copy2(
-                          item,
-                          destination,
-                      )
-
-                  print(
-                      f"📦 Bundle: {item.name}"
-                  )
-
-          appex_source = Path(
-              "prepared/appex"
-          )
-
-          if (
-              appex_source.exists()
-              and any(
-                  appex_source.iterdir()
-              )
-          ):
-              plugins = (
-                  app
-                  / "PlugIns"
-              )
-
-              plugins.mkdir(
-                  exist_ok=True
-              )
-
-              for item in appex_source.iterdir():
-                  destination = (
-                      plugins
-                      / item.name
-                  )
-
-                  if destination.exists():
-                      if destination.is_dir():
-                          shutil.rmtree(
-                              destination
-                          )
-                      else:
-                          destination.unlink()
-
-                  if item.is_dir():
-                      shutil.copytree(
-                          item,
-                          destination,
-                      )
-                  else:
-                      shutil.copy2(
-                          item,
-                          destination,
-                      )
-
-                  print(
-                      f"🧩 APPEX extra: {item.name}"
-                  )
-
-          output = Path(
-              "Package_Output.ipa"
-          )
-
-          if output.exists():
-              output.unlink()
-
-          with zipfile.ZipFile(
-              output,
-              "w",
-              compression=zipfile.ZIP_DEFLATED,
-          ) as z:
-              for file in work.rglob("*"):
-                  if file.is_file():
-                      z.write(
-                          file,
-                          file.relative_to(work),
-                      )
-
-          print(
-              "✅ Bundles e APPEX extras adicionados"
-          )
-          PY
-
-      # =========================================================
-      # 11. INFOPLIST - OUTROS APPS
-      # =========================================================
-
-      - name: Apply Info.plist changes
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
-        run: |
-          python <<'PY'
-          import json
-          import plistlib
-          import shutil
-          import zipfile
-          from pathlib import Path
-
-          with open(
-              "selected_addon.json",
-              "r",
-              encoding="utf-8",
-          ) as f:
-              addon = json.load(f)
-
-          changes = addon.get(
-              "plist",
-              {},
-          )
-
-          if not changes:
-              shutil.copy2(
-                  "Package_Output.ipa",
-                  "Final.ipa",
-              )
-
-              print(
-                  "ℹ️ Nenhuma alteração de Info.plist"
-              )
-
-              raise SystemExit(0)
-
-          work = Path(
-              "plist_work"
-          )
-
-          if work.exists():
-              shutil.rmtree(work)
-
-          work.mkdir()
-
-          with zipfile.ZipFile(
-              "Package_Output.ipa",
-              "r",
-          ) as z:
-              z.extractall(work)
-
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
-
-          if len(apps) != 1:
-              raise SystemExit(
-                  "❌ App principal não encontrado"
-              )
-
-          app = apps[0]
-          plist_path = app / "Info.plist"
-
-          with open(
-              plist_path,
-              "rb",
-          ) as f:
-              plist = plistlib.load(f)
-
-          print(
-              "📝 Alterações no Info.plist:"
-          )
-
-          for key, value in changes.items():
-              old = plist.get(
-                  key,
-                  "<não existente>",
-              )
-
-              plist[key] = value
-
-              print(
-                  f"✅ {key}: {old} -> {value}"
-              )
-
-          with open(
-              plist_path,
-              "wb",
-          ) as f:
-              plistlib.dump(
-                  plist,
-                  f,
-                  fmt=plistlib.FMT_BINARY,
-              )
-
-          output = Path(
-              "Final.ipa"
-          )
-
-          if output.exists():
-              output.unlink()
-
-          with zipfile.ZipFile(
-              output,
-              "w",
-              compression=zipfile.ZIP_DEFLATED,
-          ) as z:
-              for file in work.rglob("*"):
-                  if file.is_file():
-                      z.write(
-                          file,
-                          file.relative_to(work),
-                      )
-
-          print(
-              "✅ Info.plist atualizado"
-          )
-          PY
-
-      # =========================================================
-      # 12. VALIDAÇÃO
-      # =========================================================
-
-      - name: Validate final IPA
-        run: |
-          if [ ! -f Final.ipa ]; then
-            echo "❌ Final.ipa ausente"
-            exit 1
-          fi
-
-          if ! unzip -tq Final.ipa > /dev/null; then
-            echo "❌ Final.ipa inválido"
-            exit 1
-          fi
-
-          echo ""
-          echo "=========================================="
-          echo "✅ IPA FINAL CRIADO"
-          echo "=========================================="
-          echo ""
-          echo "📱 Nome:"
-          echo "${{ steps.prepare.outputs.app_name }}"
-          echo ""
-          echo "📦 Bundle ID:"
-          echo "${{ steps.prepare.outputs.bundle_id }}"
-          echo ""
-          echo "🔢 Versão:"
-          echo "${{ steps.prepare.outputs.version }}"
-          echo ""
-          echo "🧩 Tweak:"
-          echo "${{ steps.prepare.outputs.addon_name }}"
-          echo ""
-          echo "🩹 IPA Patch:"
-          echo "${{ steps.prepare.outputs.ipapatch }}"
-          echo ""
-          echo "🩹 Modo IPA Patch:"
-          echo "${{ steps.prepare.outputs.ipapatch_mode }}"
-          echo ""
-
-          ls -lh Final.ipa
-
-      # =========================================================
-      # 13. TELEGRAM BOT
-      # =========================================================
-
-      - name: Send final IPA to Telegram bot
-        env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
-
-          APP_NAME: ${{ steps.prepare.outputs.app_name }}
-          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
-          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
-        run: |
-          python telegram_send.py
+{
+  "apps": {
+    "com.facebook.Facebook": {
+      "name": "Facebook",
+      "addons": [
+        {
+          "name": "Glow",
+          "type": "package",
+          "version": "1.3.1",
+          "files": [
+            {
+              "path": "addons/facebook/dylib/Glow.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/facebook/bundle/Glow.bundle.zip",
+              "action": "bundle"
+            }
+          ],
+          "ipapatch": true,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.burbn.instagram": {
+      "name": "Instagram",
+      "addons": [
+        {
+          "name": "Regram",
+          "type": "package",
+          "version": "5.2.1",
+          "files": [
+            {
+              "path": "addons/instagram/dylib/Regram.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/instagram/dylib/RegramExtension.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/instagram/bundle/Regram.bundle.zip",
+              "action": "bundle"
+            },
+            {
+              "path": "addons/instagram/appex/OpenInRegramExtension.appex.zip",
+              "action": "appex"
+            },
+            {
+              "path": "addons/instagram/icons/RegramIcons-Official.zip",
+              "action": "icons"
+            },
+            {
+              "path": "addons/instagram/frameworks/Regram-FFmpegKit-Official.zip",
+              "action": "frameworks"
+            }
+          ],
+          "ipapatch": false,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.zhiliaoapp.musically": {
+      "name": "TikTok",
+      "addons": [
+        {
+          "name": "RXTikTok",
+          "type": "package",
+          "version": "1.6.6",
+          "files": [
+            {
+              "path": "addons/tiktok/dylib/___RXTikTok.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/tiktok/bundle/RXTikTok.bundle.zip",
+              "action": "bundle"
+            },
+            {
+              "path": "addons/tiktok/appex/OpenTikTokSafariExtension.appex.zip",
+              "action": "appex"
+            }
+          ],
+          "ipapatch": true,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.atebits.Tweetie2": {
+      "name": "X",
+      "addons": [
+        {
+          "name": "BHTwitter",
+          "type": "package",
+          "version": "6.4.0",
+          "files": [
+            {
+              "path": "addons/x/dylib/BHTwitter.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/x/dylib/libbhFLEX.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/x/dylib/keychainfix.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/x/debs/twitdate_0.0.1-2.deb",
+              "action": "inject"
+            },
+            {
+              "path": "addons/x/bundle/BHTwitter.bundle.zip",
+              "action": "bundle"
+            },
+            {
+              "path": "addons/x/appex/OpenTwitterSafariExtension.appex.zip",
+              "action": "appex"
+            }
+          ],
+          "plist": {
+            "UIDesignRequiresCompatibility": false
+          },
+          "ipapatch": true,
+          "ipapatch_mode": "main-only",
+          "remove_extensions": false
+        }
+      ]
+    },
+    "ph.telegra.Telegraph": {
+      "name": "Telegram",
+      "addons": [
+        {
+          "name": "Lead",
+          "type": "package",
+          "files": [
+            {
+              "path": "addons/dylib/Lead.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/sideloadFixerLol.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/TelegramChatFixer.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/TelegramNotificationFix.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/TelegramScreenshotBypass.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/bundle/Lead.bundle.zip",
+              "action": "bundle"
+            }
+          ],
+          "ipapatch": true,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.reddit.Reddit": {
+      "name": "Reddit",
+      "addons": [
+        {
+          "name": "MoesReddit",
+          "type": "package",
+          "files": [
+            {
+              "path": "addons/dylib/MoesReddit.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/RedditSideloadFix.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/sideloadKeychainfix.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/bundle/MoesReddit.bundle.zip",
+              "action": "bundle"
+            },
+            {
+              "path": "addons/appex/OpenRedditSafariExtension.appex.zip",
+              "action": "appex"
+            }
+          ],
+          "ipapatch": true,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.dr1ven.eraser": {
+      "name": "Photoroom",
+      "addons": [
+        {
+          "name": "Photoroom Patch",
+          "type": "package",
+          "files": [
+            {
+              "path": "addons/dylib/link_file_0.dylib",
+              "action": "inject"
+            }
+          ],
+          "ipapatch": true,
+          "remove_extensions": false
+        }
+      ]
+    },
+    "com.letterboxd.LetterboxdApp": {
+      "name": "Letterboxd",
+      "addons": [
+        {
+          "name": "Letterboxd Patch",
+          "type": "package",
+          "files": [
+            {
+              "path": "addons/dylib/LetterboxdPatch.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/sideloadbypass1.dylib",
+              "action": "inject"
+            },
+            {
+              "path": "addons/dylib/sideloadbypass2.dylib",
+              "action": "inject"
+            }
+          ],
+          "ipapatch": false,
+          "remove_extensions": false
+        }
+      ]
+    }
+  }
+}
