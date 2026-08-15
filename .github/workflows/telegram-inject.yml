@@ -288,6 +288,29 @@ jobs:
           PY
 
       # =========================================================
+      # 3A. MESSENGER - PREPARAR TRADUÇÃO PT-BR
+      # =========================================================
+
+      - name: Download and prepare Messenger pt-BR translation
+        id: messenger_translation
+        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TELEGRAM_TRANSLATION_CHANNEL_ID: ${{ secrets.TELEGRAM_TRANSLATION_CHANNEL_ID }}
+          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          APP_BUILD: ${{ steps.prepare.outputs.build }}
+        run: |
+          python telegram_messenger_translation.py
+
+          test -f messenger_translation/fbt_language_pack.bin
+          test -f messenger_translation/manifest.plist
+          test -f messenger_translation/metadata.json
+
+          echo "✅ Tradução pt-BR do Messenger preparada"
+
+      # =========================================================
       # 4. IPAPATCH
       # =========================================================
 
