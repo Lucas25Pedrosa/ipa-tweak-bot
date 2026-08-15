@@ -1,0 +1,70 @@
+name: Build MessengerNameFix
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install Theos
+        run: |
+          set -euo pipefail
+          git clone --recursive https://github.com/theos/theos.git "$HOME/theos"
+          echo "THEOS=$HOME/theos" >> "$GITHUB_ENV"
+
+      - name: Install iOS SDK
+        run: |
+          set -euo pipefail
+          mkdir -p "$THEOS/sdks"
+
+          curl -L \
+            https://github.com/theos/sdks/archive/refs/heads/master.zip \
+            -o /tmp/theos-sdks.zip
+
+          unzip -q /tmp/theos-sdks.zip \
+            -d /tmp/theos-sdks
+
+          cp -R \
+            /tmp/theos-sdks/sdks-master/*.sdk \
+            "$THEOS/sdks/"
+
+      - name: Build MessengerNameFix
+        working-directory: messenger-name-fix
+        run: |
+          set -euo pipefail
+
+          make clean
+          make FINALPACKAGE=1
+
+          DYLIB="$(
+            find .theos \
+              -type f \
+              -name 'MessengerNameFix.dylib' \
+              | head -n 1
+          )"
+
+          if [ -z "$DYLIB" ] || [ ! -f "$DYLIB" ]; then
+            echo "❌ MessengerNameFix.dylib não encontrado"
+            exit 1
+          fi
+
+          mkdir -p ../output
+          cp "$DYLIB" \
+            ../output/MessengerNameFix.dylib
+
+          echo "✅ MessengerNameFix.dylib compilado"
+          file ../output/MessengerNameFix.dylib
+          ls -lh ../output/MessengerNameFix.dylib
+
+      - name: Upload MessengerNameFix dylib
+        uses: actions/upload-artifact@v4
+        with:
+          name: MessengerNameFix-dylib
+          path: output/MessengerNameFix.dylib
+          if-no-files-found: error
+          retention-days: 30
