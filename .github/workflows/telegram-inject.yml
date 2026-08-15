@@ -1324,6 +1324,7 @@ jobs:
           import os
           import plistlib
           import shutil
+          import subprocess
           import zipfile
           from pathlib import Path
 
@@ -1474,6 +1475,59 @@ jobs:
                   "MessengerEnhancements.dylib",
               ]
 
+              def messenger_dependencies():
+                  proc = subprocess.run(
+                      [
+                          Executable.otool,
+                          "-L",
+                          str(executable_path),
+                      ],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                  )
+
+                  dependencies = []
+
+                  for raw_line in proc.stdout.splitlines():
+                      line = raw_line.strip()
+
+                      if not line:
+                          continue
+
+                      if line.endswith(":"):
+                          continue
+
+                      if line.startswith(
+                          "(architecture "
+                      ):
+                          continue
+
+                      marker = " (compatibility version "
+
+                      if marker in line:
+                          dependency = line.split(
+                              marker,
+                              1,
+                          )[0]
+                      else:
+                          dependency = line
+
+                      dependency = dependency.strip()
+
+                      if dependency.startswith(
+                          (
+                              "/Library/",
+                              "/usr/lib/",
+                              "@",
+                          )
+                      ):
+                          dependencies.append(
+                              dependency
+                          )
+
+                  return dependencies
+
               executable.remove_signature()
 
               for dylib_name in messenger_dylibs:
@@ -1495,7 +1549,7 @@ jobs:
                   )
 
                   dependencies = (
-                      executable.get_dependencies()
+                      messenger_dependencies()
                   )
 
                   if new_load in dependencies:
@@ -1518,7 +1572,7 @@ jobs:
 
                   if not candidates:
                       print(
-                          "❌ Dependências atuais do "
+                          "❌ Dependências reais do "
                           "executável principal:"
                       )
 
@@ -1528,8 +1582,8 @@ jobs:
                           )
 
                       raise SystemExit(
-                          "❌ Nenhum load command encontrado "
-                          f"para {dylib_name}"
+                          "❌ Nenhum load command real "
+                          f"encontrado para {dylib_name}"
                       )
 
                   if len(candidates) > 1:
@@ -1560,7 +1614,7 @@ jobs:
                   )
 
               final_dependencies = (
-                  executable.get_dependencies()
+                  messenger_dependencies()
               )
 
               for dylib_name in messenger_dylibs:
@@ -1590,7 +1644,7 @@ jobs:
 
               print(
                   "✅ 3 load commands do Messenger "
-                  "normalizados"
+                  "normalizados via otool"
               )
               print(
                   "✅ Messenger segue o layout oficial "
