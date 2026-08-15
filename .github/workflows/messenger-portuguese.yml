@@ -39,35 +39,36 @@ jobs:
                   stringByAppendingPathComponent:MPFileName];
           }
 
-          static NSString *MPDestinationPath(void) {
+          static NSArray<NSString *> *MPDestinationPaths(void) {
               NSString *home = NSHomeDirectory();
 
-              NSString *directory = [home
+              NSString *caskDirectory = [home
                   stringByAppendingPathComponent:
                       @"Library/cask/unscoped/"
                        "dod_sessionless_storage_cache/v0"];
 
-              return [directory
-                  stringByAppendingPathComponent:MPFileName];
+              NSString *managedStashDirectory = [home
+                  stringByAppendingPathComponent:
+                      @"Library/Application Support/"
+                       "com.facebook.Messenger/"
+                       "mobile_storage_infra/.managed/stash/"
+                       "dod_sessionless_storage_cacheunscoped"];
+
+              return @[
+                  [caskDirectory
+                      stringByAppendingPathComponent:MPFileName],
+                  [managedStashDirectory
+                      stringByAppendingPathComponent:MPFileName],
+              ];
           }
 
-          static void MPInstallLanguagePack(void) {
-              NSFileManager *fm =
-                  [NSFileManager defaultManager];
-
-              NSString *source = MPSourcePath();
-              NSString *destination =
-                  MPDestinationPath();
+          static void MPCopyPackToDestination(
+              NSFileManager *fm,
+              NSString *source,
+              NSString *destination
+          ) {
               NSString *directory =
                   [destination stringByDeletingLastPathComponent];
-
-              BOOL isDirectory = NO;
-
-              if (![fm fileExistsAtPath:source
-                            isDirectory:&isDirectory] ||
-                  isDirectory) {
-                  return;
-              }
 
               NSError *error = nil;
 
@@ -93,6 +94,30 @@ jobs:
               [fm copyItemAtPath:source
                           toPath:destination
                            error:&error];
+          }
+
+          static void MPInstallLanguagePack(void) {
+              NSFileManager *fm =
+                  [NSFileManager defaultManager];
+
+              NSString *source = MPSourcePath();
+
+              BOOL isDirectory = NO;
+
+              if (![fm fileExistsAtPath:source
+                            isDirectory:&isDirectory] ||
+                  isDirectory) {
+                  return;
+              }
+
+              for (NSString *destination
+                   in MPDestinationPaths()) {
+                  MPCopyPackToDestination(
+                      fm,
+                      source,
+                      destination
+                  );
+              }
           }
 
           __attribute__((constructor))
@@ -328,8 +353,6 @@ jobs:
 
           APP="isolated/Payload/$APP_NAME"
 
-          # Remove somente da cópia temporária.
-          # O IPA final continuará usando todas as extensões originais.
           rm -rf "$APP/PlugIns"
 
           (
@@ -443,6 +466,11 @@ jobs:
           strings "$DYLIB" \
             | grep -F \
               "dod_sessionless_storage_cache/v0" \
+              > /dev/null
+
+          strings "$DYLIB" \
+            | grep -F \
+              "dod_sessionless_storage_cacheunscoped" \
               > /dev/null
 
           strings "$DYLIB" \
