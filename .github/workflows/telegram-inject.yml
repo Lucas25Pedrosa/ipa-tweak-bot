@@ -1441,6 +1441,58 @@ jobs:
                   f"✅ {old_load} -> {new_load}"
               )
 
+          if bundle_id == "com.facebook.Messenger":
+              messenger_dylibs = [
+                  "Sideload Keychain Fix.dylib",
+                  "MSGPlusX.dylib",
+                  "MessengerEnhancements.dylib",
+              ]
+              executable.remove_signature()
+              for dylib_name in messenger_dylibs:
+                  dylib_path = app / "Frameworks" / dylib_name
+                  if not dylib_path.is_file():
+                      raise SystemExit(
+                          "❌ Dylib do Messenger ausente: "
+                          f"Frameworks/{dylib_name}"
+                      )
+
+                  old_load = f"@rpath/{dylib_name}"
+                  new_load = (
+                      "@executable_path/Frameworks/"
+                      f"{dylib_name}"
+                  )
+                  dependencies = executable.get_dependencies()
+                  if new_load in dependencies:
+                      print(
+                          f"ℹ️ {dylib_name} já usa o caminho oficial"
+                      )
+                      continue
+                  if old_load not in dependencies:
+                      raise SystemExit(
+                          f"❌ Load command ausente: {old_load}"
+                      )
+                  executable.change_dependency(
+                      old_load,
+                      new_load,
+                  )
+                  print(
+                      f"✅ {old_load} -> {new_load}"
+                  )
+
+              substrate = (
+                  app / "Frameworks"
+                  / "CydiaSubstrate.framework"
+                  / "CydiaSubstrate"
+              )
+              if not substrate.is_file():
+                  raise SystemExit(
+                      "❌ CydiaSubstrate.framework não foi "
+                      "adicionado pelo Cyan"
+                  )
+              print(
+                  "✅ Messenger segue o layout oficial do MSGPlusX"
+              )
+
           output = Path(
               "Layout_Output.ipa"
           )
