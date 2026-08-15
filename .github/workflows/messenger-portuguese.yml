@@ -1,4 +1,4 @@
-name: Messenger 574 Portuguese V2
+name: Messenger 574 Portuguese V2.1 Lazy
 
 on:
   workflow_dispatch:
@@ -13,74 +13,79 @@ permissions:
 
 jobs:
   build-hook:
-    name: Build pt-BR V2 hook
+    name: Build pt-BR V2.1 lazy hook
     runs-on: macos-latest
     timeout-minutes: 15
 
     steps:
-      - name: Create V2 hook source
+      - name: Create V2.1 lazy hook source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
 
-          cat > build/MessengerPortugueseV2.m <<'OBJC'
+          cat > build/MessengerPortugueseV21.m <<'OBJC'
           #import <Foundation/Foundation.h>
           #import <objc/runtime.h>
           #import <objc/message.h>
-          #import <dlfcn.h>
           #import <dispatch/dispatch.h>
           #import <stdarg.h>
 
-          typedef void (*MSHookFunction_t)(void *, void *, void **);
-          typedef void (*MSHookMessageEx_t)(Class, SEL, IMP, IMP *);
-
-          static BOOL (*MPOriginalDownloadableEnabled)(void) = NULL;
-          static id (*MPOriginalBundledLoad)(id, SEL, id, id) = NULL;
-
-          static BOOL MPFunctionHookInstalled = NO;
-          static BOOL MPMessageHookInstalled = NO;
+          static IMP MPOriginalBundledLoaderIMP = NULL;
+          static BOOL MPHookInstalled = NO;
+          static NSInteger MPProbeAttempt = 0;
+          static const NSInteger MPMaxProbeAttempts = 180;
 
           static NSString *MPLogPath(void) {
               return [NSHomeDirectory()
                   stringByAppendingPathComponent:
-                      @"Documents/MessengerPtBRFix-V2.log"];
+                      @"Documents/MessengerPtBRFix-V21.log"];
           }
 
           static void MPLog(NSString *format, ...) {
-              va_list args;
-              va_start(args, format);
+              @autoreleasepool {
+                  va_list args;
+                  va_start(args, format);
 
-              NSString *message =
-                  [[NSString alloc] initWithFormat:format
-                                        arguments:args];
+                  NSString *message =
+                      [[NSString alloc] initWithFormat:format
+                                            arguments:args];
 
-              va_end(args);
+                  va_end(args);
 
-              NSLog(@"[MessengerPtBRFix-V2] %@", message);
+                  NSLog(@"[MessengerPtBRFix-V21] %@", message);
 
-              NSString *line =
-                  [NSString stringWithFormat:@"%@ %@\n",
-                                             [NSDate date],
-                                             message];
+                  NSString *line =
+                      [NSString stringWithFormat:
+                          @"%@ %@\n",
+                          [NSDate date],
+                          message];
 
-              NSData *data =
-                  [line dataUsingEncoding:NSUTF8StringEncoding];
+                  NSData *data =
+                      [line dataUsingEncoding:
+                          NSUTF8StringEncoding];
 
-              NSString *path = MPLogPath();
+                  if (!data) {
+                      return;
+                  }
 
-              NSFileManager *fm =
-                  [NSFileManager defaultManager];
+                  NSString *path = MPLogPath();
+                  NSFileManager *fm =
+                      [NSFileManager defaultManager];
 
-              if (![fm fileExistsAtPath:path]) {
-                  [data writeToFile:path atomically:YES];
-                  return;
-              }
+                  if (![fm fileExistsAtPath:path]) {
+                      [data writeToFile:path atomically:YES];
+                      return;
+                  }
 
-              NSFileHandle *handle =
-                  [NSFileHandle fileHandleForWritingAtPath:path];
+                  NSFileHandle *handle =
+                      [NSFileHandle
+                          fileHandleForWritingAtPath:path];
 
-              if (handle) {
+                  if (!handle) {
+                      return;
+                  }
+
                   @try {
                       [handle seekToEndOfFile];
                       [handle writeData:data];
@@ -99,7 +104,8 @@ jobs:
           static BOOL MPValidatePack(NSString *path) {
               NSData *data =
                   [NSData dataWithContentsOfFile:path
-                                        options:NSDataReadingMappedIfSafe
+                                        options:
+                                            NSDataReadingMappedIfSafe
                                           error:nil];
 
               if (data.length < 8) {
@@ -108,10 +114,6 @@ jobs:
 
               const unsigned char *bytes = data.bytes;
 
-              /*
-               * FlatBuffer:
-               * bytes 4..7 = FBLP
-               */
               return bytes[4] == 'F' &&
                      bytes[5] == 'B' &&
                      bytes[6] == 'L' &&
@@ -131,327 +133,369 @@ jobs:
                   @"FBLocaleString",
                   @"fbLocale",
                   @"localeIdentifier",
-                  @"identifier"
+                  @"identifier",
+                  @"locale"
               ];
 
               for (NSString *selectorName in selectors) {
                   SEL selector =
                       NSSelectorFromString(selectorName);
 
-                  if ([locale respondsToSelector:selector]) {
+                  if (![locale respondsToSelector:selector]) {
+                      continue;
+                  }
+
+                  @try {
                       id (*sendObject)(id, SEL) =
-                          (id (*)(id, SEL))(void *)objc_msgSend;
+                          (id (*)(id, SEL))
+                              (void *)objc_msgSend;
 
                       id value =
                           sendObject(locale, selector);
 
-                      if ([value isKindOfClass:[NSString class]]) {
+                      if ([value
+                          isKindOfClass:[NSString class]]) {
                           return (NSString *)value;
                       }
+
+                      if (value) {
+                          NSString *description =
+                              [value description];
+
+                          if (description.length > 0) {
+                              return description;
+                          }
+                      }
+                  } @catch (__unused NSException *exception) {
                   }
               }
 
-              return [locale description] ?: @"";
+              @try {
+                  return [locale description] ?: @"";
+              } @catch (__unused NSException *exception) {
+                  return @"";
+              }
           }
 
-          static BOOL MPIsPortugueseLocale(id locale) {
-              NSString *value =
-                  [[MPStringFromLocaleObject(locale)
+          static NSString *MPNormalizeLocale(NSString *value) {
+              if (!value) {
+                  return @"";
+              }
+
+              NSString *normalized =
+                  [[value
                     stringByReplacingOccurrencesOfString:@"-"
                                               withString:@"_"]
                     lowercaseString];
 
-              return [value isEqualToString:@"pt"] ||
-                     [value hasPrefix:@"pt_br"] ||
-                     [value hasPrefix:@"pt_"];
+              normalized =
+                  [normalized
+                    stringByReplacingOccurrencesOfString:@" "
+                                              withString:@""];
+
+              return normalized;
           }
 
-          /*
-           * Força o Messenger a não depender da rota
-           * Download-on-Demand para language packs.
-           */
-          static BOOL MPDownloadableEnabledReplacement(void) {
-              MPLog(@"FBCoreLocaleIsDownloadableLanguagePackEnabled -> NO");
+          static BOOL MPCurrentSystemPrefersPtBR(void) {
+              NSString *preferred =
+                  [[NSLocale preferredLanguages]
+                      firstObject];
+
+              NSString *normalized =
+                  MPNormalizeLocale(preferred);
+
+              return [normalized hasPrefix:@"pt_br"];
+          }
+
+          static BOOL MPIsPtBRLocale(id locale) {
+              NSString *raw =
+                  MPStringFromLocaleObject(locale);
+
+              NSString *normalized =
+                  MPNormalizeLocale(raw);
+
+              if ([normalized hasPrefix:@"pt_br"]) {
+                  return YES;
+              }
+
+              /*
+               * Alguns objetos internos podem imprimir apenas "pt".
+               * Só aceitamos nesse caso se o idioma preferido do
+               * dispositivo também for Português (Brasil).
+               */
+              if ([normalized isEqualToString:@"pt"] &&
+                  MPCurrentSystemPrefersPtBR()) {
+                  return YES;
+              }
+
               return NO;
           }
 
-          /*
-           * Intercepta o loader bundled do próprio Messenger.
-           * Para português, entrega diretamente nosso FBLP.
-           */
-          static id MPBundledLoadReplacement(id self,
-                                             SEL _cmd,
-                                             id bundle,
-                                             id fbLocale) {
+          static id MPCreateLanguagePack(id fbLocale) {
+              NSString *path = MPPackPath();
+
+              if (!MPValidatePack(path)) {
+                  MPLog(@"❌ FBLP local inválido/ausente: %@",
+                        path);
+                  return nil;
+              }
+
+              NSData *data =
+                  [NSData dataWithContentsOfFile:path
+                                        options:
+                                            NSDataReadingMappedIfSafe
+                                          error:nil];
+
+              if (!data) {
+                  MPLog(@"❌ Não foi possível ler FBLP");
+                  return nil;
+              }
+
+              Class packClass =
+                  NSClassFromString(
+                      @"FBFlatBufferLanguagePack");
+
+              if (!packClass) {
+                  MPLog(@"❌ FBFlatBufferLanguagePack "
+                        @"ainda não existe no runtime");
+                  return nil;
+              }
+
+              SEL initSelector =
+                  NSSelectorFromString(
+                      @"initWithLanguagePackData:"
+                       "fbLocale:"
+                       "shouldVerifyBuffer:");
+
+              if (![packClass
+                  instancesRespondToSelector:initSelector]) {
+                  MPLog(@"❌ Initializer esperado não existe");
+                  return nil;
+              }
+
+              @try {
+                  id (*sendAlloc)(id, SEL) =
+                      (id (*)(id, SEL))
+                          (void *)objc_msgSend;
+
+                  id allocated =
+                      sendAlloc(
+                          (id)packClass,
+                          sel_registerName("alloc"));
+
+                  id (*sendInit)(
+                      id,
+                      SEL,
+                      id,
+                      id,
+                      BOOL
+                  ) =
+                      (id (*)(id, SEL, id, id, BOOL))
+                          (void *)objc_msgSend;
+
+                  id pack =
+                      sendInit(
+                          allocated,
+                          initSelector,
+                          data,
+                          fbLocale,
+                          NO);
+
+                  if (pack) {
+                      MPLog(@"✅ FBLP pt-BR criado localmente "
+                            @"(%lu bytes)",
+                            (unsigned long)data.length);
+                  } else {
+                      MPLog(@"❌ Initializer do FBLP "
+                            @"retornou nil");
+                  }
+
+                  return pack;
+              } @catch (NSException *exception) {
+                  MPLog(@"❌ Exceção criando FBLP: %@",
+                        exception);
+                  return nil;
+              }
+          }
+
+          static id MPBundledLoaderReplacement(
+              id self,
+              SEL _cmd,
+              id bundle,
+              id fbLocale
+          ) {
               NSString *localeString =
                   MPStringFromLocaleObject(fbLocale);
 
-              MPLog(@"Bundled loader chamado. locale=%@ bundle=%@",
-                    localeString,
-                    [bundle respondsToSelector:@selector(bundlePath)]
-                        ? [bundle bundlePath]
-                        : [bundle description]);
+              MPLog(@"Loader chamado: locale=%@",
+                    localeString);
 
-              if (MPIsPortugueseLocale(fbLocale)) {
-                  NSString *path = MPPackPath();
+              if (MPIsPtBRLocale(fbLocale)) {
+                  MPLog(@"🇧🇷 Solicitação pt_BR detectada");
 
-                  if (MPValidatePack(path)) {
-                      NSData *data =
-                          [NSData dataWithContentsOfFile:path
-                                                options:NSDataReadingMappedIfSafe
-                                                  error:nil];
+                  id localPack =
+                      MPCreateLanguagePack(fbLocale);
 
-                      Class packClass =
-                          NSClassFromString(@"FBFlatBufferLanguagePack");
-
-                      SEL initSelector =
-                          NSSelectorFromString(
-                              @"initWithLanguagePackData:"
-                               "fbLocale:"
-                               "shouldVerifyBuffer:");
-
-                      if (packClass &&
-                          [packClass
-                              instancesRespondToSelector:initSelector]) {
-
-                          id (*sendAlloc)(id, SEL) =
-                              (id (*)(id, SEL))(void *)objc_msgSend;
-
-                          id allocated =
-                              sendAlloc((id)packClass,
-                                        sel_registerName("alloc"));
-
-                          id (*sendInit)(id, SEL, id, id, BOOL) =
-                              (id (*)(id, SEL, id, id, BOOL))
-                                  (void *)objc_msgSend;
-
-                          id pack =
-                              sendInit(allocated,
-                                       initSelector,
-                                       data,
-                                       fbLocale,
-                                       NO);
-
-                          if (pack) {
-                              MPLog(@"✅ FBLP pt-BR local entregue "
-                                    @"ao Messenger (%lu bytes)",
-                                    (unsigned long)data.length);
-
-                              return pack;
-                          }
-
-                          MPLog(@"❌ FBFlatBufferLanguagePack "
-                                @"retornou nil");
-                      } else {
-                          MPLog(@"❌ Classe/initializer "
-                                @"FBFlatBufferLanguagePack "
-                                @"indisponível");
-                      }
-                  } else {
-                      MPLog(@"❌ FBLP local ausente ou inválido em %@",
-                            path);
+                  if (localPack) {
+                      MPLog(@"✅ Entregando pt-BR local "
+                            @"ao Messenger");
+                      return localPack;
                   }
+
+                  MPLog(@"⚠️ Falha no pack local; "
+                        @"usando loader original");
               }
 
-              if (MPOriginalBundledLoad) {
-                  return MPOriginalBundledLoad(self,
-                                               _cmd,
-                                               bundle,
-                                               fbLocale);
+              if (MPOriginalBundledLoaderIMP) {
+                  id (*original)(
+                      id,
+                      SEL,
+                      id,
+                      id
+                  ) =
+                      (id (*)(id, SEL, id, id))
+                          MPOriginalBundledLoaderIMP;
+
+                  return original(
+                      self,
+                      _cmd,
+                      bundle,
+                      fbLocale);
               }
 
-              MPLog(@"❌ Loader original indisponível");
+              MPLog(@"❌ IMP original indisponível");
               return nil;
           }
 
-          static void *MPOpenFramework(NSString *relativePath) {
-              NSString *path =
-                  [[[NSBundle mainBundle] bundlePath]
-                      stringByAppendingPathComponent:
-                          relativePath];
+          static BOOL MPTryInstallHook(void) {
+              if (MPHookInstalled) {
+                  return YES;
+              }
 
-              void *handle =
-                  dlopen(path.UTF8String,
-                         RTLD_NOW | RTLD_GLOBAL);
+              Class loaderClass =
+                  NSClassFromString(
+                      @"FBBundledLanguagePackLoader");
 
-              MPLog(@"dlopen %@ -> %p (%s)",
-                    relativePath,
-                    handle,
-                    handle
-                        ? "ok"
-                        : (dlerror()
-                           ? dlerror()
-                           : "erro desconhecido"));
+              Class packClass =
+                  NSClassFromString(
+                      @"FBFlatBufferLanguagePack");
 
-              return handle;
+              if (!loaderClass || !packClass) {
+                  return NO;
+              }
+
+              SEL selector =
+                  NSSelectorFromString(
+                      @"loadLanguagePackFromBundle:"
+                       "fbLocale:");
+
+              Method method =
+                  class_getInstanceMethod(
+                      loaderClass,
+                      selector);
+
+              if (!method) {
+                  MPLog(@"⚠️ Classe encontrada, mas "
+                        @"selector instance ainda ausente");
+                  return NO;
+              }
+
+              IMP current =
+                  method_getImplementation(method);
+
+              if (!current) {
+                  MPLog(@"⚠️ IMP original inválida");
+                  return NO;
+              }
+
+              MPOriginalBundledLoaderIMP = current;
+
+              IMP previous =
+                  method_setImplementation(
+                      method,
+                      (IMP)
+                          MPBundledLoaderReplacement);
+
+              if (!previous) {
+                  MPLog(@"❌ method_setImplementation "
+                        @"não retornou IMP anterior");
+                  MPOriginalBundledLoaderIMP = NULL;
+                  return NO;
+              }
+
+              MPOriginalBundledLoaderIMP = previous;
+              MPHookInstalled = YES;
+
+              MPLog(@"✅ Hook lazy instalado em "
+                    @"FBBundledLanguagePackLoader");
+              MPLog(@"Pack local válido=%@ path=%@",
+                    MPValidatePack(MPPackPath())
+                        ? @"SIM"
+                        : @"NÃO",
+                    MPPackPath());
+
+              return YES;
           }
 
-          static void MPInstallHooks(void) {
+          static void MPScheduleProbe(void);
+
+          static void MPProbeRuntime(void) {
               @autoreleasepool {
-                  NSString *packPath =
-                      MPPackPath();
-
-                  MPLog(@"Inicializando V2. app=%@ "
-                        @"versão=%@ pack=%@ válido=%@",
-                        [[NSBundle mainBundle] bundleIdentifier],
-                        [[NSBundle mainBundle]
-                            objectForInfoDictionaryKey:
-                                @"CFBundleShortVersionString"],
-                        packPath,
-                        MPValidatePack(packPath)
-                            ? @"SIM"
-                            : @"NÃO");
-
-                  /*
-                   * Força o carregamento das classes/símbolos
-                   * antes de procurar os hooks.
-                   */
-                  void *core =
-                      MPOpenFramework(
-                          @"Frameworks/"
-                           "LightSpeedCore.framework/"
-                           "LightSpeedCore");
-
-                  void *engine =
-                      MPOpenFramework(
-                          @"Frameworks/"
-                           "LightSpeedEngine.framework/"
-                           "LightSpeedEngine");
-
-                  void *substrate =
-                      MPOpenFramework(
-                          @"Frameworks/"
-                           "CydiaSubstrate.framework/"
-                           "CydiaSubstrate");
-
-                  MSHookFunction_t hookFunction = NULL;
-                  MSHookMessageEx_t hookMessage = NULL;
-
-                  if (substrate) {
-                      hookFunction =
-                          (MSHookFunction_t)
-                              dlsym(substrate,
-                                    "MSHookFunction");
-
-                      hookMessage =
-                          (MSHookMessageEx_t)
-                              dlsym(substrate,
-                                    "MSHookMessageEx");
+                  if (MPHookInstalled) {
+                      return;
                   }
 
-                  MPLog(@"MSHookFunction=%p "
-                        @"MSHookMessageEx=%p",
-                        hookFunction,
-                        hookMessage);
+                  MPProbeAttempt += 1;
 
-                  if (!MPFunctionHookInstalled &&
-                      hookFunction) {
+                  BOOL installed =
+                      MPTryInstallHook();
 
-                      void *symbol = NULL;
-
-                      if (core) {
-                          symbol =
-                              dlsym(
-                                  core,
-                                  "FBCoreLocaleIsDownloadableLanguagePackEnabled");
-                      }
-
-                      if (!symbol) {
-                          symbol =
-                              dlsym(
-                                  RTLD_DEFAULT,
-                                  "FBCoreLocaleIsDownloadableLanguagePackEnabled");
-                      }
-
-                      MPLog(@"FBCoreLocaleIsDownloadableLanguagePackEnabled=%p",
-                            symbol);
-
-                      if (symbol) {
-                          hookFunction(
-                              symbol,
-                              (void *)
-                                  &MPDownloadableEnabledReplacement,
-                              (void **)
-                                  &MPOriginalDownloadableEnabled);
-
-                          MPFunctionHookInstalled = YES;
-
-                          MPLog(@"✅ Hook da rota "
-                                @"downloadable instalado");
-                      }
+                  if (installed) {
+                      return;
                   }
 
-                  if (!MPMessageHookInstalled &&
-                      hookMessage) {
-
-                      /*
-                       * Engine foi aberto acima para registrar
-                       * FBBundledLanguagePackLoader no runtime.
-                       */
-                      (void)engine;
-
-                      Class loaderClass =
-                          NSClassFromString(
-                              @"FBBundledLanguagePackLoader");
-
-                      SEL selector =
-                          NSSelectorFromString(
-                              @"loadLanguagePackFromBundle:"
-                               "fbLocale:");
-
-                      MPLog(@"FBBundledLanguagePackLoader=%@ "
-                            @"selector=%@",
-                            loaderClass,
-                            NSStringFromSelector(selector));
-
-                      if (loaderClass &&
-                          class_getInstanceMethod(loaderClass,
-                                                  selector)) {
-
-                          hookMessage(
-                              loaderClass,
-                              selector,
-                              (IMP)
-                                  &MPBundledLoadReplacement,
-                              (IMP *)
-                                  &MPOriginalBundledLoad);
-
-                          MPMessageHookInstalled = YES;
-
-                          MPLog(@"✅ Hook do "
-                                @"FBBundledLanguagePackLoader "
-                                @"instalado");
-                      }
+                  if (MPProbeAttempt == 1 ||
+                      MPProbeAttempt % 10 == 0) {
+                      MPLog(@"Aguardando runtime LightSpeed "
+                            @"(tentativa %ld/%ld)",
+                            (long)MPProbeAttempt,
+                            (long)MPMaxProbeAttempts);
                   }
 
-                  MPLog(@"Estado final: function=%@ message=%@",
-                        MPFunctionHookInstalled
-                            ? @"OK"
-                            : @"NÃO",
-                        MPMessageHookInstalled
-                            ? @"OK"
-                            : @"NÃO");
+                  if (MPProbeAttempt <
+                      MPMaxProbeAttempts) {
+                      MPScheduleProbe();
+                  } else {
+                      MPLog(@"❌ Timeout aguardando "
+                            @"FBBundledLanguagePackLoader");
+                  }
               }
           }
 
+          static void MPScheduleProbe(void) {
+              dispatch_after(
+                  dispatch_time(
+                      DISPATCH_TIME_NOW,
+                      (int64_t)(
+                          2.0 *
+                          NSEC_PER_SEC)),
+                  dispatch_get_main_queue(),
+                  ^{
+                      MPProbeRuntime();
+                  });
+          }
+
           __attribute__((constructor))
-          static void MessengerPortugueseV2Init(void) {
-              MPInstallHooks();
-
+          static void MessengerPortugueseV21Init(void) {
               /*
-               * Segunda tentativa depois que o runtime principal
-               * terminar de carregar.
+               * IMPORTANTE:
+               * não fazemos hook, dlopen ou chamada a classes
+               * privadas durante o constructor.
+               *
+               * Apenas agendamos a primeira verificação para
+               * depois que o Messenger já estiver inicializando.
                */
-              dispatch_async(dispatch_get_main_queue(), ^{
-                  if (!MPFunctionHookInstalled ||
-                      !MPMessageHookInstalled) {
-
-                      MPLog(@"Repetindo instalação "
-                            @"dos hooks na main queue");
-
-                      MPInstallHooks();
-                  }
-              });
+              MPScheduleProbe();
           }
           OBJC
 
@@ -471,29 +515,29 @@ jobs:
             -fblocks \
             -isysroot "$SDK_PATH" \
             -framework Foundation \
-            -install_name "@rpath/MessengerPortugueseV2.dylib" \
+            -install_name "@rpath/MessengerPortugueseV21.dylib" \
             -Wl,-dead_strip \
-            build/MessengerPortugueseV2.m \
-            -o build/MessengerPortugueseV2.dylib
+            build/MessengerPortugueseV21.m \
+            -o build/MessengerPortugueseV21.dylib
 
-          chmod 755 build/MessengerPortugueseV2.dylib
+          chmod 755 build/MessengerPortugueseV21.dylib
 
-          file build/MessengerPortugueseV2.dylib
-          shasum -a 256 build/MessengerPortugueseV2.dylib
+          file build/MessengerPortugueseV21.dylib
+          shasum -a 256 build/MessengerPortugueseV21.dylib
 
-          file build/MessengerPortugueseV2.dylib \
+          file build/MessengerPortugueseV21.dylib \
             | grep -qi arm64
 
-      - name: Upload V2 dylib
+      - name: Upload V2.1 dylib
         uses: actions/upload-artifact@v6
         with:
-          name: messenger-portuguese-v2-dylib
-          path: build/MessengerPortugueseV2.dylib
+          name: messenger-portuguese-v21-dylib
+          path: build/MessengerPortugueseV21.dylib
           if-no-files-found: error
           retention-days: 3
 
   patch-messenger:
-    name: Inject V2 and build IPA
+    name: Inject V2.1 and build IPA
     needs: build-hook
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -530,13 +574,13 @@ jobs:
           chmod +x ipapatch
           ./ipapatch --version
 
-      - name: Download V2 dylib
+      - name: Download V2.1 dylib
         uses: actions/download-artifact@v7
         with:
-          name: messenger-portuguese-v2-dylib
+          name: messenger-portuguese-v21-dylib
           path: hook
 
-      - name: Download Messenger and Portuguese pack
+      - name: Download Messenger and validate Portuguese FBLP
         env:
           IPA_URL: ${{ inputs.ipa_url }}
         shell: bash
@@ -551,13 +595,12 @@ jobs:
             --output input.ipa \
             "$IPA_URL"
 
+          unzip -tq input.ipa > /dev/null
+
           PACK_SOURCE="addons/messenger-portuguese/beb8b2a724c4d86596dd48520bf328cb"
 
           test -f "$PACK_SOURCE"
-
           cp "$PACK_SOURCE" portuguese.fblp
-
-          unzip -tq input.ipa > /dev/null
 
           EXPECTED_SHA256="918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
           ACTUAL_SHA256="$(sha256sum portuguese.fblp | awk '{print $1}')"
@@ -576,19 +619,19 @@ jobs:
 
           if len(data) != 1197992:
               raise SystemExit(
-                  f"❌ Tamanho inesperado do FBLP: {len(data)}"
+                  f"❌ Tamanho inesperado: {len(data)}"
               )
 
           if data[4:8] != b"FBLP":
               raise SystemExit(
-                  f"❌ Identificador FlatBuffer inválido: "
+                  f"❌ Identificador FBLP inválido: "
                   f"{data[:8]!r}"
               )
 
-          print("✅ FBLP pt-BR do Messenger 574 validado")
+          print("✅ FBLP pt-BR 574 validado")
           PY
 
-      - name: Extract and validate target IPA
+      - name: Extract and validate Messenger 574 MSGPlusX
         id: messenger
         shell: bash
         run: |
@@ -609,13 +652,14 @@ jobs:
 
           if len(apps) != 1:
               raise SystemExit(
-                  f"❌ Esperava 1 app principal; "
-                  f"encontrei {len(apps)}"
+                  f"❌ Esperava 1 app; encontrei {len(apps)}"
               )
 
           app = apps[0]
 
-          with (app / "Info.plist").open("rb") as f:
+          plist_path = app / "Info.plist"
+
+          with plist_path.open("rb") as f:
               info = plistlib.load(f)
 
           executable = info.get("CFBundleExecutable")
@@ -636,22 +680,15 @@ jobs:
 
           if version != "574.0.0":
               raise SystemExit(
-                  "❌ Workflow exclusivo para "
-                  "Messenger 574.0.0; "
-                  f"encontrado {version!r}"
+                  "❌ Workflow exclusivo para Messenger "
+                  f"574.0.0; encontrado {version!r}"
               )
 
           required = [
               app / executable,
               app / "Frameworks"
-                    / "LightSpeedCore.framework"
-                    / "LightSpeedCore",
-              app / "Frameworks"
                     / "LightSpeedEngine.framework"
                     / "LightSpeedEngine",
-              app / "Frameworks"
-                    / "CydiaSubstrate.framework"
-                    / "CydiaSubstrate",
               app / "Frameworks"
                     / "MSGPlusX.dylib",
           ]
@@ -659,7 +696,8 @@ jobs:
           for path in required:
               if not path.is_file():
                   raise SystemExit(
-                      f"❌ Arquivo obrigatório ausente: {path}"
+                      f"❌ Arquivo obrigatório ausente: "
+                      f"{path}"
                   )
 
           with open(
@@ -673,14 +711,52 @@ jobs:
               out.write(f"version={version}\n")
               out.write(f"build={build}\n")
 
-          print("✅ Target validado")
+          print("✅ Messenger alvo validado")
           print(f"App: {app.name}")
           print(f"Bundle ID: {bundle_id}")
           print(f"Versão: {version}")
           print(f"Build: {build}")
           PY
 
-      - name: Create isolated IPA for main-binary injection
+      - name: Enable Documents access for V2.1 log
+        env:
+          APP_NAME: ${{ steps.messenger.outputs.app_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python3 <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
+
+          app = Path(
+              "baseline/Payload"
+          ) / os.environ["APP_NAME"]
+
+          plist_path = app / "Info.plist"
+
+          with plist_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          info["UIFileSharingEnabled"] = True
+          info["LSSupportsOpeningDocumentsInPlace"] = True
+
+          with plist_path.open("wb") as f:
+              plistlib.dump(
+                  info,
+                  f,
+                  fmt=plistlib.FMT_BINARY,
+                  sort_keys=False,
+              )
+
+          print(
+              "✅ File Sharing habilitado para "
+              "recuperar MessengerPtBRFix-V21.log"
+          )
+          PY
+
+      - name: Create isolated IPA for main injection
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
         shell: bash
@@ -688,13 +764,11 @@ jobs:
           set -euo pipefail
 
           rm -rf isolated
-
           cp -a baseline isolated
 
           APP="isolated/Payload/$APP_NAME"
 
-          # Remove somente do IPA temporário usado pelo ipapatch.
-          # No IPA final, os PlugIns originais vêm de baseline.
+          # Só no IPA temporário do ipapatch.
           rm -rf "$APP/PlugIns"
 
           (
@@ -704,28 +778,29 @@ jobs:
 
           unzip -tq isolated-input.ipa > /dev/null
 
-          echo "✅ IPA temporário criado"
+          echo "✅ IPA temporário preparado"
 
-      - name: Inject V2 dylib into Messenger executable
+      - name: Inject V2.1 dylib into main Messenger executable
         shell: bash
         run: |
           set -euo pipefail
 
-          test -f hook/MessengerPortugueseV2.dylib
+          test -f hook/MessengerPortugueseV21.dylib
 
-          chmod 755 hook/MessengerPortugueseV2.dylib
+          chmod 755 \
+            hook/MessengerPortugueseV21.dylib
 
           ./ipapatch \
             --input isolated-input.ipa \
             --output isolated-patched.ipa \
-            --dylib hook/MessengerPortugueseV2.dylib \
+            --dylib hook/MessengerPortugueseV21.dylib \
             --noconfirm
 
           unzip -tq isolated-patched.ipa > /dev/null
 
-          echo "✅ Main executable injetado"
+          echo "✅ V2.1 injetada no main executable"
 
-      - name: Merge patched main binary into original IPA
+      - name: Merge patched main into untouched original structure
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
           EXECUTABLE: ${{ steps.messenger.outputs.executable }}
@@ -736,7 +811,9 @@ jobs:
           rm -rf patched
           mkdir -p patched
 
-          unzip -q isolated-patched.ipa -d patched
+          unzip -q \
+            isolated-patched.ipa \
+            -d patched
 
           PATCHED_APP="patched/Payload/$APP_NAME"
           FINAL_APP="baseline/Payload/$APP_NAME"
@@ -745,50 +822,52 @@ jobs:
             "$PATCHED_APP/$EXECUTABLE" \
             "$FINAL_APP/$EXECUTABLE"
 
-          chmod 755 "$FINAL_APP/$EXECUTABLE"
+          chmod 755 \
+            "$FINAL_APP/$EXECUTABLE"
 
-          mkdir -p "$FINAL_APP/Frameworks"
+          mkdir -p \
+            "$FINAL_APP/Frameworks"
 
           cp \
-            hook/MessengerPortugueseV2.dylib \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV2.dylib"
+            hook/MessengerPortugueseV21.dylib \
+            "$FINAL_APP/Frameworks/MessengerPortugueseV21.dylib"
 
           chmod 755 \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV2.dylib"
+            "$FINAL_APP/Frameworks/MessengerPortugueseV21.dylib"
 
-          echo "✅ Executável principal substituído"
+          echo "✅ Main substituído"
           echo "✅ PlugIns originais preservados"
 
-      - name: Embed exact pt-BR FBLP
+      - name: Embed exact Messenger 574 pt-BR language pack
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
         shell: bash
         run: |
           set -euo pipefail
 
-          FINAL_APP="baseline/Payload/$APP_NAME"
+          APP="baseline/Payload/$APP_NAME"
 
           mkdir -p \
-            "$FINAL_APP/MessengerPortuguese"
+            "$APP/MessengerPortuguese"
 
           mkdir -p \
-            "$FINAL_APP/pt.lproj"
+            "$APP/pt.lproj"
 
           cp \
             portuguese.fblp \
-            "$FINAL_APP/MessengerPortuguese/fbt_language_pack.bin"
+            "$APP/MessengerPortuguese/fbt_language_pack.bin"
 
           cp \
             portuguese.fblp \
-            "$FINAL_APP/pt.lproj/fbt_language_pack.bin"
+            "$APP/pt.lproj/fbt_language_pack.bin"
 
           chmod 644 \
-            "$FINAL_APP/MessengerPortuguese/fbt_language_pack.bin" \
-            "$FINAL_APP/pt.lproj/fbt_language_pack.bin"
+            "$APP/MessengerPortuguese/fbt_language_pack.bin" \
+            "$APP/pt.lproj/fbt_language_pack.bin"
 
-          echo "✅ FBLP incorporado nas duas rotas locais"
+          echo "✅ FBLP pt-BR incorporado"
 
-      - name: Validate V2 injection
+      - name: Validate V2.1 final structure
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
           EXECUTABLE: ${{ steps.messenger.outputs.executable }}
@@ -798,7 +877,7 @@ jobs:
 
           APP="baseline/Payload/$APP_NAME"
           MAIN="$APP/$EXECUTABLE"
-          DYLIB="$APP/Frameworks/MessengerPortugueseV2.dylib"
+          DYLIB="$APP/Frameworks/MessengerPortugueseV21.dylib"
           PACK="$APP/MessengerPortuguese/fbt_language_pack.bin"
 
           test -f "$MAIN"
@@ -807,7 +886,8 @@ jobs:
           test -f \
             "$APP/pt.lproj/fbt_language_pack.bin"
 
-          test -d "$APP/PlugIns"
+          test -d \
+            "$APP/PlugIns"
 
           sha256sum "$PACK" \
             | grep -F \
@@ -815,12 +895,7 @@ jobs:
 
           strings "$MAIN" \
             | grep -F \
-              "MessengerPortugueseV2.dylib" \
-            > /dev/null
-
-          strings "$DYLIB" \
-            | grep -F \
-              "FBCoreLocaleIsDownloadableLanguagePackEnabled" \
+              "MessengerPortugueseV21.dylib" \
             > /dev/null
 
           strings "$DYLIB" \
@@ -835,12 +910,30 @@ jobs:
 
           strings "$DYLIB" \
             | grep -F \
-              "MessengerPtBRFix-V2.log" \
+              "MessengerPtBRFix-V21.log" \
             > /dev/null
 
-          echo "✅ V2 validada"
+          python3 <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
 
-      - name: Build final IPA
+          app = Path(
+              "baseline/Payload"
+          ) / os.environ["APP_NAME"]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("UIFileSharingEnabled") is not True:
+              raise SystemExit(
+                  "❌ UIFileSharingEnabled não foi aplicado"
+              )
+
+          print("✅ Estrutura V2.1 validada")
+          PY
+
+      - name: Build final V2.1 IPA
         shell: bash
         run: |
           set -euo pipefail
@@ -848,26 +941,26 @@ jobs:
           (
             cd baseline
             zip -qry9 \
-              ../Messenger-574-MSGPlusX-Portuguese-V2.ipa \
+              ../Messenger-574-MSGPlusX-Portuguese-V2.1.ipa \
               Payload
           )
 
           unzip -tq \
-            Messenger-574-MSGPlusX-Portuguese-V2.ipa \
+            Messenger-574-MSGPlusX-Portuguese-V2.1.ipa \
             > /dev/null
 
-          echo "✅ IPA V2 final criado"
-
           ls -lh \
-            Messenger-574-MSGPlusX-Portuguese-V2.ipa
+            Messenger-574-MSGPlusX-Portuguese-V2.1.ipa
 
           sha256sum \
-            Messenger-574-MSGPlusX-Portuguese-V2.ipa
+            Messenger-574-MSGPlusX-Portuguese-V2.1.ipa
 
-      - name: Upload final IPA
+          echo "✅ IPA V2.1 final criado"
+
+      - name: Upload final V2.1 IPA
         uses: actions/upload-artifact@v6
         with:
-          name: Messenger-574-MSGPlusX-Portuguese-V2
-          path: Messenger-574-MSGPlusX-Portuguese-V2.ipa
+          name: Messenger-574-MSGPlusX-Portuguese-V2.1
+          path: Messenger-574-MSGPlusX-Portuguese-V2.1.ipa
           if-no-files-found: error
           retention-days: 3
