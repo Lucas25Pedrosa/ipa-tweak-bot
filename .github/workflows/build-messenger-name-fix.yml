@@ -33,6 +33,70 @@ jobs:
             /tmp/theos-sdks/sdks-master/*.sdk \
             "$THEOS/sdks/"
 
+      - name: Create temporary tweak source
+        run: |
+          set -euo pipefail
+
+          mkdir -p messenger-name-fix
+
+          cat > messenger-name-fix/Tweak.xm <<'EOF'
+          #import <UIKit/UIKit.h>
+
+          static const NSInteger kMSGPlusXWordmarkTag = 0x26B7;
+
+          static void MNFApplyMessengerName(UIView *view) {
+              if (!view) return;
+
+              if ([view isKindOfClass:[UILabel class]]) {
+                  UILabel *label = (UILabel *)view;
+                  NSString *text = label.text ?: @"";
+                  NSString *lower = text.lowercaseString;
+
+                  BOOL isTarget =
+                      label.tag == kMSGPlusXWordmarkTag ||
+                      [lower isEqualToString:@"msg"] ||
+                      [lower isEqualToString:@"msgplusx"] ||
+                      [lower isEqualToString:@"msgplus"];
+
+                  if (isTarget) {
+                      label.text = @"messenger";
+                      label.hidden = NO;
+                      label.alpha = 1.0;
+                  }
+              }
+
+              for (UIView *subview in view.subviews) {
+                  MNFApplyMessengerName(subview);
+              }
+          }
+
+          %hook MSGMessengerWordmarkView
+
+          - (void)layoutSubviews {
+              %orig;
+              MNFApplyMessengerName((UIView *)self);
+          }
+
+          %end
+          EOF
+
+          cat > messenger-name-fix/Makefile <<'EOF'
+          ARCHS = arm64 arm64e
+          TARGET = iphone:clang:latest:15.0
+          INSTALL_TARGET_PROCESSES = Messenger
+
+          include $(THEOS)/makefiles/common.mk
+
+          TWEAK_NAME = MessengerNameFix
+          MessengerNameFix_FILES = Tweak.xm
+          MessengerNameFix_CFLAGS = -fobjc-arc
+          MessengerNameFix_FRAMEWORKS = UIKit
+
+          include $(THEOS_MAKE_PATH)/tweak.mk
+          EOF
+
+          echo "✅ Fonte temporária criada"
+
       - name: Build MessengerNameFix
         working-directory: messenger-name-fix
         run: |
