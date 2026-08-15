@@ -1,4 +1,4 @@
-name: Build MessengerEnhancements
+name: Build MessengerEnhancementsV2
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ permissions:
 
 jobs:
   build-enhancements:
-    name: Build MessengerEnhancements
+    name: Build MessengerEnhancementsV2
     runs-on: macos-latest
     timeout-minutes: 15
 
@@ -457,21 +457,6 @@ jobs:
                       customLabel,
                       YES
                   );
-              } else if (customLabel) {
-                  MPSetHidden(
-                      customLabel,
-                      NO
-                  );
-
-                  if ([customLabel respondsToSelector:
-                      @selector(setText:)]) {
-                      ((void (*)(id, SEL, id))
-                          (void *)objc_msgSend)(
-                              customLabel,
-                              @selector(setText:),
-                              @"messenger"
-                          );
-                  }
               }
           }
 
@@ -1363,7 +1348,7 @@ jobs:
       - name: Upload production dylib
         uses: actions/upload-artifact@v6
         with:
-          name: MessengerEnhancements-dylib
+          name: MessengerEnhancementsV2-dylib
           path: build/MessengerEnhancements.dylib
           if-no-files-found: error
           retention-days: 3
