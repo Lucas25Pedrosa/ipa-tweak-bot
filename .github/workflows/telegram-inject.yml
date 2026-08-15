@@ -2380,6 +2380,29 @@ jobs:
                   "❌ Bundle ID inesperado ao embutir pt-BR"
               )
 
+          info.pop(
+              "UIFileSharingEnabled",
+              None,
+          )
+          info.pop(
+              "LSSupportsOpeningDocumentsInPlace",
+              None,
+          )
+
+          with (
+              app / "Info.plist"
+          ).open("wb") as f:
+              plistlib.dump(
+                  info,
+                  f,
+                  fmt=plistlib.FMT_BINARY,
+                  sort_keys=False,
+              )
+
+          print(
+              "✅ Chaves de File Sharing removidas"
+          )
+
           portuguese_dir = (
               app
               / "MessengerPortuguese"
@@ -2472,6 +2495,475 @@ jobs:
       # =========================================================
       # 12. VALIDAÇÃO
       # =========================================================
+
+      - name: Validate Messenger MSGPlusX + pt-BR layout
+        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        env:
+          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          APP_BUILD: ${{ steps.prepare.outputs.build }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import json
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("messenger_validate")
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+          with zipfile.ZipFile(
+              "Final.ipa",
+              "r",
+          ) as z:
+              z.extractall(work)
+
+          apps = list(
+              (work / "Payload").glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Messenger principal não identificado"
+              )
+
+          app = apps[0]
+
+          with (
+              app / "Info.plist"
+          ).open("rb") as f:
+              info = plistlib.load(f)
+
+          if (
+              info.get("CFBundleIdentifier")
+              != "com.facebook.Messenger"
+          ):
+              raise SystemExit(
+                  "❌ Bundle ID final do Messenger inesperado"
+              )
+
+          version = str(
+              info.get(
+                  "CFBundleShortVersionString",
+                  "",
+              )
+          )
+          build = str(
+              info.get(
+                  "CFBundleVersion",
+                  "",
+              )
+          )
+
+          if version != str(
+              __import__("os").environ["APP_VERSION"]
+          ):
+              raise SystemExit(
+                  "❌ Versão final do Messenger diverge do IPA de entrada"
+              )
+
+          if build != str(
+              __import__("os").environ["APP_BUILD"]
+          ):
+              raise SystemExit(
+                  "❌ Build final do Messenger diverge do IPA de entrada"
+              )
+
+          forbidden_keys = [
+              "UIFileSharingEnabled",
+              "LSSupportsOpeningDocumentsInPlace",
+          ]
+
+          for key in forbidden_keys:
+              if key in info:
+                  raise SystemExit(
+                      f"❌ Chave de File Sharing ainda presente: {key}"
+                  )
+
+          executable_name = info.get(
+              "CFBundleExecutable"
+          )
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable do Messenger ausente"
+              )
+
+          main = (
+              app
+              / executable_name
+          )
+
+          if not main.is_file():
+              raise SystemExit(
+                  "❌ Executável principal do Messenger ausente"
+              )
+
+          frameworks = (
+              app
+              / "Frameworks"
+          )
+
+          required_dylibs = [
+              "Sideload Keychain Fix.dylib",
+              "MSGPlusX.dylib",
+              "MessengerEnhancements.dylib",
+          ]
+
+          for name in required_dylibs:
+              path = (
+                  frameworks
+                  / name
+              )
+
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Dylib ausente: Frameworks/{name}"
+                  )
+
+          substrate = (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          )
+
+          if not substrate.is_file():
+              raise SystemExit(
+                  "❌ CydiaSubstrate.framework ausente"
+              )
+
+          dependencies = Executable(
+              str(main)
+          ).get_dependencies()
+
+          required_dependencies = {
+              (
+                  "@executable_path/Frameworks/"
+                  "Sideload Keychain Fix.dylib"
+              ),
+              (
+                  "@executable_path/Frameworks/"
+                  "MSGPlusX.dylib"
+              ),
+              (
+                  "@executable_path/Frameworks/"
+                  "MessengerEnhancements.dylib"
+              ),
+          }
+
+          missing_dependencies = sorted(
+              required_dependencies
+              - set(dependencies)
+          )
+
+          if missing_dependencies:
+              raise SystemExit(
+                  "❌ Dependência principal ausente: "
+                  + ", ".join(
+                      missing_dependencies
+                  )
+              )
+
+          forbidden_dependencies = {
+              "@rpath/Sideload Keychain Fix.dylib",
+              "@rpath/MSGPlusX.dylib",
+              "@rpath/MessengerEnhancements.dylib",
+          }
+
+          remaining_rpath = sorted(
+              forbidden_dependencies
+              & set(dependencies)
+          )
+
+          if remaining_rpath:
+              raise SystemExit(
+                  "❌ Caminho @rpath antigo ainda presente: "
+                  + ", ".join(
+                      remaining_rpath
+                  )
+              )
+
+          primary_pack = (
+              app
+              / "MessengerPortuguese"
+              / "fbt_language_pack.bin"
+          )
+          secondary_pack = (
+              app
+              / "pt.lproj"
+              / "fbt_language_pack.bin"
+          )
+          manifest_path = (
+              app
+              / "MessengerPortuguese"
+              / "manifest.plist"
+          )
+
+          for path in (
+              primary_pack,
+              secondary_pack,
+              manifest_path,
+          ):
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Arquivo pt-BR ausente: {path.relative_to(app)}"
+                  )
+
+          def sha256_file(
+              path: Path,
+          ) -> str:
+              digest = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(
+                          1024 * 1024
+                      ),
+                      b"",
+                  ):
+                      digest.update(
+                          chunk
+                      )
+
+              return digest.hexdigest()
+
+          for pack in (
+              primary_pack,
+              secondary_pack,
+          ):
+              with pack.open("rb") as f:
+                  header = f.read(8)
+
+              if (
+                  len(header) < 8
+                  or header[4:8] != b"FBLP"
+              ):
+                  raise SystemExit(
+                      "❌ Assinatura FBLP inválida em "
+                      f"{pack.relative_to(app)}"
+                  )
+
+          primary_sha = sha256_file(
+              primary_pack
+          )
+          secondary_sha = sha256_file(
+              secondary_pack
+          )
+
+          if primary_sha != secondary_sha:
+              raise SystemExit(
+                  "❌ As duas cópias do FBLP são diferentes"
+              )
+
+          with manifest_path.open(
+              "rb"
+          ) as f:
+              manifest = plistlib.load(f)
+
+          required_manifest = {
+              "Locale",
+              "BuildNumber",
+              "ContentHash",
+              "Checksum",
+          }
+
+          missing_manifest = (
+              required_manifest
+              - set(manifest)
+          )
+
+          if missing_manifest:
+              raise SystemExit(
+                  "❌ Manifest incompleto: "
+                  + ", ".join(
+                      sorted(
+                          missing_manifest
+                      )
+                  )
+              )
+
+          if manifest.get(
+              "Locale"
+          ) != "pt_BR":
+              raise SystemExit(
+                  "❌ Locale do manifest não é pt_BR"
+              )
+
+          if str(
+              manifest.get(
+                  "BuildNumber"
+              )
+          ) != build:
+              raise SystemExit(
+                  "❌ BuildNumber do manifest não corresponde ao Messenger"
+              )
+
+          if manifest.get(
+              "Checksum"
+          ) != primary_sha:
+              raise SystemExit(
+                  "❌ SHA-256 do FBLP não corresponde ao manifest"
+              )
+
+          metadata_path = (
+              Path("messenger_translation")
+              / "metadata.json"
+          )
+
+          if not metadata_path.is_file():
+              raise SystemExit(
+                  "❌ metadata.json da tradução ausente"
+              )
+
+          metadata = json.loads(
+              metadata_path.read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          if str(
+              metadata.get(
+                  "app_version"
+              )
+          ) != version:
+              raise SystemExit(
+                  "❌ metadata.json aponta para outra versão"
+              )
+
+          if str(
+              metadata.get(
+                  "build_number"
+              )
+          ) != build:
+              raise SystemExit(
+                  "❌ metadata.json aponta para outro build"
+              )
+
+          if metadata.get(
+              "content_hash"
+          ) != manifest.get(
+              "ContentHash"
+          ):
+              raise SystemExit(
+                  "❌ ContentHash do metadata diverge do manifest"
+              )
+
+          if metadata.get(
+              "checksum_sha256"
+          ) != primary_sha:
+              raise SystemExit(
+                  "❌ Checksum do metadata diverge do FBLP"
+              )
+
+          # Confirma que as extensões não receberam os tweaks do Messenger.
+          tweak_tokens = (
+              "Sideload Keychain Fix.dylib",
+              "MSGPlusX.dylib",
+              "MessengerEnhancements.dylib",
+              "zxPluginsInject.dylib",
+          )
+
+          extensions = []
+
+          for directory_name in (
+              "PlugIns",
+              "Extensions",
+          ):
+              directory = (
+                  app
+                  / directory_name
+              )
+
+              if directory.is_dir():
+                  extensions.extend(
+                      sorted(
+                          directory.glob(
+                              "*.appex"
+                          )
+                      )
+                  )
+
+          for extension in extensions:
+              plist_path = (
+                  extension
+                  / "Info.plist"
+              )
+
+              if not plist_path.is_file():
+                  continue
+
+              with plist_path.open(
+                  "rb"
+              ) as f:
+                  extension_info = (
+                      plistlib.load(f)
+                  )
+
+              extension_executable_name = (
+                  extension_info.get(
+                      "CFBundleExecutable"
+                  )
+              )
+
+              if not extension_executable_name:
+                  continue
+
+              extension_executable = (
+                  extension
+                  / extension_executable_name
+              )
+
+              if not extension_executable.is_file():
+                  continue
+
+              extension_dependencies = (
+                  Executable(
+                      str(
+                          extension_executable
+                      )
+                  ).get_dependencies()
+              )
+
+              bad = [
+                  dependency
+                  for dependency
+                  in extension_dependencies
+                  if any(
+                      token in dependency
+                      for token
+                      in tweak_tokens
+                  )
+              ]
+
+              if bad:
+                  raise SystemExit(
+                      "❌ Tweak do Messenger injetado indevidamente em "
+                      f"{extension.name}: {bad}"
+                  )
+
+          print(
+              "✅ Layout MSGPlusX do Messenger validado"
+          )
+          print(
+              "✅ FBLP pt-BR e manifest validados"
+          )
+          print(
+              "✅ Versão/build da tradução correspondem ao IPA"
+          )
+          print(
+              "✅ File Sharing removido"
+          )
+          print(
+              f"✅ {len(extensions)} extensão(ões) sem tweaks do Messenger"
+          )
+          PY
 
       - name: Validate WhatsApp Watusi Fouad layout
         if: ${{ steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
