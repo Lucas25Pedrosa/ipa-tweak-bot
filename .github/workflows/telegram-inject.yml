@@ -1473,50 +1473,128 @@ jobs:
                   "MSGPlusX.dylib",
                   "MessengerEnhancements.dylib",
               ]
+
               executable.remove_signature()
+
               for dylib_name in messenger_dylibs:
-                  dylib_path = app / "Frameworks" / dylib_name
+                  dylib_path = (
+                      app
+                      / "Frameworks"
+                      / dylib_name
+                  )
+
                   if not dylib_path.is_file():
                       raise SystemExit(
                           "❌ Dylib do Messenger ausente: "
                           f"Frameworks/{dylib_name}"
                       )
 
-                  old_load = f"@rpath/{dylib_name}"
                   new_load = (
                       "@executable_path/Frameworks/"
                       f"{dylib_name}"
                   )
-                  dependencies = executable.get_dependencies()
+
+                  dependencies = (
+                      executable.get_dependencies()
+                  )
+
                   if new_load in dependencies:
                       print(
-                          f"ℹ️ {dylib_name} já usa o caminho oficial"
+                          f"ℹ️ {dylib_name} já usa "
+                          "o caminho oficial"
                       )
                       continue
-                  if old_load not in dependencies:
-                      raise SystemExit(
-                          f"❌ Load command ausente: {old_load}"
+
+                  candidates = [
+                      dependency
+                      for dependency in dependencies
+                      if (
+                          dependency == dylib_name
+                          or dependency.endswith(
+                              "/" + dylib_name
+                          )
                       )
+                  ]
+
+                  if not candidates:
+                      print(
+                          "❌ Dependências atuais do "
+                          "executável principal:"
+                      )
+
+                      for dependency in dependencies:
+                          print(
+                              f"   • {dependency}"
+                          )
+
+                      raise SystemExit(
+                          "❌ Nenhum load command encontrado "
+                          f"para {dylib_name}"
+                      )
+
+                  if len(candidates) > 1:
+                      print(
+                          "❌ Mais de um load command "
+                          f"encontrado para {dylib_name}:"
+                      )
+
+                      for candidate in candidates:
+                          print(
+                              f"   • {candidate}"
+                          )
+
+                      raise SystemExit(
+                          "❌ Load command ambíguo para "
+                          f"{dylib_name}"
+                      )
+
+                  old_load = candidates[0]
+
                   executable.change_dependency(
                       old_load,
                       new_load,
                   )
+
                   print(
                       f"✅ {old_load} -> {new_load}"
                   )
 
+              final_dependencies = (
+                  executable.get_dependencies()
+              )
+
+              for dylib_name in messenger_dylibs:
+                  expected = (
+                      "@executable_path/Frameworks/"
+                      f"{dylib_name}"
+                  )
+
+                  if expected not in final_dependencies:
+                      raise SystemExit(
+                          "❌ Normalização não persistiu: "
+                          f"{expected}"
+                      )
+
               substrate = (
-                  app / "Frameworks"
+                  app
+                  / "Frameworks"
                   / "CydiaSubstrate.framework"
                   / "CydiaSubstrate"
               )
+
               if not substrate.is_file():
                   raise SystemExit(
                       "❌ CydiaSubstrate.framework não foi "
                       "adicionado pelo Cyan"
                   )
+
               print(
-                  "✅ Messenger segue o layout oficial do MSGPlusX"
+                  "✅ 3 load commands do Messenger "
+                  "normalizados"
+              )
+              print(
+                  "✅ Messenger segue o layout oficial "
+                  "do MSGPlusX"
               )
 
           output = Path(
