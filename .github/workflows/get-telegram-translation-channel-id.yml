@@ -1,0 +1,91 @@
+name: Get Telegram Translation Channel ID Safely
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel_name:
+        description: "Nome exato do canal privado"
+        required: true
+        default: "Messenger Traduções"
+        type: string
+
+jobs:
+  get-channel-id:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install Telethon
+        run: |
+          python -m pip install --upgrade pip
+          pip install "telethon>=1.44,<2"
+
+      - name: Find channel ID and send to Saved Messages
+        env:
+          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
+          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
+          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
+          TARGET_CHANNEL: ${{ inputs.channel_name }}
+        run: |
+          python <<'PY'
+          import os
+          import asyncio
+          from telethon import TelegramClient
+          from telethon.sessions import StringSession
+          from telethon.tl.types import Channel
+
+          api_id = int(os.environ["TELEGRAM_API_ID"])
+          api_hash = os.environ["TELEGRAM_API_HASH"]
+          session = os.environ["TELEGRAM_SESSION"]
+          target = os.environ["TARGET_CHANNEL"].strip()
+
+          async def main():
+              async with TelegramClient(
+                  StringSession(session),
+                  api_id,
+                  api_hash,
+              ) as client:
+                  matches = []
+
+                  async for dialog in client.iter_dialogs():
+                      entity = dialog.entity
+
+                      if (
+                          isinstance(entity, Channel)
+                          and dialog.name.strip() == target
+                      ):
+                          marked_id = await client.get_peer_id(entity)
+                          matches.append((dialog.name, marked_id))
+
+                  if not matches:
+                      raise SystemExit(
+                          f'❌ Canal não encontrado: "{target}"'
+                      )
+
+                  if len(matches) > 1:
+                      raise SystemExit(
+                          f'❌ Mais de um canal chamado "{target}" foi encontrado'
+                      )
+
+                  name, channel_id = matches[0]
+
+                  message = (
+                      "🔐 ID do canal de traduções do Messenger\n\n"
+                      f"Canal: {name}\n"
+                      f"TELEGRAM_TRANSLATION_CHANNEL_ID={channel_id}\n\n"
+                      "Copie o valor acima para o Secret do GitHub."
+                  )
+
+                  await client.send_message("me", message)
+
+                  print("✅ Canal encontrado")
+                  print("✅ ID enviado para Mensagens Salvas no Telegram")
+                  print("✅ O número não foi exibido neste log")
+
+          asyncio.run(main())
+          PY
