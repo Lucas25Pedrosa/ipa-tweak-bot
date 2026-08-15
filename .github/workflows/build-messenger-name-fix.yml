@@ -1,4 +1,4 @@
-name: Build MessengerNameFix
+name: Build MessengerNameFixV2
 
 on:
   workflow_dispatch:
@@ -21,64 +21,54 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$THEOS/sdks"
-
-          curl -L \
-            https://github.com/theos/sdks/archive/refs/heads/master.zip \
-            -o /tmp/theos-sdks.zip
-
-          unzip -q /tmp/theos-sdks.zip \
-            -d /tmp/theos-sdks
-
-          cp -R \
-            /tmp/theos-sdks/sdks-master/*.sdk \
-            "$THEOS/sdks/"
+          curl -L https://github.com/theos/sdks/archive/refs/heads/master.zip -o /tmp/theos-sdks.zip
+          unzip -q /tmp/theos-sdks.zip -d /tmp/theos-sdks
+          cp -R /tmp/theos-sdks/sdks-master/*.sdk "$THEOS/sdks/"
 
       - name: Install ldid
         run: |
           set -euo pipefail
-
           brew update
           brew install ldid
-
           command -v ldid
-          ldid -h >/dev/null 2>&1 || true
-
-          echo "✅ ldid disponível"
 
       - name: Create temporary tweak source
         run: |
           set -euo pipefail
-
           mkdir -p messenger-name-fix
 
           cat > messenger-name-fix/Tweak.xm <<'EOF'
           #import <UIKit/UIKit.h>
+          #import <objc/runtime.h>
 
           static const NSInteger kMSGPlusXWordmarkTag = 0x26B7;
 
-          static void MNFApplyMessengerName(UIView *view) {
+          static UIImageView *MNFOriginalImageView(id object) {
+              Ivar ivar = class_getInstanceVariable([object class], "_imageView");
+              if (!ivar) return nil;
+
+              id value = object_getIvar(object, ivar);
+              if (value && [value isKindOfClass:[UIImageView class]]) {
+                  return (UIImageView *)value;
+              }
+
+              return nil;
+          }
+
+          static void MNFHideArtificialWordmark(UIView *view) {
               if (!view) return;
 
               if ([view isKindOfClass:[UILabel class]]) {
                   UILabel *label = (UILabel *)view;
-                  NSString *text = label.text ?: @"";
-                  NSString *lower = text.lowercaseString;
 
-                  BOOL isTarget =
-                      label.tag == kMSGPlusXWordmarkTag ||
-                      [lower isEqualToString:@"msg"] ||
-                      [lower isEqualToString:@"msgplusx"] ||
-                      [lower isEqualToString:@"msgplus"];
-
-                  if (isTarget) {
-                      label.text = @"messenger";
-                      label.hidden = NO;
-                      label.alpha = 1.0;
+                  if (label.tag == kMSGPlusXWordmarkTag) {
+                      label.hidden = YES;
+                      label.alpha = 0.0;
                   }
               }
 
               for (UIView *subview in view.subviews) {
-                  MNFApplyMessengerName(subview);
+                  MNFHideArtificialWordmark(subview);
               }
           }
 
@@ -86,7 +76,15 @@ jobs:
 
           - (void)layoutSubviews {
               %orig;
-              MNFApplyMessengerName((UIView *)self);
+
+              UIImageView *imageView = MNFOriginalImageView(self);
+
+              if (imageView) {
+                  imageView.hidden = NO;
+                  imageView.alpha = 1.0;
+              }
+
+              MNFHideArtificialWordmark((UIView *)self);
           }
 
           %end
@@ -99,48 +97,36 @@ jobs:
 
           include $(THEOS)/makefiles/common.mk
 
-          TWEAK_NAME = MessengerNameFix
-          MessengerNameFix_FILES = Tweak.xm
-          MessengerNameFix_CFLAGS = -fobjc-arc
-          MessengerNameFix_FRAMEWORKS = UIKit
+          TWEAK_NAME = MessengerNameFixV2
+          MessengerNameFixV2_FILES = Tweak.xm
+          MessengerNameFixV2_CFLAGS = -fobjc-arc
+          MessengerNameFixV2_FRAMEWORKS = UIKit
 
           include $(THEOS_MAKE_PATH)/tweak.mk
           EOF
 
-          echo "✅ Fonte temporária criada"
-
-      - name: Build MessengerNameFix
+      - name: Build MessengerNameFixV2
         working-directory: messenger-name-fix
         run: |
           set -euo pipefail
-
           make clean
           make FINALPACKAGE=1
 
-          DYLIB="$(
-            find .theos \
-              -type f \
-              -name 'MessengerNameFix.dylib' \
-              | head -n 1
-          )"
+          DYLIB="$(find .theos -type f -name 'MessengerNameFixV2.dylib' | head -n 1)"
 
           if [ -z "$DYLIB" ] || [ ! -f "$DYLIB" ]; then
-            echo "❌ MessengerNameFix.dylib não encontrado"
+            echo "❌ MessengerNameFixV2.dylib não encontrado"
             exit 1
           fi
 
           mkdir -p ../output
-          cp "$DYLIB" \
-            ../output/MessengerNameFix.dylib
+          cp "$DYLIB" ../output/MessengerNameFixV2.dylib
+          file ../output/MessengerNameFixV2.dylib
 
-          echo "✅ MessengerNameFix.dylib compilado"
-          file ../output/MessengerNameFix.dylib
-          ls -lh ../output/MessengerNameFix.dylib
-
-      - name: Upload MessengerNameFix dylib
+      - name: Upload MessengerNameFixV2 dylib
         uses: actions/upload-artifact@v4
         with:
-          name: MessengerNameFix-dylib
-          path: output/MessengerNameFix.dylib
+          name: MessengerNameFixV2-dylib
+          path: output/MessengerNameFixV2.dylib
           if-no-files-found: error
           retention-days: 30
