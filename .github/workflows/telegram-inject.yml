@@ -116,6 +116,7 @@ jobs:
               or "Unknown"
           )
           version = plist.get("CFBundleShortVersionString", "Unknown")
+          build = str(plist.get("CFBundleVersion", "Unknown"))
 
           if not bundle_id:
               raise SystemExit("❌ Bundle ID não encontrado")
@@ -235,6 +236,7 @@ jobs:
               out.write(f"bundle_id={bundle_id}\n")
               out.write(f"app_name={app_name}\n")
               out.write(f"version={version}\n")
+              out.write(f"build={build}\n")
               out.write(f"addon_name={addon.get('name')}\n")
               ipapatch_enabled = addon.get("ipapatch", False)
               if ipapatch_enabled:
@@ -276,6 +278,7 @@ jobs:
           print(f"📱 Nome: {app_name}")
           print(f"📦 Bundle ID: {bundle_id}")
           print(f"🔢 Versão: {version}")
+          print(f"🏗️ Build: {build}")
           print(f"🧩 Tweak: {addon.get('name')}")
           print(f"🩹 IPA Patch: {addon.get('ipapatch', False)}")
           print(
