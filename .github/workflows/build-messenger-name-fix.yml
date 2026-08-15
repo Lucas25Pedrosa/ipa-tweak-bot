@@ -33,6 +33,18 @@ jobs:
             /tmp/theos-sdks/sdks-master/*.sdk \
             "$THEOS/sdks/"
 
+      - name: Install ldid
+        run: |
+          set -euo pipefail
+
+          brew update
+          brew install ldid
+
+          command -v ldid
+          ldid -h >/dev/null 2>&1 || true
+
+          echo "✅ ldid disponível"
+
       - name: Create temporary tweak source
         run: |
           set -euo pipefail
