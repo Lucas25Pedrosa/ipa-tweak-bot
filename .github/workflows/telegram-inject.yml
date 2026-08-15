@@ -2280,6 +2280,196 @@ jobs:
           PY
 
       # =========================================================
+      # 11A. MESSENGER - EMBUTIR TRADUÇÃO PT-BR
+      # =========================================================
+
+      - name: Embed Messenger pt-BR translation
+        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        run: |
+          python <<'PY'
+          import os
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          source_pack = (
+              Path("messenger_translation")
+              / "fbt_language_pack.bin"
+          )
+          source_manifest = (
+              Path("messenger_translation")
+              / "manifest.plist"
+          )
+
+          if not source_pack.is_file():
+              raise SystemExit(
+                  "❌ fbt_language_pack.bin preparado não encontrado"
+              )
+
+          if not source_manifest.is_file():
+              raise SystemExit(
+                  "❌ manifest.plist preparado não encontrado"
+              )
+
+          with source_pack.open("rb") as f:
+              header = f.read(8)
+
+          if len(header) < 8 or header[4:8] != b"FBLP":
+              raise SystemExit(
+                  "❌ Pack preparado não possui assinatura FBLP"
+              )
+
+          with source_manifest.open("rb") as f:
+              manifest = plistlib.load(f)
+
+          required_manifest = {
+              "Locale",
+              "BuildNumber",
+              "ContentHash",
+              "Checksum",
+          }
+
+          missing = (
+              required_manifest
+              - set(manifest)
+          )
+
+          if missing:
+              raise SystemExit(
+                  "❌ Manifest incompleto: "
+                  + ", ".join(sorted(missing))
+              )
+
+          work = Path(
+              "messenger_translation_embed_work"
+          )
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+          with zipfile.ZipFile(
+              "Final.ipa",
+              "r",
+          ) as z:
+              z.extractall(work)
+
+          apps = list(
+              (work / "Payload").glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Messenger principal não identificado"
+              )
+
+          app = apps[0]
+
+          with (
+              app / "Info.plist"
+          ).open("rb") as f:
+              info = plistlib.load(f)
+
+          if (
+              info.get("CFBundleIdentifier")
+              != "com.facebook.Messenger"
+          ):
+              raise SystemExit(
+                  "❌ Bundle ID inesperado ao embutir pt-BR"
+              )
+
+          portuguese_dir = (
+              app
+              / "MessengerPortuguese"
+          )
+          pt_lproj = (
+              app
+              / "pt.lproj"
+          )
+
+          portuguese_dir.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+          pt_lproj.mkdir(
+              parents=True,
+              exist_ok=True,
+          )
+
+          primary_pack = (
+              portuguese_dir
+              / "fbt_language_pack.bin"
+          )
+          secondary_pack = (
+              pt_lproj
+              / "fbt_language_pack.bin"
+          )
+          final_manifest = (
+              portuguese_dir
+              / "manifest.plist"
+          )
+
+          shutil.copy2(
+              source_pack,
+              primary_pack,
+          )
+          shutil.copy2(
+              source_pack,
+              secondary_pack,
+          )
+          shutil.copy2(
+              source_manifest,
+              final_manifest,
+          )
+
+          os.chmod(
+              primary_pack,
+              0o644,
+          )
+          os.chmod(
+              secondary_pack,
+              0o644,
+          )
+          os.chmod(
+              final_manifest,
+              0o644,
+          )
+
+          output = Path(
+              "Final.ipa"
+          )
+
+          output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
+
+          print(
+              "✅ MessengerPortuguese/fbt_language_pack.bin"
+          )
+          print(
+              "✅ MessengerPortuguese/manifest.plist"
+          )
+          print(
+              "✅ pt.lproj/fbt_language_pack.bin"
+          )
+          print(
+              "✅ Tradução pt-BR embutida no Messenger"
+          )
+          PY
+
+      # =========================================================
       # 12. VALIDAÇÃO
       # =========================================================
 
