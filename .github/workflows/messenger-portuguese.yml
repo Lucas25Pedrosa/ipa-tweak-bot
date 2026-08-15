@@ -1,10 +1,10 @@
-name: Messenger 574 Portuguese V2.3 Early DoD
+name: Messenger 574 Final pt-BR + MSGPlusX
 
 on:
   workflow_dispatch:
     inputs:
       ipa_url:
-        description: "Link direto para o Messenger 574.0.0 + MSGPlusX (.ipa)"
+        description: "Link direto para o Messenger 574.0.0 já com MSGPlusX (.ipa)"
         required: true
         type: string
 
@@ -12,119 +12,811 @@ permissions:
   contents: read
 
 jobs:
-  build-hook:
-    name: Build pt-BR V2.3 Early DoD hook
+  build-enhancements:
+    name: Build MessengerEnhancements
     runs-on: macos-latest
     timeout-minutes: 15
 
     steps:
-      - name: Create V2.3 hook source
+      - name: Create final production tweak source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
 
-          cat > build/MessengerPortugueseV23.m <<'OBJC'
+          cat > build/MessengerEnhancements.m <<'OBJC'
           #import <Foundation/Foundation.h>
+          #import <UIKit/UIKit.h>
           #import <objc/runtime.h>
           #import <objc/message.h>
           #import <dispatch/dispatch.h>
-          #import <stdarg.h>
 
-          static IMP MPOriginalStorageIMP = NULL;
-          static BOOL MPHookInstalled = NO;
-          static NSInteger MPProbeAttempt = 0;
-          static const NSInteger MPMaxProbeAttempts = 500;
+          static NSString *MPTranslateString(id value) {
+              if (!value ||
+                  ![value isKindOfClass:[NSString class]]) {
+                  return value;
+              }
 
-          static NSString * const MPContentHash =
-              @"beb8b2a724c4d86596dd48520bf328cb";
+              NSString *string = (NSString *)value;
 
-          static NSString * const MPSHA256 =
-              @"918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2";
+              static NSDictionary<NSString *, NSString *> *map;
+              static dispatch_once_t onceToken;
 
-          static NSString *MPLogPath(void) {
-              return [NSHomeDirectory()
-                  stringByAppendingPathComponent:
-                      @"Documents/MessengerPtBRFix-V23.log"];
-          }
+              dispatch_once(&onceToken, ^{
+                  map = @{
+                      @"New Version Available : %@":
+                          @"Nova versão disponível: %@",
+                      @"Update":
+                          @"Atualizar",
+                      @"Cancel":
+                          @"Cancelar",
+                      @"Upload video to voice message":
+                          @"Enviar vídeo como mensagem de voz",
+                      @"Record":
+                          @"Gravar",
+                      @"Upload Video":
+                          @"Enviar vídeo",
+                      @"Export failed":
+                          @"Falha ao exportar",
+                      @"Recorder not found":
+                          @"Gravador não encontrado",
+                      @"Do you want to call?":
+                          @"Deseja fazer a chamada?",
+                      @"Failed to save photo":
+                          @"Falha ao salvar a foto",
+                      @"Photo saved":
+                          @"Foto salva",
 
-          static void MPLog(NSString *format, ...) {
-              @autoreleasepool {
-                  va_list args;
-                  va_start(args, format);
+                      @"Chat":
+                          @"Chat",
+                      @"Support densor":
+                          @"Apoiar DeNsor",
+                      @"TABS":
+                          @"ABAS",
+                      @"Confirmation":
+                          @"Confirmação",
 
-                  NSString *message =
-                      [[NSString alloc] initWithFormat:format
-                                            arguments:args];
+                      @"View Photos Unlimited":
+                          @"Ver fotos ilimitadamente",
+                      @"View 'view once' photos more than once":
+                          @"Veja fotos de visualização única mais de uma vez",
 
-                  va_end(args);
+                      @"View Videos Unlimited":
+                          @"Ver vídeos ilimitadamente",
+                      @"View 'view once' videos more than once":
+                          @"Veja vídeos de visualização única mais de uma vez",
 
-                  NSLog(@"[MessengerPtBRFix-V23] %@", message);
+                      @"Read Chats Anonymously":
+                          @"Ler conversas anonimamente",
+                      @"Read chats without marking them as read":
+                          @"Leia conversas sem marcá-las como lidas",
 
-                  NSString *line =
-                      [NSString stringWithFormat:
-                          @"%@ %@\n",
-                          [NSDate date],
-                          message];
+                      @"Download photos [HD]":
+                          @"Baixar fotos [HD]",
+                      @"Long-press to save 'view once' photos":
+                          @"Mantenha pressionado para salvar fotos de visualização única",
 
-                  NSData *data =
-                      [line dataUsingEncoding:NSUTF8StringEncoding];
+                      @"Download videos":
+                          @"Baixar vídeos",
+                      @"Long-press to save 'view once' videos":
+                          @"Mantenha pressionado para salvar vídeos de visualização única",
 
-                  if (!data) {
-                      return;
-                  }
+                      @"Loop videos":
+                          @"Repetir vídeos",
 
-                  NSString *path = MPLogPath();
-                  NSFileManager *fm =
-                      [NSFileManager defaultManager];
+                      @"No Screenshot Detection":
+                          @"Sem detecção de captura de tela",
 
-                  if (![fm fileExistsAtPath:path]) {
-                      [data writeToFile:path atomically:YES];
-                      return;
-                  }
+                      @"Upload videos as voice messages":
+                          @"Enviar vídeos como mensagens de voz",
+                      @"Videos will be sent as 'voice messages'":
+                          @"Os vídeos serão enviados como mensagens de voz",
 
-                  NSFileHandle *handle =
-                      [NSFileHandle fileHandleForWritingAtPath:path];
+                      @"Upload photos in HD":
+                          @"Enviar fotos em HD",
+                      @"Photos will be uploaded in HD quality":
+                          @"As fotos serão enviadas em qualidade HD",
 
-                  if (!handle) {
-                      return;
-                  }
+                      @"Watch stories anonymously":
+                          @"Ver stories anonimamente",
+                      @"Watch without marking them as seen":
+                          @"Veja stories sem marcá-los como visualizados",
 
-                  @try {
-                      [handle seekToEndOfFile];
-                      [handle writeData:data];
-                      [handle closeFile];
-                  } @catch (__unused NSException *exception) {
+                      @"Remove Tray Stories":
+                          @"Remover bandeja de stories",
+                      @"Hides Stories Tray In Main Feed":
+                          @"Oculta a bandeja de stories no feed principal",
+
+                      @"Call Confirmation":
+                          @"Confirmação de chamada",
+                      @"Show alert before calling someone":
+                          @"Mostrar um alerta antes de fazer uma chamada",
+
+                      @"Hide Reply Bar":
+                          @"Ocultar barra de resposta",
+                      @"Hide reply bar in stoires":
+                          @"Ocultar a barra de resposta nos stories",
+
+                      @"Hide 'Stories' tab":
+                          @"Ocultar aba “Stories”",
+                      @"Hide 'Menu' tab":
+                          @"Ocultar aba “Menu”",
+                      @"Hide 'Notifications' tab":
+                          @"Ocultar aba “Notificações”",
+                      @"Hide 'Chats' tab":
+                          @"Ocultar aba “Conversas”",
+
+                      @"More by DeNsor":
+                          @"Mais de DeNsor",
+
+                      @"MSGPlusX [Read this]":
+                          @"MSGPlusX [Leia isto]",
+
+                      @"Disables the 'You took a screenshot' notification in chats":
+                          @"Desativa a notificação de captura de tela nas conversas",
+
+                      @"Uploading videos as voice messages works amazingly on jailbroken devices and with sideload methods, but on LiveContainer you may not be able to play the voice messages you upload. However, other people can still play them on their side.":
+                          @"O envio de vídeos como mensagens de voz funciona muito bem em dispositivos com jailbreak e por sideload. No LiveContainer, talvez você não consiga reproduzir as mensagens de voz enviadas, mas as outras pessoas ainda poderão reproduzi-las normalmente.",
+
+                      @"Default":
+                          @"Padrão"
+                  };
+              });
+
+              NSString *translated = map[string];
+
+              if (translated) {
+                  return translated;
+              }
+
+              static NSArray<NSArray<NSString *> *> *prefixes;
+              static dispatch_once_t prefixOnce;
+
+              dispatch_once(&prefixOnce, ^{
+                  prefixes = @[
+                      @[@"New Version Available : ",
+                        @"Nova versão disponível: "],
+                      @[@"iOS Version : ",
+                        @"Versão do iOS: "],
+                      @[@"Device : ",
+                        @"Dispositivo: "],
+                      @[@"Messenger Version : ",
+                        @"Versão do Messenger: "],
+                      @[@"MSGPlusX Version : ",
+                        @"Versão do MSGPlusX: "],
+                      @[@"Bundle : ",
+                        @"Bundle: "],
+                      @[@"Status : ",
+                        @"Status: "]
+                  ];
+              });
+
+              for (NSArray<NSString *> *pair in prefixes) {
+                  NSString *source = pair[0];
+                  NSString *destination = pair[1];
+
+                  if ([string hasPrefix:source]) {
+                      return [
+                          destination stringByAppendingString:
+                              [string substringFromIndex:source.length]
+                      ];
                   }
               }
+
+              return string;
+          }
+
+          typedef id (*MPLabelIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              id
+          );
+
+          typedef id (*MPSectionIMP)(
+              id,
+              SEL,
+              id
+          );
+
+          typedef id (*MPSwitchIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              id,
+              BOOL,
+              SEL
+          );
+
+          typedef id (*MPNewButtonIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              SEL,
+              id
+          );
+
+          typedef id (*MPButtonIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              SEL,
+              id,
+              id
+          );
+
+          static MPLabelIMP MPOrigLabel = NULL;
+          static MPSectionIMP MPOrigSection = NULL;
+          static MPSwitchIMP MPOrigSwitch = NULL;
+          static MPNewButtonIMP MPOrigNewButton = NULL;
+          static MPButtonIMP MPOrigButton = NULL;
+
+          static id MPLabelReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              id detail,
+              id key
+          ) {
+              return MPOrigLabel(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  MPTranslateString(detail),
+                  key
+              );
+          }
+
+          static id MPSectionReplacement(
+              id self,
+              SEL _cmd,
+              id title
+          ) {
+              return MPOrigSection(
+                  self,
+                  _cmd,
+                  MPTranslateString(title)
+              );
+          }
+
+          static id MPSwitchReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              id detail,
+              id key,
+              BOOL defaultValue,
+              SEL action
+          ) {
+              return MPOrigSwitch(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  MPTranslateString(detail),
+                  key,
+                  defaultValue,
+                  action
+              );
+          }
+
+          static id MPNewButtonReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              id detail,
+              SEL action,
+              id color
+          ) {
+              return MPOrigNewButton(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  MPTranslateString(detail),
+                  action,
+                  color
+              );
+          }
+
+          static id MPButtonReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              id detail,
+              SEL action,
+              id color,
+              id image
+          ) {
+              return MPOrigButton(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  MPTranslateString(detail),
+                  action,
+                  color,
+                  image
+              );
+          }
+
+          typedef id (*MPAlertControllerIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              NSInteger
+          );
+
+          typedef id (*MPAlertActionIMP)(
+              id,
+              SEL,
+              id,
+              NSInteger,
+              id
+          );
+
+          static MPAlertControllerIMP MPOrigAlertController = NULL;
+          static MPAlertActionIMP MPOrigAlertAction = NULL;
+
+          static id MPAlertControllerReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              id message,
+              NSInteger style
+          ) {
+              return MPOrigAlertController(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  MPTranslateString(message),
+                  style
+              );
+          }
+
+          static id MPAlertActionReplacement(
+              id self,
+              SEL _cmd,
+              id title,
+              NSInteger style,
+              id handler
+          ) {
+              return MPOrigAlertAction(
+                  self,
+                  _cmd,
+                  MPTranslateString(title),
+                  style,
+                  handler
+              );
+          }
+
+          typedef void (*MPWordmarkLayoutIMP)(
+              id,
+              SEL
+          );
+
+          static MPWordmarkLayoutIMP MPOrigWordmarkLayout = NULL;
+
+          static void MPSetHidden(
+              id object,
+              BOOL hidden
+          ) {
+              if (!object ||
+                  ![object respondsToSelector:
+                      @selector(setHidden:)]) {
+                  return;
+              }
+
+              ((void (*)(id, SEL, BOOL))
+                  (void *)objc_msgSend)(
+                      object,
+                      @selector(setHidden:),
+                      hidden
+                  );
+          }
+
+          static void MPWordmarkLayoutReplacement(
+              id self,
+              SEL _cmd
+          ) {
+              if (MPOrigWordmarkLayout) {
+                  MPOrigWordmarkLayout(
+                      self,
+                      _cmd
+                  );
+              }
+
+              id customLabel =
+                  ((id (*)(id, SEL, NSInteger))
+                      (void *)objc_msgSend)(
+                          self,
+                          @selector(viewWithTag:),
+                          (NSInteger)0x26B7
+                      );
+
+              Ivar imageIvar =
+                  class_getInstanceVariable(
+                      object_getClass(self),
+                      "_imageView"
+                  );
+
+              id originalImageView = nil;
+
+              if (imageIvar) {
+                  originalImageView =
+                      object_getIvar(
+                          self,
+                          imageIvar
+                      );
+              }
+
+              if (originalImageView) {
+                  MPSetHidden(
+                      originalImageView,
+                      NO
+                  );
+
+                  MPSetHidden(
+                      customLabel,
+                      YES
+                  );
+              } else if (customLabel) {
+                  MPSetHidden(
+                      customLabel,
+                      NO
+                  );
+
+                  if ([customLabel respondsToSelector:
+                      @selector(setText:)]) {
+                      ((void (*)(id, SEL, id))
+                          (void *)objc_msgSend)(
+                              customLabel,
+                              @selector(setText:),
+                              @"messenger"
+                          );
+                  }
+              }
+          }
+
+          static BOOL MPMSGPlusHooksInstalled = NO;
+          static NSInteger MPMSGPlusProbeAttempt = 0;
+
+          static BOOL MPHookInstanceMethod(
+              Class cls,
+              const char *selectorName,
+              IMP replacement,
+              IMP *original,
+              unsigned int expectedArguments
+          ) {
+              if (!cls ||
+                  !selectorName ||
+                  !replacement ||
+                  !original) {
+                  return NO;
+              }
+
+              SEL selector =
+                  sel_registerName(
+                      selectorName
+                  );
+
+              Method method =
+                  class_getInstanceMethod(
+                      cls,
+                      selector
+                  );
+
+              if (!method) {
+                  return NO;
+              }
+
+              if (method_getNumberOfArguments(method) !=
+                  expectedArguments) {
+                  return NO;
+              }
+
+              IMP previous =
+                  method_setImplementation(
+                      method,
+                      replacement
+                  );
+
+              if (!previous) {
+                  return NO;
+              }
+
+              *original = previous;
+              return YES;
+          }
+
+          static BOOL MPHookClassMethod(
+              Class cls,
+              const char *selectorName,
+              IMP replacement,
+              IMP *original,
+              unsigned int expectedArguments
+          ) {
+              if (!cls) {
+                  return NO;
+              }
+
+              SEL selector =
+                  sel_registerName(
+                      selectorName
+                  );
+
+              Method method =
+                  class_getClassMethod(
+                      cls,
+                      selector
+                  );
+
+              if (!method) {
+                  return NO;
+              }
+
+              if (method_getNumberOfArguments(method) !=
+                  expectedArguments) {
+                  return NO;
+              }
+
+              IMP previous =
+                  method_setImplementation(
+                      method,
+                      replacement
+                  );
+
+              if (!previous) {
+                  return NO;
+              }
+
+              *original = previous;
+              return YES;
+          }
+
+          static BOOL MPTryInstallMSGPlusHooks(void) {
+              if (MPMSGPlusHooksInstalled) {
+                  return YES;
+              }
+
+              Class settingsClass =
+                  objc_getClass(
+                      "MSGSettingsViewController"
+                  );
+
+              Class wordmarkClass =
+                  objc_getClass(
+                      "MSGMessengerWordmarkView"
+                  );
+
+              if (!settingsClass ||
+                  !wordmarkClass) {
+                  return NO;
+              }
+
+              BOOL ok = YES;
+
+              if (!MPOrigLabel) {
+                  ok = MPHookInstanceMethod(
+                      settingsClass,
+                      "labelTitle:detailTitle:key:",
+                      (IMP)MPLabelReplacement,
+                      (IMP *)&MPOrigLabel,
+                      5
+                  ) && ok;
+              }
+
+              if (!MPOrigSection) {
+                  ok = MPHookInstanceMethod(
+                      settingsClass,
+                      "Section:",
+                      (IMP)MPSectionReplacement,
+                      (IMP *)&MPOrigSection,
+                      3
+                  ) && ok;
+              }
+
+              if (!MPOrigSwitch) {
+                  ok = MPHookInstanceMethod(
+                      settingsClass,
+                      "switchTitle:detailTitle:key:"
+                      "defaultValue:Action:",
+                      (IMP)MPSwitchReplacement,
+                      (IMP *)&MPOrigSwitch,
+                      7
+                  ) && ok;
+              }
+
+              if (!MPOrigNewButton) {
+                  ok = MPHookInstanceMethod(
+                      settingsClass,
+                      "newbutton:detailTitle:"
+                      "action:color:",
+                      (IMP)MPNewButtonReplacement,
+                      (IMP *)&MPOrigNewButton,
+                      6
+                  ) && ok;
+              }
+
+              if (!MPOrigButton) {
+                  ok = MPHookInstanceMethod(
+                      settingsClass,
+                      "button:detailTitle:"
+                      "action:color:image:",
+                      (IMP)MPButtonReplacement,
+                      (IMP *)&MPOrigButton,
+                      7
+                  ) && ok;
+              }
+
+              if (!MPOrigWordmarkLayout) {
+                  ok = MPHookInstanceMethod(
+                      wordmarkClass,
+                      "layoutSubviews",
+                      (IMP)MPWordmarkLayoutReplacement,
+                      (IMP *)&MPOrigWordmarkLayout,
+                      2
+                  ) && ok;
+              }
+
+              Class alertControllerClass =
+                  objc_getClass(
+                      "UIAlertController"
+                  );
+
+              if (!MPOrigAlertController &&
+                  alertControllerClass) {
+                  MPHookClassMethod(
+                      alertControllerClass,
+                      "alertControllerWithTitle:"
+                      "message:preferredStyle:",
+                      (IMP)MPAlertControllerReplacement,
+                      (IMP *)&MPOrigAlertController,
+                      5
+                  );
+              }
+
+              Class alertActionClass =
+                  objc_getClass(
+                      "UIAlertAction"
+                  );
+
+              if (!MPOrigAlertAction &&
+                  alertActionClass) {
+                  MPHookClassMethod(
+                      alertActionClass,
+                      "actionWithTitle:"
+                      "style:handler:",
+                      (IMP)MPAlertActionReplacement,
+                      (IMP *)&MPOrigAlertAction,
+                      5
+                  );
+              }
+
+              if (ok &&
+                  MPOrigLabel &&
+                  MPOrigSection &&
+                  MPOrigSwitch &&
+                  MPOrigNewButton &&
+                  MPOrigButton &&
+                  MPOrigWordmarkLayout) {
+                  MPMSGPlusHooksInstalled = YES;
+                  return YES;
+              }
+
+              return NO;
+          }
+
+          static void MPScheduleMSGPlusProbe(void);
+
+          static void MPMSGPlusProbe(void) {
+              if (MPMSGPlusHooksInstalled) {
+                  return;
+              }
+
+              MPMSGPlusProbeAttempt += 1;
+
+              if (MPTryInstallMSGPlusHooks()) {
+                  return;
+              }
+
+              if (MPMSGPlusProbeAttempt < 400) {
+                  MPScheduleMSGPlusProbe();
+              }
+          }
+
+          static void MPScheduleMSGPlusProbe(void) {
+              NSTimeInterval delay =
+                  MPMSGPlusProbeAttempt < 100
+                      ? 0.025
+                      : 0.100;
+
+              dispatch_after(
+                  dispatch_time(
+                      DISPATCH_TIME_NOW,
+                      (int64_t)(
+                          delay * NSEC_PER_SEC
+                      )
+                  ),
+                  dispatch_get_global_queue(
+                      QOS_CLASS_USER_INITIATED,
+                      0
+                  ),
+                  ^{
+                      MPMSGPlusProbe();
+                  }
+              );
+          }
+
+          typedef id (*MPStorageIMP)(
+              id,
+              SEL,
+              id,
+              id,
+              id,
+              BOOL
+          );
+
+          static MPStorageIMP MPOriginalStorageIMP = NULL;
+          static BOOL MPDoDHookInstalled = NO;
+          static NSInteger MPDoDProbeAttempt = 0;
+          static const NSInteger MPMaxDoDProbeAttempts = 500;
+
+          static NSString *MPPackDirectory(void) {
+              return [
+                  [[NSBundle mainBundle] bundlePath]
+                  stringByAppendingPathComponent:
+                      @"MessengerPortuguese"
+              ];
           }
 
           static NSString *MPPackPath(void) {
-              return [[[NSBundle mainBundle] bundlePath]
+              return [
+                  MPPackDirectory()
                   stringByAppendingPathComponent:
-                      @"MessengerPortuguese/fbt_language_pack.bin"];
+                      @"fbt_language_pack.bin"
+              ];
           }
 
-          static BOOL MPValidatePack(NSString *path) {
-              NSData *data =
-                  [NSData dataWithContentsOfFile:path
-                                        options:NSDataReadingMappedIfSafe
-                                          error:nil];
+          static NSDictionary *MPManifest(void) {
+              NSString *path = [
+                  MPPackDirectory()
+                  stringByAppendingPathComponent:
+                      @"manifest.plist"
+              ];
 
-              if (data.length != 1197992) {
-                  return NO;
-              }
+              NSDictionary *manifest =
+                  [NSDictionary
+                      dictionaryWithContentsOfFile:path];
+
+              return manifest ?: @{};
+          }
+
+          static BOOL MPValidatePack(void) {
+              NSData *data =
+                  [NSData
+                      dataWithContentsOfFile:
+                          MPPackPath()
+                      options:
+                          NSDataReadingMappedIfSafe
+                      error:
+                          nil];
 
               if (data.length < 8) {
                   return NO;
               }
 
-              const unsigned char *bytes = data.bytes;
+              const unsigned char *bytes =
+                  data.bytes;
 
-              return bytes[4] == 'F' &&
-                     bytes[5] == 'B' &&
-                     bytes[6] == 'L' &&
-                     bytes[7] == 'P';
+              return (
+                  bytes[4] == 'F' &&
+                  bytes[5] == 'B' &&
+                  bytes[6] == 'L' &&
+                  bytes[7] == 'P'
+              );
           }
 
           static NSString *MPSafeString(id value) {
@@ -132,140 +824,187 @@ jobs:
                   return @"";
               }
 
-              if ([value isKindOfClass:[NSString class]]) {
-                  return (NSString *)value;
+              if ([value
+                  isKindOfClass:[NSString class]]) {
+                  return value;
               }
 
-              @try {
-                  return [value description] ?: @"";
-              } @catch (__unused NSException *exception) {
-                  return @"";
-              }
+              return [value description] ?: @"";
           }
 
-          static NSString *MPNormalize(NSString *value) {
+          static NSString *MPNormalize(
+              NSString *value
+          ) {
               if (!value) {
                   return @"";
               }
 
-              NSString *result =
-                  [[value
-                    stringByReplacingOccurrencesOfString:@"-"
-                                              withString:@"_"]
-                    lowercaseString];
-
-              result =
-                  [result
-                    stringByReplacingOccurrencesOfString:@" "
-                                              withString:@""];
-
-              return result;
+              return [[
+                  value
+                  stringByReplacingOccurrencesOfString:
+                      @"-"
+                  withString:
+                      @"_"
+              ] lowercaseString];
           }
 
-          static BOOL MPIsLanguagePackRequest(id resourceName) {
+          static BOOL MPIsLanguagePackRequest(
+              id resourceName
+          ) {
               NSString *name =
-                  [MPSafeString(resourceName) lowercaseString];
+                  [[MPSafeString(resourceName)
+                    lowercaseString]
+                    stringByTrimmingCharactersInSet:
+                        [NSCharacterSet
+                            whitespaceAndNewlineCharacterSet]];
 
-              return [name containsString:@"fbt_language_pack"] ||
-                     [name containsString:@"language_pack"];
+              return (
+                  [name
+                      containsString:
+                          @"fbt_language_pack"] ||
+                  [name
+                      containsString:
+                          @"language_pack"]
+              );
           }
 
-          static BOOL MPIsPtBRFlavor(id flavor) {
+          static BOOL MPIsPtBRFlavor(
+              id flavor
+          ) {
               NSString *normalized =
-                  MPNormalize(MPSafeString(flavor));
+                  MPNormalize(
+                      MPSafeString(flavor)
+                  );
 
-              if ([normalized containsString:@"pt_br"]) {
+              if ([normalized
+                  containsString:@"pt_br"]) {
                   return YES;
               }
 
-              /*
-               * Alguns objetos internos podem usar apenas "pt".
-               * Só aceitamos esse caso quando o idioma preferido
-               * do dispositivo é pt-BR.
-               */
-              if ([normalized isEqualToString:@"pt"]) {
+              if ([normalized
+                  isEqualToString:@"pt"]) {
                   NSString *preferred =
                       MPNormalize(
-                          [[NSLocale preferredLanguages] firstObject]);
+                          [[NSLocale
+                              preferredLanguages]
+                              firstObject]
+                      );
 
-                  return [preferred hasPrefix:@"pt_br"];
+                  return [
+                      preferred
+                      hasPrefix:@"pt_br"
+                  ];
               }
 
               return NO;
           }
 
           static NSNumber *MPBuildNumber(void) {
-              NSString *build =
-                  [[[NSBundle mainBundle]
-                    objectForInfoDictionaryKey:@"CFBundleVersion"]
-                    description];
+              id value =
+                  MPManifest()[
+                      @"BuildNumber"
+                  ];
 
-              long long value =
-                  [build longLongValue];
-
-              if (value <= 0) {
-                  value = 1037058507LL;
+              if ([value
+                  isKindOfClass:[NSNumber class]]) {
+                  return value;
               }
 
-              return @(value);
+              if ([value
+                  isKindOfClass:[NSString class]]) {
+                  long long parsed =
+                      [(NSString *)value
+                          longLongValue];
+
+                  if (parsed > 0) {
+                      return @(parsed);
+                  }
+              }
+
+              NSString *bundleBuild =
+                  [[NSBundle mainBundle]
+                      objectForInfoDictionaryKey:
+                          @"CFBundleVersion"];
+
+              return @(
+                  [bundleBuild longLongValue]
+              );
           }
 
-          static id MPSafeValueForKey(id object, NSString *key) {
-              if (!object || !key) {
-                  return nil;
+          static NSString *MPContentHash(void) {
+              id value =
+                  MPManifest()[
+                      @"ContentHash"
+                  ];
+
+              if ([value
+                  isKindOfClass:[NSString class]]) {
+                  return value;
               }
 
-              @try {
-                  return [object valueForKey:key];
-              } @catch (__unused NSException *exception) {
-                  return nil;
+              return @"";
+          }
+
+          static NSString *MPChecksum(void) {
+              id value =
+                  MPManifest()[
+                      @"Checksum"
+                  ];
+
+              if ([value
+                  isKindOfClass:[NSString class]]) {
+                  return value;
               }
+
+              return @"";
           }
 
           static id MPCreateLocalResourceInfo(void) {
-              NSString *path = MPPackPath();
-
-              if (!MPValidatePack(path)) {
-                  MPLog(@"❌ FBLP ausente ou inválido: %@", path);
+              if (!MPValidatePack()) {
                   return nil;
               }
 
               Class infoClass =
-                  NSClassFromString(@"FBOnDemandLocalResourceInfo");
+                  NSClassFromString(
+                      @"FBOnDemandLocalResourceInfo"
+                  );
 
               if (!infoClass) {
-                  MPLog(@"❌ FBOnDemandLocalResourceInfo "
-                        @"não existe no runtime");
                   return nil;
               }
+
+              NSString *path =
+                  MPPackPath();
 
               NSNumber *buildNumber =
                   MPBuildNumber();
 
-              /*
-               * Preferimos o initializer mais completo do
-               * Messenger 574. Todos os argumentos, exceto o
-               * último BOOL, são objetos Objective-C.
-               */
+              NSString *contentHash =
+                  MPContentHash();
+
+              NSString *checksum =
+                  MPChecksum();
+
               SEL init5 =
                   NSSelectorFromString(
                       @"initWithBuildNumber:"
                        "resourcePath:"
                        "contentHash:"
                        "checksum:"
-                       "clientProvidedHashVerified:");
+                       "clientProvidedHashVerified:"
+                  );
 
-              if ([infoClass instancesRespondToSelector:init5]) {
-                  @try {
-                      id (*sendAlloc)(id, SEL) =
-                          (id (*)(id, SEL))(void *)objc_msgSend;
-
-                      id allocated =
-                          sendAlloc(
+              if ([infoClass
+                  instancesRespondToSelector:init5]) {
+                  id allocated =
+                      ((id (*)(id, SEL))
+                          (void *)objc_msgSend)(
                               (id)infoClass,
-                              sel_registerName("alloc"));
+                              sel_registerName("alloc")
+                          );
 
-                      id (*sendInit5)(
+                  id info =
+                      ((id (*)(
                           id,
                           SEL,
                           id,
@@ -273,118 +1012,51 @@ jobs:
                           id,
                           id,
                           BOOL
-                      ) =
-                          (id (*)(id, SEL, id, id, id, id, BOOL))
-                              (void *)objc_msgSend;
+                      ))(void *)objc_msgSend)(
+                          allocated,
+                          init5,
+                          buildNumber,
+                          path,
+                          contentHash,
+                          checksum,
+                          YES
+                      );
 
-                      id info =
-                          sendInit5(
-                              allocated,
-                              init5,
-                              buildNumber,
-                              path,
-                              MPContentHash,
-                              MPSHA256,
-                              YES);
-
-                      if (info) {
-                          MPLog(@"✅ FBOnDemandLocalResourceInfo "
-                                @"criado pelo initializer de 5 args");
-
-                          MPLog(@"   buildNumber=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"buildNumber"));
-
-                          MPLog(@"   resourcePath=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"resourcePath"));
-
-                          MPLog(@"   contentHash=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"contentHash"));
-
-                          MPLog(@"   checksum=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"checksum"));
-
-                          return info;
-                      }
-                  } @catch (NSException *exception) {
-                      MPLog(@"⚠️ Exceção no initializer 5 args: %@",
-                            exception);
+                  if (info) {
+                      return info;
                   }
               }
 
-              /*
-               * Fallback existente no mesmo Messenger 574.
-               */
               SEL init3 =
                   NSSelectorFromString(
                       @"initWithBuildNumber:"
                        "resourcePath:"
-                       "checksum:");
+                       "checksum:"
+                  );
 
-              if ([infoClass instancesRespondToSelector:init3]) {
-                  @try {
-                      id (*sendAlloc)(id, SEL) =
-                          (id (*)(id, SEL))(void *)objc_msgSend;
-
-                      id allocated =
-                          sendAlloc(
+              if ([infoClass
+                  instancesRespondToSelector:init3]) {
+                  id allocated =
+                      ((id (*)(id, SEL))
+                          (void *)objc_msgSend)(
                               (id)infoClass,
-                              sel_registerName("alloc"));
+                              sel_registerName("alloc")
+                          );
 
-                      id (*sendInit3)(
-                          id,
-                          SEL,
-                          id,
-                          id,
-                          id
-                      ) =
-                          (id (*)(id, SEL, id, id, id))
-                              (void *)objc_msgSend;
-
-                      id info =
-                          sendInit3(
-                              allocated,
-                              init3,
-                              buildNumber,
-                              path,
-                              MPSHA256);
-
-                      if (info) {
-                          MPLog(@"✅ FBOnDemandLocalResourceInfo "
-                                @"criado pelo initializer de 3 args");
-
-                          MPLog(@"   buildNumber=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"buildNumber"));
-
-                          MPLog(@"   resourcePath=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"resourcePath"));
-
-                          MPLog(@"   checksum=%@",
-                                MPSafeValueForKey(
-                                    info,
-                                    @"checksum"));
-
-                          return info;
-                      }
-                  } @catch (NSException *exception) {
-                      MPLog(@"⚠️ Exceção no initializer 3 args: %@",
-                            exception);
-                  }
+                  return ((id (*)(
+                      id,
+                      SEL,
+                      id,
+                      id,
+                      id
+                  ))(void *)objc_msgSend)(
+                      allocated,
+                      init3,
+                      buildNumber,
+                      path,
+                      checksum
+                  );
               }
-
-              MPLog(@"❌ Não foi possível construir "
-                    @"FBOnDemandLocalResourceInfo");
 
               return nil;
           }
@@ -397,253 +1069,45 @@ jobs:
               id fetchType,
               BOOL requiresClientProvidedHashVerified
           ) {
-              BOOL languagePack =
-                  MPIsLanguagePackRequest(resourceName);
-
-              BOOL ptBR =
-                  MPIsPtBRFlavor(flavor);
-
-              if (languagePack || ptBR) {
-                  MPLog(@"DoD storage query:");
-                  MPLog(@"   resourceName=%@",
-                        MPSafeString(resourceName));
-                  MPLog(@"   flavor=%@",
-                        MPSafeString(flavor));
-                  MPLog(@"   fetchType=%@",
-                        MPSafeString(fetchType));
-                  MPLog(@"   requiresClientHash=%@",
-                        requiresClientProvidedHashVerified
-                            ? @"YES"
-                            : @"NO");
-              }
-
-              /*
-               * Só alteramos exatamente o pacote de idioma pt-BR.
-               */
-              if (languagePack && ptBR) {
-                  MPLog(@"🇧🇷 Requisição DoD pt-BR detectada");
-
+              if (
+                  MPIsLanguagePackRequest(
+                      resourceName
+                  ) &&
+                  MPIsPtBRFlavor(
+                      flavor
+                  )
+              ) {
                   id localInfo =
                       MPCreateLocalResourceInfo();
 
                   if (localInfo) {
-                      MPLog(@"✅ Respondendo ao DoD com "
-                            @"o FBLP local");
                       return localInfo;
                   }
-
-                  MPLog(@"⚠️ Falha criando localInfo; "
-                        @"usando storage original");
               }
 
-              if (MPOriginalStorageIMP) {
-                  id (*original)(
-                      id,
-                      SEL,
-                      id,
-                      id,
-                      id,
-                      BOOL
-                  ) =
-                      (id (*)(id, SEL, id, id, id, BOOL))
-                          MPOriginalStorageIMP;
-
-                  return original(
-                      self,
-                      _cmd,
-                      resourceName,
-                      flavor,
-                      fetchType,
-                      requiresClientProvidedHashVerified);
+              if (!MPOriginalStorageIMP) {
+                  return nil;
               }
 
-              MPLog(@"❌ IMP original do storage indisponível");
-              return nil;
+              return MPOriginalStorageIMP(
+                  self,
+                  _cmd,
+                  resourceName,
+                  flavor,
+                  fetchType,
+                  requiresClientProvidedHashVerified
+              );
           }
 
-          static BOOL MPMethodSignatureLooksSafe(Method method) {
-              if (!method) {
-                  return NO;
-              }
-
-              unsigned int count =
-                  method_getNumberOfArguments(method);
-
-              const char *types =
-                  method_getTypeEncoding(method);
-
-              MPLog(@"Storage method typeEncoding=%s args=%u",
-                    types ?: "(null)",
-                    count);
-
-              /*
-               * self + _cmd + quatro argumentos = 6.
-               */
-              if (count != 6 || !types) {
-                  return NO;
-              }
-
-              char returnType[32] = {0};
-              method_getReturnType(
-                  method,
-                  returnType,
-                  sizeof(returnType));
-
-              if (returnType[0] != '@') {
-                  MPLog(@"❌ Return type inesperado: %s",
-                        returnType);
-                  return NO;
-              }
-
-              char arg2[32] = {0};
-              char arg3[32] = {0};
-              char arg4[32] = {0};
-              char arg5[32] = {0};
-
-              method_getArgumentType(
-                  method,
-                  2,
-                  arg2,
-                  sizeof(arg2));
-
-              method_getArgumentType(
-                  method,
-                  3,
-                  arg3,
-                  sizeof(arg3));
-
-              method_getArgumentType(
-                  method,
-                  4,
-                  arg4,
-                  sizeof(arg4));
-
-              method_getArgumentType(
-                  method,
-                  5,
-                  arg5,
-                  sizeof(arg5));
-
-              MPLog(@"Storage arg types: %s %s %s %s",
-                    arg2,
-                    arg3,
-                    arg4,
-                    arg5);
-
-              if (arg2[0] != '@' ||
-                  arg3[0] != '@' ||
-                  arg4[0] != '@') {
-                  MPLog(@"❌ Três primeiros argumentos "
-                        @"não são objetos");
-                  return NO;
-              }
-
-              if (arg5[0] != 'B' &&
-                  arg5[0] != 'c' &&
-                  arg5[0] != 'C') {
-                  MPLog(@"❌ Último argumento não parece BOOL: %s",
-                        arg5);
-                  return NO;
-              }
-
-              return YES;
-          }
-
-          static BOOL MPTryInstallHook(void) {
-              if (MPHookInstalled) {
+          static BOOL MPTryInstallDoDHook(void) {
+              if (MPDoDHookInstalled) {
                   return YES;
               }
 
               Class storageClass =
-                  NSClassFromString(@"FBOnDemandResourceStorage");
-
-              Class infoClass =
-                  NSClassFromString(@"FBOnDemandLocalResourceInfo");
-
-              if (!storageClass || !infoClass) {
-                  return NO;
-              }
-
-              SEL selector =
-                  NSSelectorFromString(
-                      @"_fetchMostRecentResourceWithName:"
-                       "flavor:"
-                       "fetchType:"
-                       "requiresClientProvidedHashVerified:");
-
-              Method method =
-                  class_getInstanceMethod(
-                      storageClass,
-                      selector);
-
-              if (!method) {
-                  return NO;
-              }
-
-              if (!MPMethodSignatureLooksSafe(method)) {
-                  MPLog(@"❌ Assinatura do storage não corresponde "
-                        @"ao ABI esperado; hook NÃO instalado");
-                  return NO;
-              }
-
-              IMP current =
-                  method_getImplementation(method);
-
-              if (!current) {
-                  return NO;
-              }
-
-              IMP previous =
-                  method_setImplementation(
-                      method,
-                      (IMP)MPStorageReplacement);
-
-              if (!previous) {
-                  MPLog(@"❌ method_setImplementation falhou");
-                  return NO;
-              }
-
-              MPOriginalStorageIMP = previous;
-              MPHookInstalled = YES;
-
-              MPLog(@"✅ Hook DoD instalado em:");
-              MPLog(@"   FBOnDemandResourceStorage");
-              MPLog(@"   _fetchMostRecentResourceWithName:"
-                    @"flavor:fetchType:"
-                    @"requiresClientProvidedHashVerified:");
-
-              MPLog(@"Pack local válido=%@",
-                    MPValidatePack(MPPackPath())
-                        ? @"SIM"
-                        : @"NÃO");
-
-              MPLog(@"Pack path=%@",
-                    MPPackPath());
-
-              MPLog(@"Build=%@",
-                    MPBuildNumber());
-
-              return YES;
-          }
-
-          /*
-           * Fast path da V2.3.
-           *
-           * O objetivo aqui é instalar EXATAMENTE o mesmo hook que
-           * funcionou na V2.2, porém antes de o Messenger decidir
-           * que precisa mostrar "Baixar idioma".
-           *
-           * Importante: esta função não usa Foundation, não faz I/O,
-           * não chama dlopen e não força o carregamento de framework.
-           * Ela usa somente o runtime Objective-C já carregado.
-           */
-          static BOOL MPTryInstallHookEarly(void) {
-              if (MPHookInstalled) {
-                  return YES;
-              }
-
-              Class storageClass =
-                  objc_getClass("FBOnDemandResourceStorage");
+                  objc_getClass(
+                      "FBOnDemandResourceStorage"
+                  );
 
               if (!storageClass) {
                   return NO;
@@ -654,21 +1118,19 @@ jobs:
                       "_fetchMostRecentResourceWithName:"
                       "flavor:"
                       "fetchType:"
-                      "requiresClientProvidedHashVerified:");
+                      "requiresClientProvidedHashVerified:"
+                  );
 
               Method method =
                   class_getInstanceMethod(
                       storageClass,
-                      selector);
+                      selector
+                  );
 
               if (!method) {
                   return NO;
               }
 
-              /*
-               * Validação ABI mínima sem Foundation/log.
-               * self + _cmd + 4 argumentos = 6.
-               */
               if (method_getNumberOfArguments(method) != 6) {
                   return NO;
               }
@@ -689,77 +1151,72 @@ jobs:
               method_getReturnType(
                   method,
                   returnType,
-                  sizeof(returnType));
+                  sizeof(returnType)
+              );
 
               method_getArgumentType(
                   method,
                   2,
                   arg2,
-                  sizeof(arg2));
+                  sizeof(arg2)
+              );
 
               method_getArgumentType(
                   method,
                   3,
                   arg3,
-                  sizeof(arg3));
+                  sizeof(arg3)
+              );
 
               method_getArgumentType(
                   method,
                   4,
                   arg4,
-                  sizeof(arg4));
+                  sizeof(arg4)
+              );
 
               method_getArgumentType(
                   method,
                   5,
                   arg5,
-                  sizeof(arg5));
+                  sizeof(arg5)
+              );
 
-              if (returnType[0] != '@' ||
+              if (
+                  returnType[0] != '@' ||
                   arg2[0] != '@' ||
                   arg3[0] != '@' ||
                   arg4[0] != '@' ||
-                  (arg5[0] != 'B' &&
-                   arg5[0] != 'c' &&
-                   arg5[0] != 'C')) {
-                  return NO;
-              }
-
-              IMP current =
-                  method_getImplementation(method);
-
-              if (!current) {
+                  (
+                      arg5[0] != 'B' &&
+                      arg5[0] != 'c' &&
+                      arg5[0] != 'C'
+                  )
+              ) {
                   return NO;
               }
 
               IMP previous =
                   method_setImplementation(
                       method,
-                      (IMP)MPStorageReplacement);
+                      (IMP)MPStorageReplacement
+                  );
 
               if (!previous) {
                   return NO;
               }
 
-              MPOriginalStorageIMP = previous;
-              MPHookInstalled = YES;
+              MPOriginalStorageIMP =
+                  (MPStorageIMP)previous;
+
+              MPDoDHookInstalled = YES;
 
               return YES;
           }
 
-          static NSTimeInterval MPProbeDelayForAttempt(
+          static NSTimeInterval MPDoDDelay(
               NSInteger attempt
           ) {
-              /*
-               * Primeiro segundo: agressivo, porque é justamente
-               * onde a consulta pt_BR ocorre em uma sessão pronta.
-               *
-               * 1..100   = 5 ms   (~0,5 s)
-               * 101..150 = 10 ms  (~0,5 s)
-               * 151..200 = 20 ms  (~1,0 s)
-               * 201..260 = 50 ms  (~3,0 s)
-               * 261+     = 250 ms
-               */
               if (attempt <= 100) {
                   return 0.005;
               }
@@ -779,126 +1236,85 @@ jobs:
               return 0.250;
           }
 
-          static void MPReportInstalledHook(
-              NSString *origin
-          ) {
-              @autoreleasepool {
-                  MPLog(@"========================================");
-                  MPLog(@"Messenger Portuguese V2.3 iniciado");
-                  MPLog(@"Origem do hook=%@", origin ?: @"?");
-                  MPLog(@"✅ Hook DoD instalado em:");
-                  MPLog(@"   FBOnDemandResourceStorage");
-                  MPLog(@"   _fetchMostRecentResourceWithName:"
-                        @"flavor:fetchType:"
-                        @"requiresClientProvidedHashVerified:");
+          static void MPScheduleDoDProbe(void);
 
-                  MPLog(@"Pack local válido=%@",
-                        MPValidatePack(MPPackPath())
-                            ? @"SIM"
-                            : @"NÃO");
+          static void MPDoDProbe(void) {
+              if (MPDoDHookInstalled) {
+                  return;
+              }
 
-                  MPLog(@"Pack path=%@",
-                        MPPackPath());
+              MPDoDProbeAttempt += 1;
 
-                  MPLog(@"Build=%@",
-                        MPBuildNumber());
+              if (MPTryInstallDoDHook()) {
+                  return;
+              }
 
-                  MPLog(@"Tentativas até instalar=%ld",
-                        (long)MPProbeAttempt);
+              if (MPDoDProbeAttempt <
+                  MPMaxDoDProbeAttempts) {
+                  MPScheduleDoDProbe();
               }
           }
 
-          static void MPScheduleEarlyProbe(void);
-
-          static void MPEarlyProbe(void) {
-              @autoreleasepool {
-                  if (MPHookInstalled) {
-                      return;
-                  }
-
-                  MPProbeAttempt += 1;
-
-                  if (MPTryInstallHookEarly()) {
-                      MPReportInstalledHook(
-                          @"fast-poll");
-                      return;
-                  }
-
-                  /*
-                   * Depois do período crítico inicial, podemos usar
-                   * a implementação completa para diagnóstico da
-                   * assinatura caso algo tenha mudado.
-                   */
-                  if (MPProbeAttempt == 260) {
-                      if (MPTryInstallHook()) {
-                          MPReportInstalledHook(
-                              @"validated-fallback");
-                          return;
-                      }
-                  }
-
-                  if (MPProbeAttempt <
-                      MPMaxProbeAttempts) {
-                      MPScheduleEarlyProbe();
-                  } else {
-                      MPLog(@"❌ Timeout V2.3 aguardando "
-                            @"FBOnDemandResourceStorage");
-                  }
-              }
-          }
-
-          static void MPScheduleEarlyProbe(void) {
+          static void MPScheduleDoDProbe(void) {
               NSInteger nextAttempt =
-                  MPProbeAttempt + 1;
+                  MPDoDProbeAttempt + 1;
 
               NSTimeInterval delay =
-                  MPProbeDelayForAttempt(
-                      nextAttempt);
+                  MPDoDDelay(
+                      nextAttempt
+                  );
 
               dispatch_after(
                   dispatch_time(
                       DISPATCH_TIME_NOW,
-                      (int64_t)(delay * NSEC_PER_SEC)),
+                      (int64_t)(
+                          delay * NSEC_PER_SEC
+                      )
+                  ),
                   dispatch_get_global_queue(
                       QOS_CLASS_USER_INTERACTIVE,
-                      0),
+                      0
+                  ),
                   ^{
-                      MPEarlyProbe();
-                  });
+                      MPDoDProbe();
+                  }
+              );
           }
 
           __attribute__((constructor))
-          static void MessengerPortugueseV23Init(void) {
-              /*
-               * V2.3:
-               * 1) tenta o hook imediatamente;
-               * 2) se a classe ainda não existir, inicia polling
-               *    ultrarrápido fora da main queue;
-               * 3) nenhum dlopen/framework privado é forçado.
-               */
-              if (MPTryInstallHookEarly()) {
-                  dispatch_async(
-                      dispatch_get_global_queue(
-                          QOS_CLASS_UTILITY,
-                          0),
-                      ^{
-                          MPReportInstalledHook(
-                              @"constructor-fast-path");
-                      });
-
-                  return;
+          static void MessengerEnhancementsInit(void) {
+              if (!MPTryInstallDoDHook()) {
+                  MPScheduleDoDProbe();
               }
 
-              MPScheduleEarlyProbe();
+              dispatch_after(
+                  dispatch_time(
+                      DISPATCH_TIME_NOW,
+                      (int64_t)(
+                          0.100 * NSEC_PER_SEC
+                      )
+                  ),
+                  dispatch_get_global_queue(
+                      QOS_CLASS_USER_INITIATED,
+                      0
+                  ),
+                  ^{
+                      if (!MPTryInstallMSGPlusHooks()) {
+                          MPScheduleMSGPlusProbe();
+                      }
+                  }
+              );
           }
           OBJC
 
-      - name: Compile arm64 iOS dylib
+      - name: Compile production arm64 dylib
         shell: bash
         run: |
           set -euo pipefail
 
-          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          SDK_PATH="$(
+            xcrun --sdk iphoneos --show-sdk-path
+          )"
 
           xcrun --sdk iphoneos clang \
             -target arm64-apple-ios15.0 \
@@ -909,30 +1325,57 @@ jobs:
             -fblocks \
             -isysroot "$SDK_PATH" \
             -framework Foundation \
-            -install_name "@rpath/MessengerPortugueseV23.dylib" \
+            -framework UIKit \
+            -install_name "@rpath/MessengerEnhancements.dylib" \
             -Wl,-dead_strip \
-            build/MessengerPortugueseV23.m \
-            -o build/MessengerPortugueseV23.dylib
+            build/MessengerEnhancements.m \
+            -o build/MessengerEnhancements.dylib
 
-          chmod 755 build/MessengerPortugueseV23.dylib
+          chmod 755 \
+            build/MessengerEnhancements.dylib
 
-          file build/MessengerPortugueseV23.dylib
-          shasum -a 256 build/MessengerPortugueseV23.dylib
+          file \
+            build/MessengerEnhancements.dylib
 
-          file build/MessengerPortugueseV23.dylib \
+          file \
+            build/MessengerEnhancements.dylib \
             | grep -qi arm64
 
-      - name: Upload V2.3 dylib
+          if strings \
+            build/MessengerEnhancements.dylib \
+            | grep -E \
+              'NSLog|Documents/' \
+              > /dev/null; then
+            echo "❌ Resíduo de diagnóstico encontrado na dylib final"
+            exit 1
+          fi
+
+          strings \
+            build/MessengerEnhancements.dylib \
+            | grep -F \
+              "MSGSettingsViewController" \
+            > /dev/null
+
+          strings \
+            build/MessengerEnhancements.dylib \
+            | grep -F \
+              "FBOnDemandResourceStorage" \
+            > /dev/null
+
+          shasum -a 256 \
+            build/MessengerEnhancements.dylib
+
+      - name: Upload production dylib
         uses: actions/upload-artifact@v6
         with:
-          name: messenger-portuguese-v23-dylib
-          path: build/MessengerPortugueseV23.dylib
+          name: messenger-enhancements-final-dylib
+          path: build/MessengerEnhancements.dylib
           if-no-files-found: error
           retention-days: 3
 
   patch-messenger:
-    name: Inject V2.3 and build IPA
-    needs: build-hook
+    name: Build final Messenger IPA
+    needs: build-enhancements
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -968,13 +1411,13 @@ jobs:
           chmod +x ipapatch
           ./ipapatch --version
 
-      - name: Download V2.3 dylib
+      - name: Download production dylib
         uses: actions/download-artifact@v7
         with:
-          name: messenger-portuguese-v23-dylib
+          name: messenger-enhancements-final-dylib
           path: hook
 
-      - name: Download Messenger and validate pt-BR FBLP
+      - name: Download Messenger IPA
         env:
           IPA_URL: ${{ inputs.ipa_url }}
         shell: bash
@@ -989,9 +1432,21 @@ jobs:
             --output input.ipa \
             "$IPA_URL"
 
-          unzip -tq input.ipa > /dev/null
+          unzip -tq \
+            input.ipa \
+            > /dev/null
+
+          echo "✅ IPA recebido"
+
+      - name: Load and validate Messenger 574 pt-BR pack
+        id: pack
+        shell: bash
+        run: |
+          set -euo pipefail
 
           PACK_SOURCE="addons/messenger-portuguese/beb8b2a724c4d86596dd48520bf328cb"
+          CONTENT_HASH="beb8b2a724c4d86596dd48520bf328cb"
+          EXPECTED_SHA256="918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
 
           test -f "$PACK_SOURCE"
 
@@ -999,40 +1454,44 @@ jobs:
             "$PACK_SOURCE" \
             portuguese.fblp
 
-          EXPECTED_SHA256="918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
-
           ACTUAL_SHA256="$(
             sha256sum portuguese.fblp \
               | awk '{print $1}'
           )"
 
           if [ "$ACTUAL_SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "❌ SHA-256 do FBLP não corresponde"
-            echo "Esperado: $EXPECTED_SHA256"
-            echo "Atual:    $ACTUAL_SHA256"
+            echo "❌ SHA-256 do FBLP inesperado"
             exit 1
           fi
 
           python3 <<'PY'
           from pathlib import Path
 
-          data = Path("portuguese.fblp").read_bytes()
+          data = Path(
+              "portuguese.fblp"
+          ).read_bytes()
 
-          if len(data) != 1197992:
+          if len(data) < 8:
               raise SystemExit(
-                  f"❌ Tamanho inesperado: {len(data)}"
+                  "❌ FBLP pequeno demais"
               )
 
           if data[4:8] != b"FBLP":
               raise SystemExit(
-                  f"❌ Identificador FBLP inválido: "
-                  f"{data[:8]!r}"
+                  "❌ Identificador FBLP inválido"
               )
 
-          print("✅ FBLP pt-BR do Messenger 574 validado")
+          print(
+              f"✅ FBLP válido: {len(data)} bytes"
+          )
           PY
 
-      - name: Extract and validate Messenger 574 MSGPlusX
+          {
+            echo "content_hash=$CONTENT_HASH"
+            echo "checksum=$ACTUAL_SHA256"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Extract and validate Messenger with MSGPlusX
         id: messenger
         shell: bash
         run: |
@@ -1051,7 +1510,9 @@ jobs:
           from pathlib import Path
 
           payload = Path("baseline/Payload")
-          apps = list(payload.glob("*.app"))
+          apps = list(
+              payload.glob("*.app")
+          )
 
           if len(apps) != 1:
               raise SystemExit(
@@ -1060,50 +1521,71 @@ jobs:
 
           app = apps[0]
 
-          with (app / "Info.plist").open("rb") as f:
+          with (
+              app / "Info.plist"
+          ).open("rb") as f:
               info = plistlib.load(f)
 
-          executable = info.get("CFBundleExecutable")
-          version = str(
-              info.get("CFBundleShortVersionString", "")
-          )
-          build = str(
-              info.get("CFBundleVersion", "")
-          )
-          bundle_id = str(
-              info.get("CFBundleIdentifier", "")
+          executable = info.get(
+              "CFBundleExecutable"
           )
 
-          if not executable:
+          version = str(
+              info.get(
+                  "CFBundleShortVersionString",
+                  "",
+              )
+          )
+
+          build = str(
+              info.get(
+                  "CFBundleVersion",
+                  "",
+              )
+          )
+
+          bundle_id = str(
+              info.get(
+                  "CFBundleIdentifier",
+                  "",
+              )
+          )
+
+          if bundle_id != "com.facebook.Messenger":
               raise SystemExit(
-                  "❌ CFBundleExecutable ausente"
+                  "❌ IPA não é o Messenger"
               )
 
           if version != "574.0.0":
               raise SystemExit(
-                  "❌ Workflow exclusivo para Messenger "
+                  "❌ Este teste usa o pack do Messenger "
                   f"574.0.0; encontrado {version!r}"
               )
 
           if build != "1037058507":
               raise SystemExit(
-                  "❌ Build inesperado do Messenger 574: "
+                  "❌ Build inesperado: "
                   f"{build!r}"
               )
 
           required = [
               app / executable,
               app / "Frameworks"
+                    / "MSGPlusX.dylib",
+              app / "Frameworks"
+                    / "Sideload Keychain Fix.dylib",
+              app / "Frameworks"
+                    / "CydiaSubstrate.framework"
+                    / "CydiaSubstrate",
+              app / "Frameworks"
                     / "LightSpeedCore.framework"
                     / "LightSpeedCore",
-              app / "Frameworks"
-                    / "MSGPlusX.dylib",
           ]
 
           for path in required:
               if not path.is_file():
                   raise SystemExit(
-                      f"❌ Arquivo obrigatório ausente: {path}"
+                      f"❌ Componente obrigatório ausente: {path}"
                   )
 
           with open(
@@ -1111,20 +1593,25 @@ jobs:
               "a",
               encoding="utf-8",
           ) as out:
-              out.write(f"app_name={app.name}\n")
-              out.write(f"executable={executable}\n")
-              out.write(f"bundle_id={bundle_id}\n")
-              out.write(f"version={version}\n")
-              out.write(f"build={build}\n")
+              out.write(
+                  f"app_name={app.name}\n"
+              )
+              out.write(
+                  f"executable={executable}\n"
+              )
+              out.write(
+                  f"version={version}\n"
+              )
+              out.write(
+                  f"build={build}\n"
+              )
 
-          print("✅ Messenger alvo validado")
-          print(f"App: {app.name}")
-          print(f"Bundle ID: {bundle_id}")
-          print(f"Versão: {version}")
-          print(f"Build: {build}")
+          print(
+              "✅ Messenger 574 + MSGPlusX validado"
+          )
           PY
 
-      - name: Enable Documents access for V2.3 log
+      - name: Remove debug file-sharing settings
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
         shell: bash
@@ -1141,15 +1628,28 @@ jobs:
               / os.environ["APP_NAME"]
           )
 
-          plist_path = app / "Info.plist"
+          plist_path = (
+              app / "Info.plist"
+          )
 
-          with plist_path.open("rb") as f:
+          with plist_path.open(
+              "rb"
+          ) as f:
               info = plistlib.load(f)
 
-          info["UIFileSharingEnabled"] = True
-          info["LSSupportsOpeningDocumentsInPlace"] = True
+          info.pop(
+              "UIFileSharingEnabled",
+              None,
+          )
 
-          with plist_path.open("wb") as f:
+          info.pop(
+              "LSSupportsOpeningDocumentsInPlace",
+              None,
+          )
+
+          with plist_path.open(
+              "wb"
+          ) as f:
               plistlib.dump(
                   info,
                   f,
@@ -1157,7 +1657,9 @@ jobs:
                   sort_keys=False,
               )
 
-          print("✅ File Sharing habilitado para o log V2.3")
+          print(
+              "✅ Chaves de debug/File Sharing removidas"
+          )
           PY
 
       - name: Create isolated IPA for main injection
@@ -1168,12 +1670,14 @@ jobs:
           set -euo pipefail
 
           rm -rf isolated
-          cp -a baseline isolated
+          cp -a \
+            baseline \
+            isolated
 
           APP="isolated/Payload/$APP_NAME"
 
-          # Apenas no IPA temporário usado pelo ipapatch.
           rm -rf "$APP/PlugIns"
+          rm -rf "$APP/Extensions"
 
           (
             cd isolated
@@ -1188,30 +1692,30 @@ jobs:
 
           echo "✅ IPA temporário preparado"
 
-      - name: Inject V2.3 dylib into main Messenger executable
+      - name: Inject MessengerEnhancements into main executable
         shell: bash
         run: |
           set -euo pipefail
 
           test -f \
-            hook/MessengerPortugueseV23.dylib
+            hook/MessengerEnhancements.dylib
 
           chmod 755 \
-            hook/MessengerPortugueseV23.dylib
+            hook/MessengerEnhancements.dylib
 
           ./ipapatch \
             --input isolated-input.ipa \
             --output isolated-patched.ipa \
-            --dylib hook/MessengerPortugueseV23.dylib \
+            --dylib hook/MessengerEnhancements.dylib \
             --noconfirm
 
           unzip -tq \
             isolated-patched.ipa \
             > /dev/null
 
-          echo "✅ V2.3 injetada no main executable"
+          echo "✅ MessengerEnhancements injetada"
 
-      - name: Merge patched main into original structure
+      - name: Merge patched main into original Messenger
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
           EXECUTABLE: ${{ steps.messenger.outputs.executable }}
@@ -1240,18 +1744,21 @@ jobs:
             "$FINAL_APP/Frameworks"
 
           cp \
-            hook/MessengerPortugueseV23.dylib \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV23.dylib"
+            hook/MessengerEnhancements.dylib \
+            "$FINAL_APP/Frameworks/MessengerEnhancements.dylib"
 
           chmod 755 \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV23.dylib"
+            "$FINAL_APP/Frameworks/MessengerEnhancements.dylib"
 
-          echo "✅ Main substituído"
-          echo "✅ PlugIns originais preservados"
+          echo "✅ Executável principal atualizado"
+          echo "✅ Estrutura original de extensões preservada"
 
-      - name: Embed exact Messenger 574 pt-BR pack
+      - name: Embed pt-BR FBLP and dynamic manifest
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
+          APP_BUILD: ${{ steps.messenger.outputs.build }}
+          CONTENT_HASH: ${{ steps.pack.outputs.content_hash }}
+          CHECKSUM: ${{ steps.pack.outputs.checksum }}
         shell: bash
         run: |
           set -euo pipefail
@@ -1276,9 +1783,47 @@ jobs:
             "$APP/MessengerPortuguese/fbt_language_pack.bin" \
             "$APP/pt.lproj/fbt_language_pack.bin"
 
-          echo "✅ FBLP pt-BR incorporado"
+          python3 <<'PY'
+          import os
+          import plistlib
+          from pathlib import Path
 
-      - name: Validate V2.3 final structure
+          app = (
+              Path("baseline/Payload")
+              / os.environ["APP_NAME"]
+          )
+
+          manifest = {
+              "Locale": "pt_BR",
+              "BuildNumber": int(
+                  os.environ["APP_BUILD"]
+              ),
+              "ContentHash":
+                  os.environ["CONTENT_HASH"],
+              "Checksum":
+                  os.environ["CHECKSUM"],
+          }
+
+          path = (
+              app
+              / "MessengerPortuguese"
+              / "manifest.plist"
+          )
+
+          with path.open("wb") as f:
+              plistlib.dump(
+                  manifest,
+                  f,
+                  fmt=plistlib.FMT_BINARY,
+                  sort_keys=False,
+              )
+
+          print(
+              "✅ Manifest dinâmico criado"
+          )
+          PY
+
+      - name: Validate production structure
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
           EXECUTABLE: ${{ steps.messenger.outputs.executable }}
@@ -1288,24 +1833,21 @@ jobs:
 
           APP="baseline/Payload/$APP_NAME"
           MAIN="$APP/$EXECUTABLE"
-          DYLIB="$APP/Frameworks/MessengerPortugueseV23.dylib"
+          DYLIB="$APP/Frameworks/MessengerEnhancements.dylib"
           PACK="$APP/MessengerPortuguese/fbt_language_pack.bin"
+          MANIFEST="$APP/MessengerPortuguese/manifest.plist"
 
           test -f "$MAIN"
           test -f "$DYLIB"
           test -f "$PACK"
-          test -f \
-            "$APP/pt.lproj/fbt_language_pack.bin"
-
-          test -d "$APP/PlugIns"
-
-          sha256sum "$PACK" \
-            | grep -F \
-              "918418eeeb9df288275def88220c2ecba0f2ab47f174c73c12cff55a44cd96e2"
+          test -f "$MANIFEST"
+          test -f "$APP/Frameworks/MSGPlusX.dylib"
+          test -f "$APP/Frameworks/Sideload Keychain Fix.dylib"
+          test -f "$APP/Frameworks/CydiaSubstrate.framework/CydiaSubstrate"
 
           strings "$MAIN" \
             | grep -F \
-              "MessengerPortugueseV23.dylib" \
+              "MessengerEnhancements.dylib" \
             > /dev/null
 
           strings "$DYLIB" \
@@ -1315,18 +1857,26 @@ jobs:
 
           strings "$DYLIB" \
             | grep -F \
-              "_fetchMostRecentResourceWithName:" \
+              "MSGSettingsViewController" \
             > /dev/null
 
           strings "$DYLIB" \
             | grep -F \
-              "FBOnDemandLocalResourceInfo" \
+              "MSGMessengerWordmarkView" \
             > /dev/null
 
           strings "$DYLIB" \
             | grep -F \
-              "MessengerPtBRFix-V23.log" \
+              "Ver stories anonimamente" \
             > /dev/null
+
+          if strings "$DYLIB" \
+            | grep -E \
+              'NSLog|Documents/' \
+              > /dev/null; then
+            echo "❌ Resíduo de debug encontrado"
+            exit 1
+          fi
 
           python3 <<'PY'
           import os
@@ -1338,45 +1888,85 @@ jobs:
               / os.environ["APP_NAME"]
           )
 
-          with (app / "Info.plist").open("rb") as f:
+          with (
+              app / "Info.plist"
+          ).open("rb") as f:
               info = plistlib.load(f)
 
-          if info.get("UIFileSharingEnabled") is not True:
+          forbidden = [
+              "UIFileSharingEnabled",
+              "LSSupportsOpeningDocumentsInPlace",
+          ]
+
+          for key in forbidden:
+              if key in info:
+                  raise SystemExit(
+                      f"❌ Chave de debug presente: {key}"
+                  )
+
+          manifest_path = (
+              app
+              / "MessengerPortuguese"
+              / "manifest.plist"
+          )
+
+          with manifest_path.open(
+              "rb"
+          ) as f:
+              manifest = plistlib.load(f)
+
+          required = {
+              "Locale",
+              "BuildNumber",
+              "ContentHash",
+              "Checksum",
+          }
+
+          missing = (
+              required
+              - set(manifest)
+          )
+
+          if missing:
               raise SystemExit(
-                  "❌ UIFileSharingEnabled ausente"
+                  f"❌ Manifest incompleto: {sorted(missing)}"
               )
 
-          print("✅ Estrutura V2.3 validada")
+          print(
+              "✅ Estrutura final de produção validada"
+          )
           PY
 
-      - name: Build final V2.3 IPA
+      - name: Build final production IPA
         shell: bash
         run: |
           set -euo pipefail
 
+          OUTPUT="Messenger-574-MSGPlusX-ptBR-Final.ipa"
+
           (
             cd baseline
             zip -qry9 \
-              ../Messenger-574-MSGPlusX-Portuguese-V2.3.ipa \
+              "../$OUTPUT" \
               Payload
           )
 
           unzip -tq \
-            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa \
+            "$OUTPUT" \
             > /dev/null
 
           ls -lh \
-            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
+            "$OUTPUT"
 
           sha256sum \
-            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
+            "$OUTPUT"
 
-          echo "✅ IPA V2.3 final criado"
+          echo "✅ IPA final criado"
 
-      - name: Upload final V2.3 IPA
+      - name: Upload final Messenger IPA
         uses: actions/upload-artifact@v6
         with:
-          name: Messenger-574-MSGPlusX-Portuguese-V2.3
-          path: Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
+          name: Messenger-574-MSGPlusX-ptBR-Final
+          path: Messenger-574-MSGPlusX-ptBR-Final.ipa
           if-no-files-found: error
           retention-days: 3
