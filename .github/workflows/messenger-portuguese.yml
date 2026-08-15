@@ -1,4 +1,4 @@
-name: Messenger 574 Portuguese V2.2 DoD Local
+name: Messenger 574 Portuguese V2.3 Early DoD
 
 on:
   workflow_dispatch:
@@ -13,18 +13,18 @@ permissions:
 
 jobs:
   build-hook:
-    name: Build pt-BR V2.2 DoD hook
+    name: Build pt-BR V2.3 Early DoD hook
     runs-on: macos-latest
     timeout-minutes: 15
 
     steps:
-      - name: Create V2.2 hook source
+      - name: Create V2.3 hook source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build
 
-          cat > build/MessengerPortugueseV22.m <<'OBJC'
+          cat > build/MessengerPortugueseV23.m <<'OBJC'
           #import <Foundation/Foundation.h>
           #import <objc/runtime.h>
           #import <objc/message.h>
@@ -34,7 +34,7 @@ jobs:
           static IMP MPOriginalStorageIMP = NULL;
           static BOOL MPHookInstalled = NO;
           static NSInteger MPProbeAttempt = 0;
-          static const NSInteger MPMaxProbeAttempts = 300;
+          static const NSInteger MPMaxProbeAttempts = 500;
 
           static NSString * const MPContentHash =
               @"beb8b2a724c4d86596dd48520bf328cb";
@@ -45,7 +45,7 @@ jobs:
           static NSString *MPLogPath(void) {
               return [NSHomeDirectory()
                   stringByAppendingPathComponent:
-                      @"Documents/MessengerPtBRFix-V22.log"];
+                      @"Documents/MessengerPtBRFix-V23.log"];
           }
 
           static void MPLog(NSString *format, ...) {
@@ -59,7 +59,7 @@ jobs:
 
                   va_end(args);
 
-                  NSLog(@"[MessengerPtBRFix-V22] %@", message);
+                  NSLog(@"[MessengerPtBRFix-V23] %@", message);
 
                   NSString *line =
                       [NSString stringWithFormat:
@@ -626,9 +626,191 @@ jobs:
               return YES;
           }
 
-          static void MPScheduleProbe(void);
+          /*
+           * Fast path da V2.3.
+           *
+           * O objetivo aqui é instalar EXATAMENTE o mesmo hook que
+           * funcionou na V2.2, porém antes de o Messenger decidir
+           * que precisa mostrar "Baixar idioma".
+           *
+           * Importante: esta função não usa Foundation, não faz I/O,
+           * não chama dlopen e não força o carregamento de framework.
+           * Ela usa somente o runtime Objective-C já carregado.
+           */
+          static BOOL MPTryInstallHookEarly(void) {
+              if (MPHookInstalled) {
+                  return YES;
+              }
 
-          static void MPProbeRuntime(void) {
+              Class storageClass =
+                  objc_getClass("FBOnDemandResourceStorage");
+
+              if (!storageClass) {
+                  return NO;
+              }
+
+              SEL selector =
+                  sel_registerName(
+                      "_fetchMostRecentResourceWithName:"
+                      "flavor:"
+                      "fetchType:"
+                      "requiresClientProvidedHashVerified:");
+
+              Method method =
+                  class_getInstanceMethod(
+                      storageClass,
+                      selector);
+
+              if (!method) {
+                  return NO;
+              }
+
+              /*
+               * Validação ABI mínima sem Foundation/log.
+               * self + _cmd + 4 argumentos = 6.
+               */
+              if (method_getNumberOfArguments(method) != 6) {
+                  return NO;
+              }
+
+              const char *types =
+                  method_getTypeEncoding(method);
+
+              if (!types) {
+                  return NO;
+              }
+
+              char returnType[16] = {0};
+              char arg2[16] = {0};
+              char arg3[16] = {0};
+              char arg4[16] = {0};
+              char arg5[16] = {0};
+
+              method_getReturnType(
+                  method,
+                  returnType,
+                  sizeof(returnType));
+
+              method_getArgumentType(
+                  method,
+                  2,
+                  arg2,
+                  sizeof(arg2));
+
+              method_getArgumentType(
+                  method,
+                  3,
+                  arg3,
+                  sizeof(arg3));
+
+              method_getArgumentType(
+                  method,
+                  4,
+                  arg4,
+                  sizeof(arg4));
+
+              method_getArgumentType(
+                  method,
+                  5,
+                  arg5,
+                  sizeof(arg5));
+
+              if (returnType[0] != '@' ||
+                  arg2[0] != '@' ||
+                  arg3[0] != '@' ||
+                  arg4[0] != '@' ||
+                  (arg5[0] != 'B' &&
+                   arg5[0] != 'c' &&
+                   arg5[0] != 'C')) {
+                  return NO;
+              }
+
+              IMP current =
+                  method_getImplementation(method);
+
+              if (!current) {
+                  return NO;
+              }
+
+              IMP previous =
+                  method_setImplementation(
+                      method,
+                      (IMP)MPStorageReplacement);
+
+              if (!previous) {
+                  return NO;
+              }
+
+              MPOriginalStorageIMP = previous;
+              MPHookInstalled = YES;
+
+              return YES;
+          }
+
+          static NSTimeInterval MPProbeDelayForAttempt(
+              NSInteger attempt
+          ) {
+              /*
+               * Primeiro segundo: agressivo, porque é justamente
+               * onde a consulta pt_BR ocorre em uma sessão pronta.
+               *
+               * 1..100   = 5 ms   (~0,5 s)
+               * 101..150 = 10 ms  (~0,5 s)
+               * 151..200 = 20 ms  (~1,0 s)
+               * 201..260 = 50 ms  (~3,0 s)
+               * 261+     = 250 ms
+               */
+              if (attempt <= 100) {
+                  return 0.005;
+              }
+
+              if (attempt <= 150) {
+                  return 0.010;
+              }
+
+              if (attempt <= 200) {
+                  return 0.020;
+              }
+
+              if (attempt <= 260) {
+                  return 0.050;
+              }
+
+              return 0.250;
+          }
+
+          static void MPReportInstalledHook(
+              NSString *origin
+          ) {
+              @autoreleasepool {
+                  MPLog(@"========================================");
+                  MPLog(@"Messenger Portuguese V2.3 iniciado");
+                  MPLog(@"Origem do hook=%@", origin ?: @"?");
+                  MPLog(@"✅ Hook DoD instalado em:");
+                  MPLog(@"   FBOnDemandResourceStorage");
+                  MPLog(@"   _fetchMostRecentResourceWithName:"
+                        @"flavor:fetchType:"
+                        @"requiresClientProvidedHashVerified:");
+
+                  MPLog(@"Pack local válido=%@",
+                        MPValidatePack(MPPackPath())
+                            ? @"SIM"
+                            : @"NÃO");
+
+                  MPLog(@"Pack path=%@",
+                        MPPackPath());
+
+                  MPLog(@"Build=%@",
+                        MPBuildNumber());
+
+                  MPLog(@"Tentativas até instalar=%ld",
+                        (long)MPProbeAttempt);
+              }
+          }
+
+          static void MPScheduleEarlyProbe(void);
+
+          static void MPEarlyProbe(void) {
               @autoreleasepool {
                   if (MPHookInstalled) {
                       return;
@@ -636,46 +818,78 @@ jobs:
 
                   MPProbeAttempt += 1;
 
-                  if (MPTryInstallHook()) {
+                  if (MPTryInstallHookEarly()) {
+                      MPReportInstalledHook(
+                          @"fast-poll");
                       return;
                   }
 
-                  if (MPProbeAttempt == 1 ||
-                      MPProbeAttempt % 15 == 0) {
-                      MPLog(@"Aguardando DoD runtime "
-                            @"(tentativa %ld/%ld)",
-                            (long)MPProbeAttempt,
-                            (long)MPMaxProbeAttempts);
+                  /*
+                   * Depois do período crítico inicial, podemos usar
+                   * a implementação completa para diagnóstico da
+                   * assinatura caso algo tenha mudado.
+                   */
+                  if (MPProbeAttempt == 260) {
+                      if (MPTryInstallHook()) {
+                          MPReportInstalledHook(
+                              @"validated-fallback");
+                          return;
+                      }
                   }
 
                   if (MPProbeAttempt <
                       MPMaxProbeAttempts) {
-                      MPScheduleProbe();
+                      MPScheduleEarlyProbe();
                   } else {
-                      MPLog(@"❌ Timeout aguardando "
+                      MPLog(@"❌ Timeout V2.3 aguardando "
                             @"FBOnDemandResourceStorage");
                   }
               }
           }
 
-          static void MPScheduleProbe(void) {
+          static void MPScheduleEarlyProbe(void) {
+              NSInteger nextAttempt =
+                  MPProbeAttempt + 1;
+
+              NSTimeInterval delay =
+                  MPProbeDelayForAttempt(
+                      nextAttempt);
+
               dispatch_after(
                   dispatch_time(
                       DISPATCH_TIME_NOW,
-                      (int64_t)(2.0 * NSEC_PER_SEC)),
-                  dispatch_get_main_queue(),
+                      (int64_t)(delay * NSEC_PER_SEC)),
+                  dispatch_get_global_queue(
+                      QOS_CLASS_USER_INTERACTIVE,
+                      0),
                   ^{
-                      MPProbeRuntime();
+                      MPEarlyProbe();
                   });
           }
 
           __attribute__((constructor))
-          static void MessengerPortugueseV22Init(void) {
+          static void MessengerPortugueseV23Init(void) {
               /*
-               * Nenhum hook, dlopen ou chamada a classe privada
-               * acontece dentro do constructor.
+               * V2.3:
+               * 1) tenta o hook imediatamente;
+               * 2) se a classe ainda não existir, inicia polling
+               *    ultrarrápido fora da main queue;
+               * 3) nenhum dlopen/framework privado é forçado.
                */
-              MPScheduleProbe();
+              if (MPTryInstallHookEarly()) {
+                  dispatch_async(
+                      dispatch_get_global_queue(
+                          QOS_CLASS_UTILITY,
+                          0),
+                      ^{
+                          MPReportInstalledHook(
+                              @"constructor-fast-path");
+                      });
+
+                  return;
+              }
+
+              MPScheduleEarlyProbe();
           }
           OBJC
 
@@ -695,29 +909,29 @@ jobs:
             -fblocks \
             -isysroot "$SDK_PATH" \
             -framework Foundation \
-            -install_name "@rpath/MessengerPortugueseV22.dylib" \
+            -install_name "@rpath/MessengerPortugueseV23.dylib" \
             -Wl,-dead_strip \
-            build/MessengerPortugueseV22.m \
-            -o build/MessengerPortugueseV22.dylib
+            build/MessengerPortugueseV23.m \
+            -o build/MessengerPortugueseV23.dylib
 
-          chmod 755 build/MessengerPortugueseV22.dylib
+          chmod 755 build/MessengerPortugueseV23.dylib
 
-          file build/MessengerPortugueseV22.dylib
-          shasum -a 256 build/MessengerPortugueseV22.dylib
+          file build/MessengerPortugueseV23.dylib
+          shasum -a 256 build/MessengerPortugueseV23.dylib
 
-          file build/MessengerPortugueseV22.dylib \
+          file build/MessengerPortugueseV23.dylib \
             | grep -qi arm64
 
-      - name: Upload V2.2 dylib
+      - name: Upload V2.3 dylib
         uses: actions/upload-artifact@v6
         with:
-          name: messenger-portuguese-v22-dylib
-          path: build/MessengerPortugueseV22.dylib
+          name: messenger-portuguese-v23-dylib
+          path: build/MessengerPortugueseV23.dylib
           if-no-files-found: error
           retention-days: 3
 
   patch-messenger:
-    name: Inject V2.2 and build IPA
+    name: Inject V2.3 and build IPA
     needs: build-hook
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -754,10 +968,10 @@ jobs:
           chmod +x ipapatch
           ./ipapatch --version
 
-      - name: Download V2.2 dylib
+      - name: Download V2.3 dylib
         uses: actions/download-artifact@v7
         with:
-          name: messenger-portuguese-v22-dylib
+          name: messenger-portuguese-v23-dylib
           path: hook
 
       - name: Download Messenger and validate pt-BR FBLP
@@ -910,7 +1124,7 @@ jobs:
           print(f"Build: {build}")
           PY
 
-      - name: Enable Documents access for V2.2 log
+      - name: Enable Documents access for V2.3 log
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
         shell: bash
@@ -943,7 +1157,7 @@ jobs:
                   sort_keys=False,
               )
 
-          print("✅ File Sharing habilitado para o log V2.2")
+          print("✅ File Sharing habilitado para o log V2.3")
           PY
 
       - name: Create isolated IPA for main injection
@@ -974,28 +1188,28 @@ jobs:
 
           echo "✅ IPA temporário preparado"
 
-      - name: Inject V2.2 dylib into main Messenger executable
+      - name: Inject V2.3 dylib into main Messenger executable
         shell: bash
         run: |
           set -euo pipefail
 
           test -f \
-            hook/MessengerPortugueseV22.dylib
+            hook/MessengerPortugueseV23.dylib
 
           chmod 755 \
-            hook/MessengerPortugueseV22.dylib
+            hook/MessengerPortugueseV23.dylib
 
           ./ipapatch \
             --input isolated-input.ipa \
             --output isolated-patched.ipa \
-            --dylib hook/MessengerPortugueseV22.dylib \
+            --dylib hook/MessengerPortugueseV23.dylib \
             --noconfirm
 
           unzip -tq \
             isolated-patched.ipa \
             > /dev/null
 
-          echo "✅ V2.2 injetada no main executable"
+          echo "✅ V2.3 injetada no main executable"
 
       - name: Merge patched main into original structure
         env:
@@ -1026,11 +1240,11 @@ jobs:
             "$FINAL_APP/Frameworks"
 
           cp \
-            hook/MessengerPortugueseV22.dylib \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV22.dylib"
+            hook/MessengerPortugueseV23.dylib \
+            "$FINAL_APP/Frameworks/MessengerPortugueseV23.dylib"
 
           chmod 755 \
-            "$FINAL_APP/Frameworks/MessengerPortugueseV22.dylib"
+            "$FINAL_APP/Frameworks/MessengerPortugueseV23.dylib"
 
           echo "✅ Main substituído"
           echo "✅ PlugIns originais preservados"
@@ -1064,7 +1278,7 @@ jobs:
 
           echo "✅ FBLP pt-BR incorporado"
 
-      - name: Validate V2.2 final structure
+      - name: Validate V2.3 final structure
         env:
           APP_NAME: ${{ steps.messenger.outputs.app_name }}
           EXECUTABLE: ${{ steps.messenger.outputs.executable }}
@@ -1074,7 +1288,7 @@ jobs:
 
           APP="baseline/Payload/$APP_NAME"
           MAIN="$APP/$EXECUTABLE"
-          DYLIB="$APP/Frameworks/MessengerPortugueseV22.dylib"
+          DYLIB="$APP/Frameworks/MessengerPortugueseV23.dylib"
           PACK="$APP/MessengerPortuguese/fbt_language_pack.bin"
 
           test -f "$MAIN"
@@ -1091,7 +1305,7 @@ jobs:
 
           strings "$MAIN" \
             | grep -F \
-              "MessengerPortugueseV22.dylib" \
+              "MessengerPortugueseV23.dylib" \
             > /dev/null
 
           strings "$DYLIB" \
@@ -1111,7 +1325,7 @@ jobs:
 
           strings "$DYLIB" \
             | grep -F \
-              "MessengerPtBRFix-V22.log" \
+              "MessengerPtBRFix-V23.log" \
             > /dev/null
 
           python3 <<'PY'
@@ -1132,10 +1346,10 @@ jobs:
                   "❌ UIFileSharingEnabled ausente"
               )
 
-          print("✅ Estrutura V2.2 validada")
+          print("✅ Estrutura V2.3 validada")
           PY
 
-      - name: Build final V2.2 IPA
+      - name: Build final V2.3 IPA
         shell: bash
         run: |
           set -euo pipefail
@@ -1143,26 +1357,26 @@ jobs:
           (
             cd baseline
             zip -qry9 \
-              ../Messenger-574-MSGPlusX-Portuguese-V2.2.ipa \
+              ../Messenger-574-MSGPlusX-Portuguese-V2.3.ipa \
               Payload
           )
 
           unzip -tq \
-            Messenger-574-MSGPlusX-Portuguese-V2.2.ipa \
+            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa \
             > /dev/null
 
           ls -lh \
-            Messenger-574-MSGPlusX-Portuguese-V2.2.ipa
+            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
 
           sha256sum \
-            Messenger-574-MSGPlusX-Portuguese-V2.2.ipa
+            Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
 
-          echo "✅ IPA V2.2 final criado"
+          echo "✅ IPA V2.3 final criado"
 
-      - name: Upload final V2.2 IPA
+      - name: Upload final V2.3 IPA
         uses: actions/upload-artifact@v6
         with:
-          name: Messenger-574-MSGPlusX-Portuguese-V2.2
-          path: Messenger-574-MSGPlusX-Portuguese-V2.2.ipa
+          name: Messenger-574-MSGPlusX-Portuguese-V2.3
+          path: Messenger-574-MSGPlusX-Portuguese-V2.3.ipa
           if-no-files-found: error
           retention-days: 3
