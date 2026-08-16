@@ -39,6 +39,19 @@ jobs:
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
+      - name: Activate private core
+        run: |
+          rm -rf addons config
+
+          cp -a private-core/addons ./addons
+          cp -a private-core/config ./config
+
+          cp private-core/telegram_download.py ./telegram_download.py
+          cp private-core/telegram_messenger_translation.py ./telegram_messenger_translation.py
+          cp private-core/telegram_send.py ./telegram_send.py
+
+          echo "✅ Bot-Injector-Core ativado"
+
       - name: Set up Python
         uses: actions/setup-python@v6
         with:
