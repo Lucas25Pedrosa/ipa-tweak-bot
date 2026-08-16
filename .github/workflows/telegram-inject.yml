@@ -106,12 +106,20 @@ jobs:
           echo "✅ IPA original válido"
           ls -lh input.ipa
 
+      - name: Private input processing
+        id: private_input
+        run: |
+          python private-core/scripts/postprocess.py input.ipa \
+            --status-file .private-status.json \
+            --github-output "$GITHUB_OUTPUT"
+
       # =========================================================
       # 3. DETECTAR APP E TWEAK
       # =========================================================
 
       - name: Detect app and select addon
         id: prepare
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
         env:
           REQUESTED_ADDON: ${{ inputs.addon }}
         run: |
@@ -324,13 +332,13 @@ jobs:
 
       - name: Download and prepare Messenger pt-BR translation
         id: messenger_translation
-        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
         env:
           TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           TELEGRAM_TRANSLATION_CHANNEL_ID: ${{ secrets.TELEGRAM_TRANSLATION_CHANNEL_ID }}
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
           APP_BUILD: ${{ steps.prepare.outputs.build }}
         run: |
           python telegram_messenger_translation.py
@@ -346,7 +354,7 @@ jobs:
       # =========================================================
 
       - name: Install IPA Patch
-        if: ${{ steps.prepare.outputs.ipapatch == 'true' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.ipapatch == 'true' }}
         run: |
           echo "📥 Instalando IPA Patch..."
 
@@ -364,6 +372,7 @@ jobs:
       # =========================================================
 
       - name: Prepare addon components
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
         run: |
           python <<'PY'
           import json
@@ -489,9 +498,9 @@ jobs:
       # =========================================================
 
       - name: Install Regram using Fouad layout
-        if: ${{ steps.prepare.outputs.bundle_id == 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.burbn.instagram' }}
         env:
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
         run: |
           python <<'PY'
           import os
@@ -1304,7 +1313,7 @@ jobs:
       # =========================================================
 
       - name: Inject with Cyan
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
 
@@ -1347,9 +1356,9 @@ jobs:
       # =========================================================
 
       - name: Reproduce functional dylib layout
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
         env:
-          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
           python <<'PY'
           import os
@@ -1711,7 +1720,7 @@ jobs:
       # =========================================================
 
       - name: Apply IPA Patch to main executable only
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'main-only' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'main-only' }}
         run: |
           echo "🩹 Aplicando IPA Patch"
           echo "Modo: main-only"
@@ -1919,7 +1928,7 @@ jobs:
           echo "✅ IPA Patch main-only concluído"
 
       - name: Apply IPA Patch to main app and original plugins
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'all' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'all' }}
         run: |
           echo "🩹 Aplicando IPA Patch"
           echo "Modo: all"
@@ -2030,7 +2039,7 @@ jobs:
           echo "✅ IPA Patch all concluído"
 
       - name: Apply IPA Patch to original plugins only
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'plugins-only' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'plugins-only' }}
         run: |
           echo "🩹 Aplicando IPA Patch"
           echo "Modo: plugins-only"
@@ -2049,7 +2058,7 @@ jobs:
           echo "✅ IPA Patch plugins-only concluído"
 
       - name: Skip IPA Patch when not required
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch != 'true' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.ipapatch != 'true' }}
         run: |
           cp Layout_Output.ipa Patched_Output.ipa
           echo "ℹ️ IPA Patch não necessário para este app"
@@ -2059,7 +2068,7 @@ jobs:
       # =========================================================
 
       - name: Add root files, frameworks, bundles and extra extensions
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
         run: |
           python <<'PY'
           import json
@@ -2326,7 +2335,7 @@ jobs:
       # =========================================================
 
       - name: Apply Info.plist changes
-        if: ${{ steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
         run: |
           python <<'PY'
           import json
@@ -2447,7 +2456,7 @@ jobs:
       # =========================================================
 
       - name: Embed Messenger pt-BR translation
-        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
         run: |
           python <<'PY'
           import os
@@ -2660,9 +2669,9 @@ jobs:
       # =========================================================
 
       - name: Validate Messenger MSGPlusX + pt-BR layout
-        if: ${{ steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
         env:
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
           APP_BUILD: ${{ steps.prepare.outputs.build }}
         run: |
           python <<'PY'
@@ -3183,7 +3192,7 @@ jobs:
           PY
 
       - name: Validate WhatsApp Watusi Fouad layout
-        if: ${{ steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
         run: |
           python <<'PY'
           import plistlib
@@ -3397,6 +3406,11 @@ jobs:
           )
           PY
 
+      - name: Prepare private processing output
+        if: ${{ steps.private_input.outputs.processing_route == 'private' }}
+        run: |
+          cp input.ipa Final.ipa
+
       - name: Private post-processing
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
@@ -3420,16 +3434,16 @@ jobs:
           echo "=========================================="
           echo ""
           echo "📱 Nome:"
-          echo "${{ steps.prepare.outputs.app_name }}"
+          echo "${{ steps.prepare.outputs.app_name || steps.private_input.outputs.app_name }}"
           echo ""
           echo "📦 Bundle ID:"
-          echo "${{ steps.prepare.outputs.bundle_id }}"
+          echo "${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}"
           echo ""
           echo "🔢 Versão:"
-          echo "${{ steps.prepare.outputs.version }}"
+          echo "${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}"
           echo ""
           echo "🧩 Tweak:"
-          echo "${{ steps.prepare.outputs.addon_name }}"
+          echo "${{ steps.prepare.outputs.addon_name || steps.private_input.outputs.addon_name }}"
           echo ""
           echo "🩹 IPA Patch:"
           echo "${{ steps.prepare.outputs.ipapatch }}"
@@ -3451,9 +3465,9 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
 
-          APP_NAME: ${{ steps.prepare.outputs.app_name }}
-          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
-          APP_VERSION: ${{ steps.prepare.outputs.version }}
-          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
+          APP_NAME: ${{ steps.prepare.outputs.app_name || steps.private_input.outputs.app_name }}
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
+          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name || steps.private_input.outputs.addon_name }}
         run: |
           python telegram_send.py
