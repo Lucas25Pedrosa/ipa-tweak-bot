@@ -36,6 +36,7 @@ jobs:
           test -f private-core/telegram_send.py
           test -d private-core/addons
           test -d private-core/config
+          test -f private-core/scripts/postprocess.py
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
@@ -3395,6 +3396,11 @@ jobs:
               "✅ AppMigrationExtension.appex removida seletivamente"
           )
           PY
+
+      - name: Private post-processing
+        run: |
+          python private-core/scripts/postprocess.py Final.ipa \
+            --status-file .private-status.json
 
       - name: Validate final IPA
         run: |
