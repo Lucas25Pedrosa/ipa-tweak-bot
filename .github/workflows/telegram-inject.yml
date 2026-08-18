@@ -514,11 +514,32 @@ jobs:
                           exist_ok=True,
                       )
 
+                      copied_pt_br = 0
+                      copied_bundle_root = 0
+
                       for source in translation_files:
                           relative = source.relative_to(
                               translation_source
                           )
-                          destination = pt_br / relative
+
+                          # Arquivos especiais que pertencem à
+                          # raiz do bundle, e não ao pt-BR.lproj.
+                          #
+                          # Mx/Telegram usa langs.json para montar
+                          # o seletor próprio de idiomas.
+                          if (
+                              app_key == "telegram"
+                              and bundle_target.name == "Mx.bundle"
+                              and relative.as_posix() == "langs.json"
+                          ):
+                              destination = (
+                                  bundle_target / "langs.json"
+                              )
+                              copied_bundle_root += 1
+                          else:
+                              destination = pt_br / relative
+                              copied_pt_br += 1
+
                           destination.parent.mkdir(
                               parents=True,
                               exist_ok=True,
@@ -531,8 +552,9 @@ jobs:
                       print(
                           "🇧🇷 Tradução pt-BR aplicada: "
                           f"{app_key}/{addon_version} -> "
-                          f"{bundle_target.name}/pt-BR.lproj "
-                          f"({len(translation_files)} arquivo(s))"
+                          f"{bundle_target.name} "
+                          f"(pt-BR.lproj={copied_pt_br}, "
+                          f"raiz={copied_bundle_root})"
                       )
 
               elif action == "appex":
