@@ -482,7 +482,6 @@ jobs:
                       "x",
                       "facebook",
                       "tiktok",
-                      "reddit",
                   }
 
                   translation_source = (
