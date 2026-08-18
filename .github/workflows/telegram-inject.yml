@@ -530,28 +530,29 @@ jobs:
                           if (
                               app_key == "telegram"
                               and bundle_target.name == "Mx.bundle"
-                              and relative.as_posix() == "langs.json"
-                          ):
-                              destination = (
-                                  bundle_target / "langs.json"
-                              )
-                              copied_bundle_root += 1
-                          elif (
-                              app_key == "telegram"
-                              and bundle_target.name == "Mx.bundle"
                               and relative.as_posix()
                                   == "Localizable.strings"
                           ):
-                              # O Mx 1.0.0 só aceita internamente
-                              # códigos de idioma já suportados.
-                              # Usamos "ar" como slot interno para
-                              # Português (Brasil).
+                              # Mx: substituímos somente o recurso
+                              # já existente do idioma árabe.
+                              # O langs.json original permanece intacto.
                               destination = (
                                   bundle_target
                                   / "ar.lproj"
                                   / "Localizable.strings"
                               )
                               copied_pt_br += 1
+                          elif (
+                              app_key == "telegram"
+                              and bundle_target.name == "Mx.bundle"
+                              and relative.as_posix() == "langs.json"
+                          ):
+                              # Não copiar langs.json do pacote de tradução.
+                              # Mantém o arquivo original do Mx.
+                              print(
+                                  "ℹ️ Mx: langs.json original preservado"
+                              )
+                              continue
                           else:
                               destination = pt_br / relative
                               copied_pt_br += 1
