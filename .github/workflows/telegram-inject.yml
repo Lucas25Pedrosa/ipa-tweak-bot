@@ -375,9 +375,12 @@ jobs:
 
       - name: Prepare addon components
         if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
           python <<'PY'
           import json
+          import os
           import shutil
           import zipfile
           from pathlib import Path
@@ -473,6 +476,15 @@ jobs:
                       else ""
                   )
 
+                  # Apenas addons com localização validada.
+                  # Telegram/Mx foi removido desta rota.
+                  translatable_apps = {
+                      "x",
+                      "facebook",
+                      "tiktok",
+                      "reddit",
+                  }
+
                   translation_source = (
                       Path("translations")
                       / app_key
@@ -480,7 +492,7 @@ jobs:
                   )
 
                   if (
-                      app_key
+                      app_key in translatable_apps
                       and addon_version
                       and translation_source.is_dir()
                   ):
@@ -522,40 +534,8 @@ jobs:
                               translation_source
                           )
 
-                          # Arquivos especiais que pertencem à
-                          # raiz do bundle, e não ao pt-BR.lproj.
-                          #
-                          # Mx/Telegram usa langs.json para montar
-                          # o seletor próprio de idiomas.
-                          if (
-                              app_key == "telegram"
-                              and bundle_target.name == "Mx.bundle"
-                              and relative.as_posix()
-                                  == "Localizable.strings"
-                          ):
-                              # Mx: substituímos somente o recurso
-                              # já existente do idioma árabe.
-                              # O langs.json original permanece intacto.
-                              destination = (
-                                  bundle_target
-                                  / "ar.lproj"
-                                  / "Localizable.strings"
-                              )
-                              copied_pt_br += 1
-                          elif (
-                              app_key == "telegram"
-                              and bundle_target.name == "Mx.bundle"
-                              and relative.as_posix() == "langs.json"
-                          ):
-                              # Não copiar langs.json do pacote de tradução.
-                              # Mantém o arquivo original do Mx.
-                              print(
-                                  "ℹ️ Mx: langs.json original preservado"
-                              )
-                              continue
-                          else:
-                              destination = pt_br / relative
-                              copied_pt_br += 1
+                          destination = pt_br / relative
+                          copied_pt_br += 1
 
                           destination.parent.mkdir(
                               parents=True,
@@ -593,6 +573,27 @@ jobs:
               else:
                   raise SystemExit(
                       f"❌ Ação desconhecida: {action}"
+                  )
+
+          # TikTok 46.x+: mantém a entrada do RXTikTok no menu
+          # mesmo após o refresh remoto das configurações.
+          if os.environ.get("BUNDLE_ID") == "com.zhiliaoapp.musically":
+              rx_menu_fix = Path(
+                  "addons/tiktok/dylib/RXMenuFix-v1.4.dylib"
+              )
+
+              if not rx_menu_fix.is_file():
+                  raise SystemExit(
+                      "❌ RXMenuFix v1.4 ausente no Core: "
+                      f"{rx_menu_fix}"
+                  )
+
+              rx_menu_fix_str = str(rx_menu_fix)
+
+              if rx_menu_fix_str not in inject_files:
+                  inject_files.append(rx_menu_fix_str)
+                  print(
+                      "✅ RXMenuFix v1.4 adicionado ao TikTok"
                   )
 
           with open(
@@ -1497,6 +1498,7 @@ jobs:
               ],
               "com.zhiliaoapp.musically": [
                   "___RXTikTok.dylib",
+                  "RXMenuFix-v1.4.dylib",
               ],
               "ph.telegra.Telegraph": [
                   "sideloadFixerLol.dylib",
