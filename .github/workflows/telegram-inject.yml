@@ -536,6 +536,22 @@ jobs:
                                   bundle_target / "langs.json"
                               )
                               copied_bundle_root += 1
+                          elif (
+                              app_key == "telegram"
+                              and bundle_target.name == "Mx.bundle"
+                              and relative.as_posix()
+                                  == "Localizable.strings"
+                          ):
+                              # O Mx 1.0.0 só aceita internamente
+                              # códigos de idioma já suportados.
+                              # Usamos "ar" como slot interno para
+                              # Português (Brasil).
+                              destination = (
+                                  bundle_target
+                                  / "ar.lproj"
+                                  / "Localizable.strings"
+                              )
+                              copied_pt_br += 1
                           else:
                               destination = pt_br / relative
                               copied_pt_br += 1
@@ -553,7 +569,7 @@ jobs:
                           "🇧🇷 Tradução pt-BR aplicada: "
                           f"{app_key}/{addon_version} -> "
                           f"{bundle_target.name} "
-                          f"(pt-BR.lproj={copied_pt_br}, "
+                          f"(localização={copied_pt_br}, "
                           f"raiz={copied_bundle_root})"
                       )
 
