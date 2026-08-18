@@ -36,16 +36,18 @@ jobs:
           test -f private-core/telegram_send.py
           test -d private-core/addons
           test -d private-core/config
+          test -d private-core/translations
           test -f private-core/scripts/postprocess.py
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
       - name: Activate private core
         run: |
-          rm -rf addons config
+          rm -rf addons config translations
 
           cp -a private-core/addons ./addons
           cp -a private-core/config ./config
+          cp -a private-core/translations ./translations
 
           cp private-core/telegram_download.py ./telegram_download.py
           cp private-core/telegram_messenger_translation.py ./telegram_messenger_translation.py
@@ -454,6 +456,84 @@ jobs:
               elif action == "bundle":
                   with zipfile.ZipFile(path, "r") as z:
                       z.extractall(bundles)
+
+                  # Traduções privadas por app/versão.
+                  # Convenção:
+                  # translations/<app>/<versão>/
+                  #     -> <Bundle>.bundle/pt-BR.lproj/
+                  addon_version = str(
+                      addon.get("version", "")
+                  ).strip()
+
+                  path_parts = path.parts
+                  app_key = (
+                      path_parts[1]
+                      if len(path_parts) >= 2
+                      and path_parts[0] == "addons"
+                      else ""
+                  )
+
+                  translation_source = (
+                      Path("translations")
+                      / app_key
+                      / addon_version
+                  )
+
+                  if (
+                      app_key
+                      and addon_version
+                      and translation_source.is_dir()
+                  ):
+                      bundle_target = (
+                          bundles / path.stem
+                      )
+
+                      if not bundle_target.is_dir():
+                          raise SystemExit(
+                              "❌ Bundle alvo da tradução não "
+                              f"encontrado: {bundle_target}"
+                          )
+
+                      translation_files = [
+                          file
+                          for file in translation_source.rglob("*")
+                          if file.is_file()
+                      ]
+
+                      if not translation_files:
+                          raise SystemExit(
+                              "❌ Pasta de tradução vazia: "
+                              f"{translation_source}"
+                          )
+
+                      pt_br = (
+                          bundle_target / "pt-BR.lproj"
+                      )
+                      pt_br.mkdir(
+                          parents=True,
+                          exist_ok=True,
+                      )
+
+                      for source in translation_files:
+                          relative = source.relative_to(
+                              translation_source
+                          )
+                          destination = pt_br / relative
+                          destination.parent.mkdir(
+                              parents=True,
+                              exist_ok=True,
+                          )
+                          shutil.copy2(
+                              source,
+                              destination,
+                          )
+
+                      print(
+                          "🇧🇷 Tradução pt-BR aplicada: "
+                          f"{app_key}/{addon_version} -> "
+                          f"{bundle_target.name}/pt-BR.lproj "
+                          f"({len(translation_files)} arquivo(s))"
+                      )
 
               elif action == "appex":
                   with zipfile.ZipFile(path, "r") as z:
