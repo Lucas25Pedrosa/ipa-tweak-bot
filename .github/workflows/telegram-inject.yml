@@ -30,6 +30,14 @@ jobs:
           path: private-core
           persist-credentials: false
 
+      - name: Checkout shared config
+        uses: actions/checkout@v5
+        with:
+          repository: Lucas25Pedrosa/ipa-shared-config-core
+          token: ${{ secrets.SHARED_CONFIG_TOKEN }}
+          path: shared-config
+          persist-credentials: false
+
       - name: Validate private core
         run: |
           test -f private-core/telegram_download.py
