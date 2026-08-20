@@ -624,12 +624,15 @@ jobs:
       # 6. INSTAGRAM / REGRAM - PERFIL OFICIAL FOUAD
       # =========================================================
 
-      - name: Install Regram using Fouad layout
+      - name: Install Regram 6.0 using Fouad layout
+        id: regram_install
+        continue-on-error: true
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.burbn.instagram' }}
         env:
           APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
         run: |
-          python <<'PY'
+          set +e
+          python <<'PY' 2>&1 | tee regram-install.log
           import os
           import plistlib
           import shutil
@@ -680,14 +683,30 @@ jobs:
               "CFBundleShortVersionString",
               "Unknown",
           )
+          build = plist.get(
+              "CFBundleVersion",
+              "Unknown",
+          )
 
-          print(f"📱 Instagram {version}")
+          print(
+              f"📱 Instagram {version} "
+              f"(build {build})"
+          )
+          print("🧩 Regram 6.0")
 
-          if version != "442.0.0":
+          if (
+              version == "443.0.0"
+              and str(build) == "1043399932"
+          ):
               print(
-                  "⚠️ Esta integração foi auditada contra "
-                  "Instagram 442.0.0. Continuando com as "
-                  "validações estruturais."
+                  "✅ Base auditada do Regram 6.0 confirmada"
+              )
+          else:
+              print(
+                  "ℹ️ Nova versão/build do Instagram. "
+                  "Prosseguindo somente se todas as "
+                  "validações estruturais do Regram 6.0 "
+                  "continuarem compatíveis."
               )
 
           # -----------------------------------------------------
@@ -744,6 +763,34 @@ jobs:
               raise SystemExit(
                   "❌ Regram.bundle oficial não encontrado"
               )
+
+          bundle_info_path = (
+              bundle_source
+              / "Info.plist"
+          )
+
+          if not bundle_info_path.is_file():
+              raise SystemExit(
+                  "❌ Info.plist do Regram.bundle ausente"
+              )
+
+          with bundle_info_path.open("rb") as f:
+              bundle_info = plistlib.load(f)
+
+          if str(
+              bundle_info.get(
+                  "PackageVersion",
+                  "",
+              )
+          ) != "6.0":
+              raise SystemExit(
+                  "❌ Payload incorreto: Regram.bundle "
+                  "não identifica PackageVersion 6.0"
+              )
+
+          print(
+              "✅ Regram.bundle PackageVersion 6.0 confirmado"
+          )
 
           bundle_destination = (
               app / "Regram.bundle"
@@ -1026,7 +1073,18 @@ jobs:
           # REGRAMEXTENSION EM TODAS AS EXTENSÕES ORIGINAIS
           # -----------------------------------------------------
 
-          original_appex = []
+          expected_original_extensions = {
+              "Extensions/InstagramExtensionLockScreenCamera.appex",
+              "PlugIns/InstagramBroadcastSampleHandlerExtension.appex",
+              "PlugIns/InstagramNotificationContentExtension.appex",
+              "PlugIns/InstagramNotificationExtension.appex",
+              "PlugIns/InstagramShareExtension.appex",
+              "PlugIns/InstagramWidgetExtension.appex",
+              "PlugIns/InstagramWidgetExtensionLiveActivities.appex",
+              "PlugIns/InstagramWidgetExtensionLockScreenCameraControl.appex",
+          }
+
+          found_original_extensions = set()
 
           for directory_name in (
               "PlugIns",
@@ -1038,29 +1096,62 @@ jobs:
               )
 
               if directory.exists():
-                  original_appex.extend(
-                      sorted(
-                          directory.glob(
-                              "*.appex"
+                  for extension in sorted(
+                      directory.glob(
+                          "*.appex"
+                      )
+                  ):
+                      found_original_extensions.add(
+                          str(
+                              extension.relative_to(
+                                  app
+                              )
                           )
                       )
-                  )
 
-          if len(original_appex) != 8:
-              print(
-                  "❌ Extensões encontradas:"
+          if (
+              found_original_extensions
+              != expected_original_extensions
+          ):
+              missing = sorted(
+                  expected_original_extensions
+                  - found_original_extensions
+              )
+              unexpected = sorted(
+                  found_original_extensions
+                  - expected_original_extensions
               )
 
-              for bundle in original_appex:
-                  print(
-                      f" • {bundle.relative_to(app)}"
-                  )
+              print(
+                  "❌ Estrutura das extensões do Instagram mudou"
+              )
+
+              if missing:
+                  print("Ausentes:")
+                  for item in missing:
+                      print(f" • {item}")
+
+              if unexpected:
+                  print("Novas/inesperadas:")
+                  for item in unexpected:
+                      print(f" • {item}")
 
               raise SystemExit(
-                  "❌ O layout auditado possui exatamente "
-                  f"8 extensões originais; encontrei "
-                  f"{len(original_appex)}"
+                  "❌ Layout de extensões incompatível com "
+                  "o perfil auditado do Regram 6.0"
               )
+
+          original_appex = [
+              app / relative
+              for relative in sorted(
+                  expected_original_extensions
+              )
+          ]
+
+          print(
+              "✅ As 8 extensões auditadas do Instagram "
+              "continuam presentes"
+          )
 
           for extension in original_appex:
               extension_plist_path = (
@@ -1310,9 +1401,24 @@ jobs:
           # O IPA oficial do Fouad altera apenas CFBundleIcons.
           # Não adicionamos os cinco ícones em CFBundleIcons~ipad.
 
-          plist["NSAppTransportSecurity"] = {
-              "NSAllowsArbitraryLoads": True
-          }
+          app_transport_security = plist.get(
+              "NSAppTransportSecurity",
+              {},
+          )
+
+          if not isinstance(
+              app_transport_security,
+              dict,
+          ):
+              app_transport_security = {}
+
+          app_transport_security[
+              "NSAllowsArbitraryLoads"
+          ] = True
+
+          plist[
+              "NSAppTransportSecurity"
+          ] = app_transport_security
 
           plist[
               "UISupportsDocumentBrowser"
@@ -1368,7 +1474,14 @@ jobs:
                       f"{dependency}"
                   )
 
-          all_extensions = []
+          expected_final_extensions = (
+              expected_original_extensions
+              | {
+                  "PlugIns/OpenInRegramExtension.appex"
+              }
+          )
+
+          found_final_extensions = set()
 
           for directory_name in (
               "PlugIns",
@@ -1380,24 +1493,31 @@ jobs:
               )
 
               if directory.exists():
-                  all_extensions.extend(
-                      sorted(
-                          directory.glob(
-                              "*.appex"
+                  for extension in sorted(
+                      directory.glob(
+                          "*.appex"
+                      )
+                  ):
+                      found_final_extensions.add(
+                          str(
+                              extension.relative_to(
+                                  app
+                              )
                           )
                       )
-                  )
 
-          if len(all_extensions) != 9:
+          if (
+              found_final_extensions
+              != expected_final_extensions
+          ):
               raise SystemExit(
-                  "❌ Esperava 9 extensões após "
-                  f"adicionar o Regram; encontrei "
-                  f"{len(all_extensions)}"
+                  "❌ Estrutura final de extensões não "
+                  "corresponde ao perfil Regram 6.0"
               )
 
           print(
-              "✅ Estrutura final: "
-              "8 extensões originais + 1 Regram"
+              "✅ Estrutura final validada: "
+              "8 extensões originais + OpenInRegram"
           )
 
           # -----------------------------------------------------
@@ -1430,10 +1550,136 @@ jobs:
 
           print()
           print(
-              "✅ Regram instalado seguindo o "
-              "layout oficial do Fouad"
+              "✅ Regram 6.0 instalado seguindo o "
+              "layout oficial auditado do Fouad"
           )
           PY
+
+          regram_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$regram_status" -ne 0 ]; then
+            tail -n 80 regram-install.log > .regram-error.txt
+            exit "$regram_status"
+          fi
+
+      - name: Alert Regram compatibility failure
+        if: ${{ always() && steps.regram_install.outcome == 'failure' }}
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
+          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
+        run: |
+          python <<'PY'
+          import html
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          token = os.environ["TELEGRAM_BOT_TOKEN"]
+          chat_id = os.environ["TELEGRAM_BOT_CHAT_ID"]
+          version = html.escape(
+              os.environ.get(
+                  "APP_VERSION",
+                  "Unknown",
+              )
+          )
+
+          error_path = Path(
+              ".regram-error.txt"
+          )
+
+          if error_path.is_file():
+              raw_error = error_path.read_text(
+                  encoding="utf-8",
+                  errors="replace",
+              ).strip()
+          else:
+              raw_error = (
+                  "Falha não detalhada durante a "
+                  "aplicação do Regram 6.0."
+              )
+
+          error_lines = [
+              line.strip()
+              for line in raw_error.splitlines()
+              if line.strip()
+          ]
+
+          detail = "\n".join(
+              error_lines[-12:]
+          )
+
+          if len(detail) > 2200:
+              detail = detail[-2200:]
+
+          detail = html.escape(detail)
+
+          message = (
+              "<blockquote>"
+              "⚠️ <b>Regram 6.0 — verificação necessária</b>\n\n"
+              f"📱 <b>Instagram</b> <i>{version}</i>\n\n"
+              "Não foi possível aplicar integralmente o "
+              "perfil auditado do Regram 6.0.\n\n"
+              f"<pre>{detail}</pre>\n\n"
+              "O IPA não foi publicado. "
+              "Verifique manualmente o que mudou nesta versão."
+              "</blockquote>"
+          )
+
+          url = (
+              "https://api.telegram.org/bot"
+              + token
+              + "/sendMessage"
+          )
+
+          payload = {
+              "chat_id": chat_id,
+              "text": message,
+              "parse_mode": "HTML",
+              "disable_web_page_preview": True,
+          }
+
+          request = urllib.request.Request(
+              url,
+              data=json.dumps(
+                  payload
+              ).encode(
+                  "utf-8"
+              ),
+              headers={
+                  "Content-Type":
+                      "application/json"
+              },
+              method="POST",
+          )
+
+          with urllib.request.urlopen(
+              request,
+              timeout=30,
+          ) as response:
+              result = json.load(
+                  response
+              )
+
+          if not result.get("ok"):
+              raise RuntimeError(
+                  result
+              )
+
+          print(
+              "✅ Alerta de incompatibilidade do "
+              "Regram enviado ao Telegram"
+          )
+          PY
+
+      - name: Stop after Regram compatibility failure
+        if: ${{ always() && steps.regram_install.outcome == 'failure' }}
+        run: |
+          echo "❌ Regram 6.0 não pôde ser aplicado com segurança."
+          echo "O alerta foi enviado para verificação manual."
+          exit 1
 
       # =========================================================
       # 7. CYAN - OUTROS APPS
