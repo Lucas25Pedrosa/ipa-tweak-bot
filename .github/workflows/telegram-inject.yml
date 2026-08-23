@@ -8,6 +8,16 @@ on:
         required: false
         default: ""
         type: string
+      telegram_message_id:
+        description: "ID da mensagem temporária enviada pelo bot"
+        required: false
+        default: ""
+        type: string
+      callback_url:
+        description: "Callback do Worker do bot do Injector"
+        required: false
+        default: ""
+        type: string
 
 jobs:
   inject:
@@ -3845,3 +3855,24 @@ jobs:
           ADDON_NAME: ${{ steps.prepare.outputs.addon_name || steps.private_input.outputs.addon_name }}
         run: |
           python telegram_send.py
+
+      # =========================================================
+      # 14. FINALIZAR NOTIFICAÇÃO DO BOT
+      # =========================================================
+
+      - name: Finalizar notificação do /iniciar
+        if: ${{ always() && inputs.telegram_message_id != '' && inputs.callback_url != '' }}
+        continue-on-error: true
+        env:
+          CALLBACK_URL: ${{ inputs.callback_url }}
+          TELEGRAM_MESSAGE_ID: ${{ inputs.telegram_message_id }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          curl -fsS -X POST \
+            "${CALLBACK_URL}" \
+            -H "Content-Type: application/json" \
+            -H "X-Telegram-Bot-Token: ${TELEGRAM_BOT_TOKEN}" \
+            --data "{\"telegram_message_id\":\"${TELEGRAM_MESSAGE_ID}\",\"status\":\"${JOB_STATUS}\"}" \
+            >/dev/null
+
