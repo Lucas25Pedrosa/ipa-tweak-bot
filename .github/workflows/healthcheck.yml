@@ -1,0 +1,19 @@
+name: Injector Healthcheck
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  healthcheck:
+    name: Runner Healthcheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+
+    steps:
+      - name: Verificar runner
+        run: |
+          echo "Injector runner ativo."
+          date -u
