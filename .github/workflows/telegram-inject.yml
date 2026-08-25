@@ -884,12 +884,13 @@ jobs:
       # 6. INSTAGRAM / REGRAM - PERFIL OFICIAL FOUAD
       # =========================================================
 
-      - name: Install Regram 6.0 using Fouad layout
+      - name: Install Regram using audited Fouad layout
         id: regram_install
         continue-on-error: true
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.burbn.instagram' }}
         env:
           APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
+          ADDON_VERSION: ${{ steps.prepare.outputs.addon_version }}
         run: |
           set +e
           python <<'PY' 2>&1 | tee regram-install.log
@@ -939,6 +940,16 @@ jobs:
                   "❌ Perfil Regram acionado para Bundle ID incorreto"
               )
 
+          addon_version = os.environ.get(
+              "ADDON_VERSION",
+              "",
+          ).strip()
+
+          if not addon_version:
+              raise SystemExit(
+                  "❌ Versão do Regram ausente no addons.json"
+              )
+
           version = plist.get(
               "CFBundleShortVersionString",
               "Unknown",
@@ -952,20 +963,24 @@ jobs:
               f"📱 Instagram {version} "
               f"(build {build})"
           )
-          print("🧩 Regram 6.0")
+          print(
+              f"🧩 Regram {addon_version}"
+          )
 
           if (
-              version == "443.0.0"
-              and str(build) == "1043399932"
+              version == "443.1.0"
+              and str(build) == "1045455915"
+              and addon_version == "6.0.1"
           ):
               print(
-                  "✅ Base auditada do Regram 6.0 confirmada"
+                  "✅ Base auditada Instagram 443.1.0 / "
+                  "Regram 6.0.1 confirmada"
               )
           else:
               print(
-                  "ℹ️ Nova versão/build do Instagram. "
+                  "ℹ️ Versão/build fora da base auditada. "
                   "Prosseguindo somente se todas as "
-                  "validações estruturais do Regram 6.0 "
+                  "validações estruturais do Regram "
                   "continuarem compatíveis."
               )
 
@@ -1037,19 +1052,27 @@ jobs:
           with bundle_info_path.open("rb") as f:
               bundle_info = plistlib.load(f)
 
-          if str(
+          bundle_package_version = str(
               bundle_info.get(
                   "PackageVersion",
                   "",
               )
-          ) != "6.0":
+          ).strip()
+
+          if (
+              bundle_package_version
+              != addon_version
+          ):
               raise SystemExit(
-                  "❌ Payload incorreto: Regram.bundle "
-                  "não identifica PackageVersion 6.0"
+                  "❌ Versão do payload Regram não corresponde "
+                  "ao addons.json: "
+                  f"PackageVersion={bundle_package_version!r}, "
+                  f"addons.json={addon_version!r}"
               )
 
           print(
-              "✅ Regram.bundle PackageVersion 6.0 confirmado"
+              "✅ Regram.bundle PackageVersion "
+              f"{bundle_package_version} confirmado"
           )
 
           bundle_destination = (
@@ -1398,7 +1421,7 @@ jobs:
 
               raise SystemExit(
                   "❌ Layout de extensões incompatível com "
-                  "o perfil auditado do Regram 6.0"
+                  "o perfil estrutural auditado do Regram"
               )
 
           original_appex = [
@@ -1772,7 +1795,7 @@ jobs:
           ):
               raise SystemExit(
                   "❌ Estrutura final de extensões não "
-                  "corresponde ao perfil Regram 6.0"
+                  "corresponde ao perfil estrutural do Regram"
               )
 
           print(
@@ -1810,7 +1833,7 @@ jobs:
 
           print()
           print(
-              "✅ Regram 6.0 instalado seguindo o "
+              f"✅ Regram {addon_version} instalado seguindo o "
               "layout oficial auditado do Fouad"
           )
           PY
@@ -1829,6 +1852,7 @@ jobs:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
           APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
+          ADDON_VERSION: ${{ steps.prepare.outputs.addon_version }}
         run: |
           python <<'PY'
           import html
@@ -1845,6 +1869,12 @@ jobs:
                   "Unknown",
               )
           )
+          regram_version = html.escape(
+              os.environ.get(
+                  "ADDON_VERSION",
+                  "Unknown",
+              )
+          )
 
           error_path = Path(
               ".regram-error.txt"
@@ -1858,7 +1888,7 @@ jobs:
           else:
               raw_error = (
                   "Falha não detalhada durante a "
-                  "aplicação do Regram 6.0."
+                  f"aplicação do Regram {regram_version}."
               )
 
           error_lines = [
@@ -1878,10 +1908,10 @@ jobs:
 
           message = (
               "<blockquote>"
-              "⚠️ <b>Regram 6.0 — verificação necessária</b>\n\n"
+              f"⚠️ <b>Regram {regram_version} — verificação necessária</b>\n\n"
               f"📱 <b>Instagram</b> <i>{version}</i>\n\n"
               "Não foi possível aplicar integralmente o "
-              "perfil auditado do Regram 6.0.\n\n"
+              f"perfil auditado do Regram {regram_version}.\n\n"
               f"<pre>{detail}</pre>\n\n"
               "O IPA não foi publicado. "
               "Verifique manualmente o que mudou nesta versão."
@@ -1937,7 +1967,7 @@ jobs:
       - name: Stop after Regram compatibility failure
         if: ${{ always() && steps.regram_install.outcome == 'failure' }}
         run: |
-          echo "❌ Regram 6.0 não pôde ser aplicado com segurança."
+          echo "❌ Regram não pôde ser aplicado com segurança."
           echo "O alerta foi enviado para verificação manual."
           exit 1
 
