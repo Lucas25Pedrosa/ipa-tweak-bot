@@ -59,6 +59,18 @@ jobs:
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
+      - name: Validate shared config
+        run: |
+          test -f shared-config/custom_emojis.json
+
+          if [ -f shared-config/injector_r2_emojis.json ]; then
+            echo "✅ injector_r2_emojis.json disponível"
+          else
+            echo "⚠️ injector_r2_emojis.json ainda não disponível; fallbacks serão usados"
+          fi
+
+          echo "✅ Configuração compartilhada acessada com sucesso"
+
       - name: Activate private core
         run: |
           rm -rf addons config translations
@@ -108,6 +120,13 @@ jobs:
           TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
           TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
           TELEGRAM_CHANNEL_ID: ${{ secrets.TELEGRAM_CHANNEL_ID }}
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
+          INJECTOR_START_MESSAGE_ID: ${{ inputs.telegram_message_id }}
+          INJECTOR_CALLBACK_URL: ${{ inputs.callback_url }}
+          CUSTOM_EMOJIS_FILE: shared-config/custom_emojis.json
+          INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
+          TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
         run: |
           python telegram_download.py
 
@@ -128,6 +147,12 @@ jobs:
 
       - name: Private input processing
         id: private_input
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
+          CUSTOM_EMOJIS_FILE: shared-config/custom_emojis.json
+          INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
+          TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
         run: |
           python private-core/scripts/postprocess.py input.ipa \
             --status-file .private-status.json \
@@ -297,6 +322,10 @@ jobs:
               out.write(f"version={version}\n")
               out.write(f"build={build}\n")
               out.write(f"addon_name={addon.get('name')}\n")
+              out.write(
+                  "addon_version="
+                  f"{str(addon.get('version', '')).strip()}\n"
+              )
               ipapatch_enabled = addon.get("ipapatch", False)
               if ipapatch_enabled:
                   ipapatch_mode = addon.get(
@@ -344,6 +373,166 @@ jobs:
               "🩹 Modo IPA Patch: "
               f"{ipapatch_mode}"
           )
+          PY
+
+      - name: Atualizar progresso - injeção
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
+        continue-on-error: true
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
+          TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
+          INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
+          APP_NAME: ${{ steps.prepare.outputs.app_name }}
+          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
+          ADDON_VERSION: ${{ steps.prepare.outputs.addon_version }}
+        run: |
+          python <<'PY'
+          import html
+          import json
+          import os
+          import urllib.error
+          import urllib.request
+          from pathlib import Path
+
+          state_path = Path(
+              os.environ.get(
+                  "TELEGRAM_PROGRESS_STATE_FILE",
+                  ".telegram-progress.json",
+              )
+          )
+
+          if not state_path.is_file():
+              print(
+                  "ℹ️ Mensagem de progresso ainda não registrada; "
+                  "etapa visual ignorada."
+              )
+              raise SystemExit(0)
+
+          try:
+              state = json.loads(
+                  state_path.read_text(encoding="utf-8")
+              )
+          except Exception as exc:
+              print(f"⚠️ Estado de progresso inválido: {exc}")
+              raise SystemExit(0)
+
+          message_id = int(state.get("message_id") or 0)
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+          chat_id = os.environ.get("TELEGRAM_BOT_CHAT_ID", "").strip()
+
+          if not message_id or not token or not chat_id:
+              print("ℹ️ Dados do Telegram incompletos; etapa visual ignorada.")
+              raise SystemExit(0)
+
+          emoji_file = Path(
+              os.environ.get(
+                  "INJECTOR_EMOJIS_FILE",
+                  "shared-config/injector_r2_emojis.json",
+              )
+          )
+
+          try:
+              emoji_config = json.loads(
+                  emoji_file.read_text(encoding="utf-8")
+              )
+          except Exception as exc:
+              print(f"⚠️ Configuração de emojis inválida: {exc}")
+              emoji_config = {}
+
+          inject = emoji_config.get("inject", {})
+          inject_id = str(inject.get("custom_emoji_id") or "").strip()
+          inject_fallback = str(inject.get("fallback") or "💉")
+
+          app_emoji_id = str(
+              state.get("app_custom_emoji_id") or ""
+          ).strip()
+          app_fallback = str(
+              state.get("app_fallback") or "📱"
+          )
+
+          app_name = (
+              os.environ.get("APP_NAME", "").strip()
+              or str(state.get("app_name") or "Aplicativo")
+          )
+          app_version = (
+              os.environ.get("APP_VERSION", "").strip()
+              or str(state.get("app_version") or "")
+          )
+          addon_name = os.environ.get("ADDON_NAME", "").strip()
+          addon_version = os.environ.get("ADDON_VERSION", "").strip()
+
+          tweak_label = addon_name or "tweak"
+          if (
+              addon_version
+              and addon_version.lower() not in tweak_label.lower()
+          ):
+              tweak_label = f"{tweak_label} {addon_version}"
+
+          def tg_emoji(custom_id, fallback):
+              if not custom_id:
+                  return html.escape(fallback)
+              return (
+                  f'<tg-emoji emoji-id="{html.escape(custom_id, quote=True)}">'
+                  f'{html.escape(fallback)}'
+                  '</tg-emoji>'
+              )
+
+          first_line = (
+              f"{tg_emoji(inject_id, inject_fallback)} "
+              f"Injetando {html.escape(tweak_label)}"
+          )
+          second_line = (
+              f"{tg_emoji(app_emoji_id, app_fallback)} "
+              f"{html.escape(app_name)}"
+          )
+          if app_version:
+              second_line += f" {html.escape(app_version)}"
+
+          rich_text = first_line + "\n\n" + second_line
+          plain_text = (
+              f"{inject_fallback} Injetando {tweak_label}\n\n"
+              f"{app_fallback} {app_name}"
+              + (f" {app_version}" if app_version else "")
+          )
+
+          endpoint = (
+              f"https://api.telegram.org/bot{token}/editMessageText"
+          )
+
+          def edit(text, parse_mode=None):
+              payload = {
+                  "chat_id": chat_id,
+                  "message_id": message_id,
+                  "text": text,
+                  "disable_web_page_preview": True,
+              }
+              if parse_mode:
+                  payload["parse_mode"] = parse_mode
+
+              request = urllib.request.Request(
+                  endpoint,
+                  data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json"},
+                  method="POST",
+              )
+              with urllib.request.urlopen(request, timeout=20) as response:
+                  return 200 <= response.status < 300
+
+          try:
+              edit(rich_text, "HTML")
+              print("✅ Progresso atualizado para a etapa de injeção")
+          except Exception as exc:
+              print(f"⚠️ Emoji animado não pôde ser usado: {exc}")
+              try:
+                  edit(plain_text)
+                  print("✅ Progresso atualizado usando fallback")
+              except Exception as fallback_exc:
+                  print(
+                      "⚠️ Não foi possível atualizar a mensagem de progresso: "
+                      f"{fallback_exc}"
+                  )
           PY
 
       # =========================================================
@@ -3796,6 +3985,12 @@ jobs:
           cp input.ipa Final.ipa
 
       - name: Private post-processing
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
+          CUSTOM_EMOJIS_FILE: shared-config/custom_emojis.json
+          INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
+          TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
@@ -3853,6 +4048,10 @@ jobs:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
           APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
           ADDON_NAME: ${{ steps.prepare.outputs.addon_name || steps.private_input.outputs.addon_name }}
+          ADDON_VERSION: ${{ steps.prepare.outputs.addon_version }}
+          CUSTOM_EMOJIS_FILE: shared-config/custom_emojis.json
+          INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
+          TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
         run: |
           python telegram_send.py
 
