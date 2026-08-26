@@ -6,7 +6,7 @@ on:
       - ".github/workflows/build-clean-messenger-enhancements.yml"
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -96,12 +96,7 @@ jobs:
               raise SystemExit(f'Expected enhancement missing: {missing}')
 
           Path('build/MessengerEnhancements.m').write_text(source, encoding='utf-8')
-          Path('build/source-report.txt').write_text(
-              f'Clean source lines: {len(source.splitlines())}\n'
-              f'FBLP references: 0\n',
-              encoding='utf-8',
-          )
-          print(Path('build/source-report.txt').read_text())
+          print(f'✅ Clean source lines: {len(source.splitlines())}')
           PY
 
       - name: Compile clean arm64 dylib
@@ -126,7 +121,7 @@ jobs:
             -o build/MessengerEnhancements.dylib
 
           chmod 755 build/MessengerEnhancements.dylib
-          file build/MessengerEnhancements.dylib | tee build/binary-report.txt
+          file build/MessengerEnhancements.dylib | grep -qi arm64
 
           for token in \
             FBOnDemandResourceStorage \
@@ -142,50 +137,27 @@ jobs:
 
           strings build/MessengerEnhancements.dylib | grep -F 'MSGSettingsViewController' >/dev/null
           strings build/MessengerEnhancements.dylib | grep -F 'MSGMessengerWordmarkView' >/dev/null
+          shasum -a 256 build/MessengerEnhancements.dylib
+          wc -c build/MessengerEnhancements.dylib
 
-          printf 'Size: ' >> build/binary-report.txt
-          wc -c < build/MessengerEnhancements.dylib >> build/binary-report.txt
-          printf 'SHA256: ' >> build/binary-report.txt
-          shasum -a 256 build/MessengerEnhancements.dylib | awk '{print $1}' >> build/binary-report.txt
-          cat build/binary-report.txt
-
-      - name: Checkout private core
-        uses: actions/checkout@v5
-        with:
-          repository: Lucas25Pedrosa/Bot-Injector-Core
-          token: ${{ secrets.CORE_REPO_TOKEN }}
-          path: private-core
-          persist-credentials: true
-
-      - name: Install clean dylib and source in private core
+      - name: Stage clean binary for transfer
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p .messenger-clean-transfer
+          cp build/MessengerEnhancements.dylib .messenger-clean-transfer/MessengerEnhancements.dylib
+          cp build/MessengerEnhancements.m .messenger-clean-transfer/MessengerEnhancements.m
 
-          mkdir -p private-core/addons/messenger/dylib
-          mkdir -p private-core/addons/messenger/source
-
-          cp build/MessengerEnhancements.dylib \
-            private-core/addons/messenger/dylib/MessengerEnhancements.dylib
-          cp build/MessengerEnhancements.m \
-            private-core/addons/messenger/source/MessengerEnhancements.m
-
-          cd private-core
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          git add \
-            addons/messenger/dylib/MessengerEnhancements.dylib \
-            addons/messenger/source/MessengerEnhancements.m
-
-          git diff --cached --check -- addons/messenger/source/MessengerEnhancements.m
+          git add .messenger-clean-transfer/MessengerEnhancements.dylib .messenger-clean-transfer/MessengerEnhancements.m
 
           if git diff --cached --quiet; then
-            echo "ℹ️ Core already contains clean MessengerEnhancements"
+            echo "ℹ️ Transfer files already staged in repository"
             exit 0
           fi
 
-          git commit -m "Remove Messenger FBLP from MessengerEnhancements"
+          git commit -m "Stage clean MessengerEnhancements transfer"
           git push origin HEAD:main
 
       - name: Upload clean dylib and source
@@ -195,7 +167,5 @@ jobs:
           path: |
             build/MessengerEnhancements.dylib
             build/MessengerEnhancements.m
-            build/source-report.txt
-            build/binary-report.txt
           if-no-files-found: error
           retention-days: 3
