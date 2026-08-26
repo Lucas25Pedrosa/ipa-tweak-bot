@@ -3772,12 +3772,16 @@ jobs:
                   "❌ Checksum do metadata diverge do FBLP"
               )
 
-          # Confirma que as extensões não receberam os tweaks do Messenger.
-          tweak_tokens = (
+          # As extensões devem receber somente o shim do IPA Patch.
+          # MSGPlusX, Keychain Fix e MessengerEnhancements continuam
+          # exclusivos do executável principal.
+          forbidden_extension_tokens = (
               "Sideload Keychain Fix.dylib",
               "MSGPlusX.dylib",
               "MessengerEnhancements.dylib",
-              "zxPluginsInject.dylib",
+          )
+          required_extension_dependency = (
+              "@rpath/zxPluginsInject.dylib"
           )
 
           extensions = []
@@ -3846,18 +3850,63 @@ jobs:
                   if any(
                       token in dependency
                       for token
-                      in tweak_tokens
+                      in forbidden_extension_tokens
                   )
               ]
 
               if bad:
                   raise SystemExit(
-                      "❌ Tweak do Messenger injetado indevidamente em "
+                      "❌ Tweak principal do Messenger injetado "
+                      "indevidamente em "
                       f"{extension.name}: {bad}"
                   )
 
+              if (
+                  required_extension_dependency
+                  not in extension_dependencies
+              ):
+                  raise SystemExit(
+                      "❌ zxPluginsInject ausente em "
+                      f"{extension.name}"
+                  )
+
+          zx_path = (
+              frameworks
+              / "zxPluginsInject.dylib"
+          )
+
+          if not zx_path.is_file():
+              raise SystemExit(
+                  "❌ Frameworks/zxPluginsInject.dylib ausente"
+              )
+
+          if (
+              "@rpath/zxPluginsInject.dylib"
+              not in dependencies
+          ):
+              raise SystemExit(
+                  "❌ zxPluginsInject ausente do executável principal"
+              )
+
+          if (
+              info.get("UIDesignRequiresCompatibility")
+              is not False
+          ):
+              raise SystemExit(
+                  "❌ UIDesignRequiresCompatibility não está false"
+              )
+
           print(
               "✅ Layout MSGPlusX do Messenger validado"
+          )
+          print(
+              "✅ zxPluginsInject validado no app principal"
+          )
+          print(
+              f"✅ zxPluginsInject validado em {len(extensions)} extensão(ões)"
+          )
+          print(
+              "✅ UIDesignRequiresCompatibility = false"
           )
           print(
               "✅ FBLP pt-BR e manifest validados"
@@ -3869,7 +3918,8 @@ jobs:
               "✅ File Sharing removido"
           )
           print(
-              f"✅ {len(extensions)} extensão(ões) sem tweaks do Messenger"
+              f"✅ {len(extensions)} extensão(ões) sem MSGPlusX/Keychain/"
+              "MessengerEnhancements"
           )
           PY
 
