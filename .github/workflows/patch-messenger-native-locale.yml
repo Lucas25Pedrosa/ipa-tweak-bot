@@ -1,0 +1,317 @@
+name: Temporary Messenger Native Locale Patcher
+
+on:
+  push:
+    paths:
+      - ".github/workflows/patch-messenger-native-locale.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Patch Messenger translation toggle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/telegram-inject.yml')
+          lines = path.read_text(encoding='utf-8').splitlines()
+
+          def one_index(exact):
+              matches = [i for i, line in enumerate(lines) if line == exact]
+              if len(matches) != 1:
+                  raise SystemExit(f'Expected 1 occurrence of {exact!r}, found {len(matches)}')
+              return matches[0]
+
+          # 1) Toggle único e reversível no job.
+          timeout_i = one_index('    timeout-minutes: 60')
+          if '      MESSENGER_EMBED_TRANSLATION: "false"' not in lines:
+              lines[timeout_i + 1:timeout_i + 1] = [
+                  '    env:',
+                  '      MESSENGER_EMBED_TRANSLATION: "false"',
+              ]
+
+          # 2) Não baixa o FBLP quando o toggle estiver desligado.
+          name = '      - name: Download and prepare Messenger pt-BR translation'
+          i = one_index(name)
+          if_i = i + 2
+          expected_if = "        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}"
+          if lines[if_i] != expected_if:
+              raise SystemExit(f'Unexpected download condition: {lines[if_i]!r}')
+          lines[if_i] = "        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' && env.MESSENGER_EMBED_TRANSLATION == 'true' }}"
+
+          # 3) O step de embed continua rodando para manter a limpeza de File Sharing,
+          #    mas sem copiar FBLP quando o toggle estiver desligado.
+          embed_name = '      - name: Embed Messenger pt-BR translation'
+          embed_i = one_index(embed_name)
+          embed_if_i = embed_i + 1
+          if lines[embed_if_i] != expected_if:
+              raise SystemExit(f'Unexpected embed condition: {lines[embed_if_i]!r}')
+          lines[embed_if_i + 1:embed_if_i + 1] = [
+              '        env:',
+              '          MESSENGER_EMBED_TRANSLATION: ${{ env.MESSENGER_EMBED_TRANSLATION }}',
+          ]
+
+          # Adiciona flag dentro do Python do embed.
+          source_start = one_index('          source_pack = (')
+          work_start = one_index('          work = Path(')
+          if not (embed_i < source_start < work_start):
+              raise SystemExit('Could not locate Messenger embed source validation block')
+          original_source_block = lines[source_start:work_start]
+          replacement_source = [
+              '          translation_enabled = (',
+              '              os.environ.get(',
+              '                  "MESSENGER_EMBED_TRANSLATION",',
+              '                  "false",',
+              '              ).lower()',
+              '              == "true"',
+              '          )',
+              '',
+              '          if translation_enabled:',
+          ] + ['    ' + line for line in original_source_block]
+          lines[source_start:work_start] = replacement_source
+
+          # Recalcula índices após alteração e substitui o bloco que injeta os arquivos.
+          port_start = one_index('          portuguese_dir = (')
+          output_i_candidates = [
+              i for i, line in enumerate(lines)
+              if line == '          output = Path(' and i > port_start
+          ]
+          if len(output_i_candidates) != 1:
+              raise SystemExit(f'Expected 1 output block after portuguese_dir, found {len(output_i_candidates)}')
+          output_i = output_i_candidates[0]
+          replacement_payload = [
+              '          portuguese_dir = (',
+              '              app',
+              '              / "MessengerPortuguese"',
+              '          )',
+              '          pt_lproj = (',
+              '              app',
+              '              / "pt.lproj"',
+              '          )',
+              '          primary_pack = (',
+              '              portuguese_dir',
+              '              / "fbt_language_pack.bin"',
+              '          )',
+              '          secondary_pack = (',
+              '              pt_lproj',
+              '              / "fbt_language_pack.bin"',
+              '          )',
+              '          final_manifest = (',
+              '              portuguese_dir',
+              '              / "manifest.plist"',
+              '          )',
+              '',
+              '          if translation_enabled:',
+              '              portuguese_dir.mkdir(',
+              '                  parents=True,',
+              '                  exist_ok=True,',
+              '              )',
+              '              pt_lproj.mkdir(',
+              '                  parents=True,',
+              '                  exist_ok=True,',
+              '              )',
+              '',
+              '              shutil.copy2(',
+              '                  source_pack,',
+              '                  primary_pack,',
+              '              )',
+              '              shutil.copy2(',
+              '                  source_pack,',
+              '                  secondary_pack,',
+              '              )',
+              '              shutil.copy2(',
+              '                  source_manifest,',
+              '                  final_manifest,',
+              '              )',
+              '',
+              '              os.chmod(primary_pack, 0o644)',
+              '              os.chmod(secondary_pack, 0o644)',
+              '              os.chmod(final_manifest, 0o644)',
+              '          else:',
+              '              if portuguese_dir.exists():',
+              '                  shutil.rmtree(portuguese_dir)',
+              '',
+              '              secondary_pack.unlink(missing_ok=True)',
+              '',
+              '              if (',
+              '                  pt_lproj.is_dir()',
+              '                  and not any(pt_lproj.iterdir())',
+              '              ):',
+              '                  pt_lproj.rmdir()',
+              '',
+              '              print(',
+              '                  "✅ FBLP pt-BR customizado removido/desativado"',
+              '              )',
+              '',
+          ]
+          lines[port_start:output_i] = replacement_payload
+
+          # Troca mensagens finais do embed por mensagens condicionais.
+          first_print = one_index('              "✅ MessengerPortuguese/fbt_language_pack.bin"') - 1
+          py_end_candidates = [
+              i for i, line in enumerate(lines)
+              if line == '          PY' and i > first_print
+          ]
+          if not py_end_candidates:
+              raise SystemExit('Could not locate embed Python end')
+          py_end = py_end_candidates[0]
+          lines[first_print:py_end] = [
+              '          if translation_enabled:',
+              '              print(',
+              '                  "✅ MessengerPortuguese/fbt_language_pack.bin"',
+              '              )',
+              '              print(',
+              '                  "✅ MessengerPortuguese/manifest.plist"',
+              '              )',
+              '              print(',
+              '                  "✅ pt.lproj/fbt_language_pack.bin"',
+              '              )',
+              '              print(',
+              '                  "✅ Tradução pt-BR embutida no Messenger"',
+              '              )',
+              '          else:',
+              '              print(',
+              '                  "✅ Messenger seguirá o idioma nativo do iOS/app"',
+              '              )',
+          ]
+
+          # 4) Validador: recebe toggle e valida presença/ausência conforme o modo.
+          validator_name = '      - name: Validate Messenger MSGPlusX + pt-BR layout'
+          vi = one_index(validator_name)
+          app_build_i = next(
+              i for i in range(vi, min(len(lines), vi + 20))
+              if lines[i].startswith('          APP_BUILD:')
+          )
+          lines[app_build_i + 1:app_build_i + 1] = [
+              '          MESSENGER_EMBED_TRANSLATION: ${{ env.MESSENGER_EMBED_TRANSLATION }}',
+          ]
+
+          import_hash_i = next(
+              i for i in range(vi, vi + 30)
+              if lines[i] == '          import hashlib'
+          )
+          lines[import_hash_i + 1:import_hash_i + 1] = ['          import os']
+
+          trans_start_candidates = [
+              i for i, line in enumerate(lines)
+              if line == '          primary_pack = (' and i > vi
+          ]
+          if len(trans_start_candidates) != 1:
+              raise SystemExit(f'Expected validator primary_pack once, found {len(trans_start_candidates)}')
+          trans_start = trans_start_candidates[0]
+          ext_comment = '          # As extensões devem receber somente o shim do IPA Patch.'
+          ext_i = one_index(ext_comment)
+          if ext_i <= trans_start:
+              raise SystemExit('Invalid validator translation block boundaries')
+          original_validation = lines[trans_start:ext_i]
+          replacement_validation = [
+              '          translation_enabled = (',
+              '              os.environ.get(',
+              '                  "MESSENGER_EMBED_TRANSLATION",',
+              '                  "false",',
+              '              ).lower()',
+              '              == "true"',
+              '          )',
+              '',
+              '          if translation_enabled:',
+          ] + ['    ' + line for line in original_validation] + [
+              '          else:',
+              '              forbidden_translation_paths = [',
+              '                  app / "MessengerPortuguese" / "fbt_language_pack.bin",',
+              '                  app / "MessengerPortuguese" / "manifest.plist",',
+              '                  app / "pt.lproj" / "fbt_language_pack.bin",',
+              '              ]',
+              '              present = [',
+              '                  path.relative_to(app)',
+              '                  for path in forbidden_translation_paths',
+              '                  if path.exists()',
+              '              ]',
+              '',
+              '              if present:',
+              '                  raise SystemExit(',
+              '                      "❌ Tradução pt-BR customizada ainda presente: "',
+              '                      + ", ".join(str(path) for path in present)',
+              '                  )',
+              '',
+              '              print(',
+              '                  "✅ FBLP pt-BR customizado ausente"',
+              '              )',
+              '',
+          ]
+          lines[trans_start:ext_i] = replacement_validation
+
+          # Atualiza o nome do validador e as mensagens finais.
+          lines[vi] = '      - name: Validate Messenger MSGPlusX + native locale layout'
+
+          fblp_print_i = one_index('              "✅ FBLP pt-BR e manifest validados"') - 1
+          version_print_i = one_index('              "✅ Versão/build da tradução correspondem ao IPA"') - 1
+          # Cada print ocupa 3 linhas; substitui os dois juntos.
+          lines[fblp_print_i:version_print_i + 3] = [
+              '          if translation_enabled:',
+              '              print(',
+              '                  "✅ FBLP pt-BR e manifest validados"',
+              '              )',
+              '              print(',
+              '                  "✅ Versão/build da tradução correspondem ao IPA"',
+              '              )',
+              '          else:',
+              '              print(',
+              '                  "✅ Locale nativo: sem tradução pt-BR customizada"',
+              '              )',
+          ]
+
+          path.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+          PY
+
+          git diff --check
+          git diff -- .github/workflows/telegram-inject.yml
+
+      - name: Create detached Git commit object
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          api="https://api.github.com/repos/${GITHUB_REPOSITORY}"
+          blob_payload=$(jq -n --rawfile c .github/workflows/telegram-inject.yml '{content:$c,encoding:"utf-8"}')
+          blob_sha=$(curl -fsS -X POST "$api/git/blobs" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "$blob_payload" | jq -r .sha)
+          test -n "$blob_sha"
+
+          base_tree=$(git rev-parse HEAD^{tree})
+          tree_payload=$(jq -n \
+            --arg base "$base_tree" \
+            --arg blob "$blob_sha" \
+            '{base_tree:$base,tree:[{path:".github/workflows/telegram-inject.yml",mode:"100644",type:"blob",sha:$blob}]}')
+          tree_sha=$(curl -fsS -X POST "$api/git/trees" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "$tree_payload" | jq -r .sha)
+          test -n "$tree_sha"
+
+          commit_payload=$(jq -n \
+            --arg message "Disable custom Messenger pt-BR embedding" \
+            --arg tree "$tree_sha" \
+            --arg parent "$GITHUB_SHA" \
+            '{message:$message,tree:$tree,parents:[$parent]}')
+          commit_sha=$(curl -fsS -X POST "$api/git/commits" \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            -d "$commit_payload" | jq -r .sha)
+          test -n "$commit_sha"
+          echo "PATCH_COMMIT_SHA=$commit_sha"
