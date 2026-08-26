@@ -168,6 +168,7 @@ jobs:
           REQUESTED_ADDON: ${{ inputs.addon }}
         run: |
           python <<'PY'
+          import json
           import os
           import plistlib
           import sys
