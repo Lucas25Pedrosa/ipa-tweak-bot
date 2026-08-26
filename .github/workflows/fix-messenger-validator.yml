@@ -10,7 +10,6 @@ permissions:
 
 jobs:
   patch:
-    if: ${{ github.event.head_commit.message == 'Add temporary Messenger validator fixer' }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -27,140 +26,120 @@ jobs:
           from pathlib import Path
 
           path = Path('.github/workflows/telegram-inject.yml')
-          text = path.read_text(encoding='utf-8')
+          lines = path.read_text(encoding='utf-8').splitlines()
 
-          old = '''          # Confirma que as extensões não receberam os tweaks do Messenger.
-          tweak_tokens = (
-              "Sideload Keychain Fix.dylib",
-              "MSGPlusX.dylib",
-              "MessengerEnhancements.dylib",
-              "zxPluginsInject.dylib",
-          )
-'''
-          new = '''          # As extensões devem receber somente o shim do IPA Patch.
-          # MSGPlusX, Keychain Fix e MessengerEnhancements continuam
-          # exclusivos do executável principal.
-          forbidden_extension_tokens = (
-              "Sideload Keychain Fix.dylib",
-              "MSGPlusX.dylib",
-              "MessengerEnhancements.dylib",
-          )
-          required_extension_dependency = (
-              "@rpath/zxPluginsInject.dylib"
-          )
-'''
+          marker = '          # Confirma que as extensões não receberam os tweaks do Messenger.'
+          if lines.count(marker) != 1:
+              raise SystemExit(f'Marcador de política encontrado {lines.count(marker)} vez(es)')
 
-          old2 = '''              bad = [
-                  dependency
-                  for dependency
-                  in extension_dependencies
-                  if any(
-                      token in dependency
-                      for token
-                      in tweak_tokens
-                  )
-              ]
+          start = lines.index(marker)
+          end = start
+          while end < len(lines) and lines[end] != '          )':
+              end += 1
+          if end >= len(lines):
+              raise SystemExit('Fim do bloco tweak_tokens não encontrado')
 
-              if bad:
-                  raise SystemExit(
-                      "❌ Tweak do Messenger injetado indevidamente em "
-                      f"{extension.name}: {bad}"
-                  )
+          replacement = [
+              '          # As extensões devem receber somente o shim do IPA Patch.',
+              '          # MSGPlusX, Keychain Fix e MessengerEnhancements continuam',
+              '          # exclusivos do executável principal.',
+              '          forbidden_extension_tokens = (',
+              '              "Sideload Keychain Fix.dylib",',
+              '              "MSGPlusX.dylib",',
+              '              "MessengerEnhancements.dylib",',
+              '          )',
+              '          required_extension_dependency = (',
+              '              "@rpath/zxPluginsInject.dylib"',
+              '          )',
+          ]
+          lines[start:end + 1] = replacement
 
-          print(
-              "✅ Layout MSGPlusX do Messenger validado"
-          )
-'''
-          new2 = '''              bad = [
-                  dependency
-                  for dependency
-                  in extension_dependencies
-                  if any(
-                      token in dependency
-                      for token
-                      in forbidden_extension_tokens
-                  )
-              ]
+          old_token_line = '                      in tweak_tokens'
+          new_token_line = '                      in forbidden_extension_tokens'
+          if lines.count(old_token_line) != 1:
+              raise SystemExit(f'Linha tweak_tokens encontrada {lines.count(old_token_line)} vez(es)')
+          token_index = lines.index(old_token_line)
+          lines[token_index] = new_token_line
 
-              if bad:
-                  raise SystemExit(
-                      "❌ Tweak principal do Messenger injetado "
-                      "indevidamente em "
-                      f"{extension.name}: {bad}"
-                  )
+          old_error = '                      "❌ Tweak do Messenger injetado indevidamente em "'
+          if lines.count(old_error) != 1:
+              raise SystemExit(f'Mensagem antiga encontrada {lines.count(old_error)} vez(es)')
+          error_index = lines.index(old_error)
+          lines[error_index:error_index + 1] = [
+              '                      "❌ Tweak principal do Messenger injetado "',
+              '                      "indevidamente em "',
+          ]
 
-              if (
-                  required_extension_dependency
-                  not in extension_dependencies
-              ):
-                  raise SystemExit(
-                      "❌ zxPluginsInject ausente em "
-                      f"{extension.name}"
-                  )
+          print_marker = '              "✅ Layout MSGPlusX do Messenger validado"'
+          if lines.count(print_marker) != 1:
+              raise SystemExit(f'Print de layout encontrado {lines.count(print_marker)} vez(es)')
+          print_line = lines.index(print_marker)
+          print_start = print_line - 1
 
-          zx_path = (
-              frameworks
-              / "zxPluginsInject.dylib"
-          )
+          checks = [
+              '              if (',
+              '                  required_extension_dependency',
+              '                  not in extension_dependencies',
+              '              ):',
+              '                  raise SystemExit(',
+              '                      "❌ zxPluginsInject ausente em "',
+              '                      f"{extension.name}"',
+              '                  )',
+              '',
+              '          zx_path = (',
+              '              frameworks',
+              '              / "zxPluginsInject.dylib"',
+              '          )',
+              '',
+              '          if not zx_path.is_file():',
+              '              raise SystemExit(',
+              '                  "❌ Frameworks/zxPluginsInject.dylib ausente"',
+              '              )',
+              '',
+              '          if (',
+              '              "@rpath/zxPluginsInject.dylib"',
+              '              not in dependencies',
+              '          ):',
+              '              raise SystemExit(',
+              '                  "❌ zxPluginsInject ausente do executável principal"',
+              '              )',
+              '',
+              '          if (',
+              '              info.get("UIDesignRequiresCompatibility")',
+              '              is not False',
+              '          ):',
+              '              raise SystemExit(',
+              '                  "❌ UIDesignRequiresCompatibility não está false"',
+              '              )',
+              '',
+          ]
+          lines[print_start:print_start] = checks
 
-          if not zx_path.is_file():
-              raise SystemExit(
-                  "❌ Frameworks/zxPluginsInject.dylib ausente"
-              )
+          layout_print_end = print_start + len(checks) + 3
+          extra_prints = [
+              '          print(',
+              '              "✅ zxPluginsInject validado no app principal"',
+              '          )',
+              '          print(',
+              '              f"✅ zxPluginsInject validado em {len(extensions)} extensão(ões)"',
+              '          )',
+              '          print(',
+              '              "✅ UIDesignRequiresCompatibility = false"',
+              '          )',
+          ]
+          lines[layout_print_end:layout_print_end] = extra_prints
 
-          if (
-              "@rpath/zxPluginsInject.dylib"
-              not in dependencies
-          ):
-              raise SystemExit(
-                  "❌ zxPluginsInject ausente do executável principal"
-              )
+          old_status = '              f"✅ {len(extensions)} extensão(ões) sem tweaks do Messenger"'
+          if lines.count(old_status) != 1:
+              raise SystemExit(f'Status antigo encontrado {lines.count(old_status)} vez(es)')
+          status_index = lines.index(old_status)
+          lines[status_index:status_index + 1] = [
+              '              f"✅ {len(extensions)} extensão(ões) sem MSGPlusX/Keychain/"',
+              '              "MessengerEnhancements"',
+          ]
 
-          if (
-              info.get("UIDesignRequiresCompatibility")
-              is not False
-          ):
-              raise SystemExit(
-                  "❌ UIDesignRequiresCompatibility não está false"
-              )
-
-          print(
-              "✅ Layout MSGPlusX do Messenger validado"
-          )
-          print(
-              "✅ zxPluginsInject validado no app principal"
-          )
-          print(
-              f"✅ zxPluginsInject validado em {len(extensions)} extensão(ões)"
-          )
-          print(
-              "✅ UIDesignRequiresCompatibility = false"
-          )
-'''
-
-          old3 = '''          print(
-              f"✅ {len(extensions)} extensão(ões) sem tweaks do Messenger"
-          )
-'''
-          new3 = '''          print(
-              f"✅ {len(extensions)} extensão(ões) sem MSGPlusX/Keychain/"
-              "MessengerEnhancements"
-          )
-'''
-
-          for label, before, after in (
-              ('extension policy', old, new),
-              ('extension validation', old2, new2),
-              ('final status', old3, new3),
-          ):
-              count = text.count(before)
-              if count != 1:
-                  raise SystemExit(
-                      f'Expected exactly one {label} block, found {count}'
-                  )
-              text = text.replace(before, after, 1)
-
-          path.write_text(text, encoding='utf-8')
+          result = '\n'.join(lines) + '\n'
+          path.write_text(result, encoding='utf-8')
           print('Messenger validator patched successfully')
           PY
 
