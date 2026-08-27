@@ -2367,6 +2367,285 @@ jobs:
           PY
 
       # =========================================================
+      # 8A. DOCUMENTS - BLATANTSPATCH NAS EXTENSÕES
+      # =========================================================
+
+      - name: Documents - inject blatantsPatch into extensions
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+          from cyan.tbhtypes.main_executable import MainExecutable
+
+          source_ipa = Path("Layout_Output.ipa")
+          work = Path("documents_extensions_work")
+          output_ipa = Path("Documents_Extensions_Output.ipa")
+
+          if not source_ipa.is_file():
+              raise SystemExit(
+                  "❌ Layout_Output.ipa não encontrado para o Documents"
+              )
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          if output_ipa.exists():
+              output_ipa.unlink()
+
+          work.mkdir()
+
+          with zipfile.ZipFile(source_ipa, "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ Esperava 1 .app principal; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          app_plist_path = app / "Info.plist"
+
+          with open(app_plist_path, "rb") as f:
+              app_plist = plistlib.load(f)
+
+          bundle_id = app_plist.get("CFBundleIdentifier")
+
+          if bundle_id != "com.readdle.ReaddleDocsIPad":
+              raise SystemExit(
+                  "❌ Etapa Documents acionada para Bundle ID incorreto: "
+                  f"{bundle_id}"
+              )
+
+          frameworks = app / "Frameworks"
+          patch_dylib = frameworks / "blatantsPatch.dylib"
+
+          if not patch_dylib.is_file():
+              raise SystemExit(
+                  "❌ Frameworks/blatantsPatch.dylib não encontrado"
+              )
+
+          required_main_dylibs = (
+              "FilePickerFix.dylib",
+              "Documents.dylib",
+              "blatantsPatch.dylib",
+          )
+
+          for dylib_name in required_main_dylibs:
+              dylib_path = frameworks / dylib_name
+
+              if not dylib_path.is_file():
+                  raise SystemExit(
+                      "❌ Dylib principal do Documents ausente: "
+                      f"Frameworks/{dylib_name}"
+                  )
+
+          plugins = app / "PlugIns"
+          appex_dirs = sorted(
+              path
+              for path in plugins.glob("*.appex")
+              if path.is_dir()
+          )
+
+          if not appex_dirs:
+              raise SystemExit(
+                  "❌ Nenhuma extensão .appex encontrada no Documents"
+              )
+
+          expected_load = "@rpath/blatantsPatch.dylib"
+          shared_rpath = "@executable_path/../../Frameworks"
+          patched = 0
+          already_patched = 0
+
+          def dependencies(executable_path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-L",
+                      str(executable_path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              result = []
+
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+
+                  if not line:
+                      continue
+
+                  marker = " (compatibility version "
+
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+
+                  if line.startswith(
+                      (
+                          "/",
+                          "@",
+                      )
+                  ):
+                      result.append(line)
+
+              return result
+
+          def has_shared_rpath(executable_path: Path) -> bool:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-l",
+                      str(executable_path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              return (
+                  f"path {shared_rpath} "
+                  in proc.stdout
+              )
+
+          for appex in appex_dirs:
+              plist_path = appex / "Info.plist"
+
+              if not plist_path.is_file():
+                  raise SystemExit(
+                      f"❌ Info.plist ausente em {appex.name}"
+                  )
+
+              with open(plist_path, "rb") as f:
+                  plist = plistlib.load(f)
+
+              executable_name = plist.get("CFBundleExecutable")
+
+              if not executable_name:
+                  raise SystemExit(
+                      f"❌ CFBundleExecutable ausente em {appex.name}"
+                  )
+
+              executable_path = appex / executable_name
+
+              if not executable_path.is_file():
+                  raise SystemExit(
+                      "❌ Executável da extensão não encontrado: "
+                      f"{appex.name}/{executable_name}"
+                  )
+
+              current_dependencies = dependencies(executable_path)
+
+              if (
+                  expected_load in current_dependencies
+                  and has_shared_rpath(executable_path)
+              ):
+                  already_patched += 1
+                  print(
+                      f"ℹ️ {appex.name}: blatantsPatch já configurado"
+                  )
+                  continue
+
+              executable = MainExecutable(
+                  str(executable_path),
+                  str(appex),
+              )
+
+              executable.remove_signature()
+
+              if not has_shared_rpath(executable_path):
+                  result = subprocess.run(
+                      [
+                          Executable.nt,
+                          "-add_rpath",
+                          shared_rpath,
+                          str(executable_path),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "❌ Falha ao adicionar rpath em "
+                          f"{appex.name}: {result.stderr.strip()}"
+                      )
+
+              current_dependencies = dependencies(executable_path)
+
+              if expected_load not in current_dependencies:
+                  executable.inj_func(expected_load)
+
+                  if executable.inj is not None:
+                      executable.inj.write(
+                          str(executable_path)
+                      )
+
+              final_dependencies = dependencies(executable_path)
+
+              if expected_load not in final_dependencies:
+                  raise SystemExit(
+                      "❌ Injeção não persistiu em "
+                      f"{appex.name}: {expected_load}"
+                  )
+
+              if not has_shared_rpath(executable_path):
+                  raise SystemExit(
+                      "❌ RPATH compartilhado não persistiu em "
+                      f"{appex.name}: {shared_rpath}"
+                  )
+
+              patched += 1
+              print(
+                  f"✅ {appex.name}: {expected_load}"
+              )
+
+          with zipfile.ZipFile(
+              output_ipa,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
+
+          if not output_ipa.is_file():
+              raise SystemExit(
+                  "❌ Documents_Extensions_Output.ipa não foi gerado"
+              )
+
+          shutil.move(
+              output_ipa,
+              source_ipa,
+          )
+
+          print()
+          print(
+              "✅ Documents: blatantsPatch aplicado às extensões"
+          )
+          print(
+              f"✅ Extensões encontradas: {len(appex_dirs)}"
+          )
+          print(
+              f"✅ Modificadas nesta execução: {patched}"
+          )
+          print(
+              f"ℹ️ Já configuradas: {already_patched}"
+          )
+          PY
+
+      # =========================================================
       # 9. IPAPATCH - OUTROS APPS
       # =========================================================
 
