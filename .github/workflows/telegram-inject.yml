@@ -1953,163 +1953,6 @@ jobs:
       # 7. CYAN - OUTROS APPS
       # =========================================================
 
-      - name: Facetune - reproduce audited weak-load injection
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
-        run: |
-          python <<'PY'
-          import json
-          import plistlib
-          import shutil
-          import subprocess
-          import zipfile
-          from pathlib import Path
-
-          from cyan.tbhtypes.executable import Executable
-
-          work = Path("facetune_work")
-          if work.exists():
-              shutil.rmtree(work)
-          work.mkdir()
-
-          with zipfile.ZipFile("input.ipa", "r") as z:
-              z.extractall(work)
-
-          apps = list((work / "Payload").glob("*.app"))
-          if len(apps) != 1:
-              raise SystemExit("❌ Facetune: .app principal não identificado")
-
-          app = apps[0]
-          plist_path = app / "Info.plist"
-          with plist_path.open("rb") as f:
-              info = plistlib.load(f)
-
-          if info.get("CFBundleIdentifier") != "com.lightricks.Facetune2":
-              raise SystemExit("❌ Facetune: bundle ID inesperado")
-
-          executable_name = info.get("CFBundleExecutable")
-          if not executable_name:
-              raise SystemExit("❌ Facetune: CFBundleExecutable ausente")
-
-          executable_path = app / executable_name
-          frameworks = app / "Frameworks"
-          frameworks.mkdir(exist_ok=True)
-
-          with open("selected_addon.json", "r", encoding="utf-8") as f:
-              addon = json.load(f)
-
-          inject_sources = {}
-          for item in addon.get("files", []):
-              if item.get("action") != "inject":
-                  continue
-              p = Path(item["path"])
-              inject_sources[p.name] = p
-
-          ordered = [
-              "sideloadKeychainfix.dylib",
-              "Facetune.dylib",
-              "blatantsPatch.dylib",
-          ]
-
-          for name in ordered:
-              source = inject_sources.get(name)
-              if source is None or not source.is_file():
-                  raise SystemExit(f"❌ Facetune: arquivo ausente no Core: {name}")
-              shutil.copy2(source, frameworks / name)
-              print(f"✅ Facetune: {name} copiado sem reprocessamento")
-
-          def dependencies():
-              proc = subprocess.run(
-                  [Executable.otool, "-L", str(executable_path)],
-                  capture_output=True,
-                  text=True,
-                  check=True,
-              )
-              deps = []
-              for raw in proc.stdout.splitlines():
-                  line = raw.strip()
-                  if not line or line.endswith(":") or line.startswith("(architecture "):
-                      continue
-                  marker = " (compatibility version "
-                  dep = line.split(marker, 1)[0].strip() if marker in line else line
-                  if dep.startswith(("/Library/", "/usr/lib/", "@")):
-                      deps.append(dep)
-              return deps
-
-          before = dependencies()
-          for name in ordered:
-              load = f"@rpath/{name}"
-              if load in before:
-                  raise SystemExit(f"❌ Facetune: load command já existe na base: {load}")
-
-          # O IPA de referência preserva a estrutura do Mach-O e acrescenta
-          # somente LC_LOAD_WEAK_DYLIB. Não remover/recriar a assinatura aqui;
-          # a assinatura final será feita normalmente pelo instalador.
-          for name in ordered:
-              load = f"@rpath/{name}"
-              proc = subprocess.run(
-                  [
-                      Executable.idylib,
-                      "--weak",
-                      "--inplace",
-                      "--all-yes",
-                      "--no-strip-codesig",
-                      load,
-                      str(executable_path),
-                  ],
-                  capture_output=True,
-                  text=True,
-              )
-              if proc.returncode != 0:
-                  raise SystemExit(
-                      f"❌ Facetune: falha ao inserir {load}:\n{proc.stderr}"
-                  )
-              print(f"✅ Facetune: weak-load inserido: {load}")
-
-          deps = dependencies()
-          expected = [f"@rpath/{name}" for name in ordered]
-          positions = []
-          for dep in expected:
-              if dep not in deps:
-                  raise SystemExit(f"❌ Facetune: dependência ausente: {dep}")
-              positions.append(deps.index(dep))
-
-          if positions != sorted(positions):
-              raise SystemExit("❌ Facetune: ordem dos 3 dylibs divergiu da referência")
-
-          proc = subprocess.run(
-              [Executable.otool, "-l", str(executable_path)],
-              capture_output=True,
-              text=True,
-              check=True,
-          )
-          load_text = proc.stdout
-          for load in expected:
-              idx = load_text.find(load)
-              if idx < 0:
-                  raise SystemExit(f"❌ Facetune: load command não encontrado: {load}")
-              prefix = load_text[max(0, idx - 500):idx]
-              if "cmd LC_LOAD_WEAK_DYLIB" not in prefix:
-                  raise SystemExit(f"❌ Facetune: {load} não está como weak-load")
-
-          rpaths = [
-              line.strip().split("path ", 1)[1].split(" (offset", 1)[0]
-              for line in load_text.splitlines()
-              if line.strip().startswith("path ")
-          ]
-          if "@executable_path/Frameworks" not in rpaths:
-              raise SystemExit("❌ Facetune: rpath Frameworks ausente")
-
-          output = Path("Cyan_Output.ipa")
-          if output.exists():
-              output.unlink()
-          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as z:
-              for file in work.rglob("*"):
-                  if file.is_file():
-                      z.write(file, file.relative_to(work))
-
-          print("✅ Facetune: layout auditado reproduzido sem Cyan")
-          PY
-
       - name: Install Pocket Terço using audited Satella layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.edsonteco.PocketTerco' }}
         run: |
@@ -2274,7 +2117,7 @@ jobs:
           PY
 
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.lightricks.Facetune2' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
 
@@ -2293,7 +2136,10 @@ jobs:
             done
           fi
 
-          if [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
+          if [ "${{ steps.prepare.outputs.bundle_id }}" = "com.lightricks.Facetune2" ]; then
+            echo "🧹 Facetune: removendo as 5 extensões para reproduzir o IPA funcional 1:1"
+            CYAN_ARGS+=("-e")
+          elif [ "${{ steps.prepare.outputs.remove_extensions }}" = "true" ]; then
             echo "🧹 Extensões serão removidas"
             CYAN_ARGS+=("-e")
           else
@@ -2690,11 +2536,10 @@ jobs:
           )
           PY
 
-      - name: Facetune - validate audited final layout
+      - name: Facetune - validate 1:1 functional layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
         run: |
           python <<'PY'
-          import hashlib
           import plistlib
           import shutil
           import subprocess
@@ -2714,39 +2559,82 @@ jobs:
           apps = list((work / "Payload").glob("*.app"))
           if len(apps) != 1:
               raise SystemExit("❌ Facetune: .app final não identificado")
+
           app = apps[0]
 
           with (app / "Info.plist").open("rb") as f:
               info = plistlib.load(f)
-          exe = app / info["CFBundleExecutable"]
 
-          expected_hashes = {
-              "sideloadKeychainfix.dylib": "dd25edecc806282207591a509d95b0270341788dacbf5092f29b7f2997c1b82d",
-              "Facetune.dylib": "eda31b4054fcc5a4d7a3b44734d4745c88fcf2cf19c92ef62ddfd06b7390898f",
-              "blatantsPatch.dylib": "4fb1f1d688a795bd3fb63aec01cf238ed48834fb95733cdaa280ee0618401f5a",
-          }
-          for name, expected in expected_hashes.items():
-              p = app / "Frameworks" / name
-              if not p.is_file():
-                  raise SystemExit(f"❌ Facetune: Frameworks/{name} ausente")
-              actual = hashlib.sha256(p.read_bytes()).hexdigest()
-              if actual != expected:
+          if info.get("CFBundleIdentifier") != "com.lightricks.Facetune2":
+              raise SystemExit("❌ Facetune: bundle ID final inesperado")
+
+          if info.get("CFBundleShortVersionString") != "26.26":
+              print(
+                  "⚠️ Facetune: versão diferente da referência 26.26; "
+                  "a estrutura 1:1 continuará sendo validada"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit("❌ Facetune: CFBundleExecutable ausente")
+
+          exe = app / executable_name
+          frameworks = app / "Frameworks"
+
+          required = [
+              "sideloadKeychainfix.dylib",
+              "Facetune.dylib",
+              "blatantsPatch.dylib",
+          ]
+
+          for name in required:
+              path = frameworks / name
+              if not path.is_file():
                   raise SystemExit(
-                      f"❌ Facetune: {name} foi alterado durante a injeção: {actual}"
+                      f"❌ Facetune: Frameworks/{name} ausente"
                   )
-              print(f"✅ Facetune: {name} preservado byte a byte")
+
+          # O IPA funcional 26.26 remove todas as cinco extensões da base.
+          appex = sorted(
+              p.relative_to(app).as_posix()
+              for p in app.rglob("*.appex")
+          )
+          if appex:
+              raise SystemExit(
+                  "❌ Facetune: extensões ainda presentes, mas a referência "
+                  "funcional não contém nenhuma: "
+                  + ", ".join(appex)
+              )
+
+          entitlements = app / "cyan.entitlements"
+          if not entitlements.is_file():
+              raise SystemExit(
+                  "❌ Facetune: cyan.entitlements ausente; "
+                  "a referência funcional foi processada pelo Cyan"
+              )
 
           proc = subprocess.run(
               [Executable.otool, "-L", str(exe)],
-              capture_output=True, text=True, check=True,
+              capture_output=True,
+              text=True,
+              check=True,
           )
+
           deps = []
           for raw in proc.stdout.splitlines():
               line = raw.strip()
-              if not line or line.endswith(":") or line.startswith("(architecture "):
+              if (
+                  not line
+                  or line.endswith(":")
+                  or line.startswith("(architecture ")
+              ):
                   continue
               marker = " (compatibility version "
-              dep = line.split(marker, 1)[0].strip() if marker in line else line
+              dep = (
+                  line.split(marker, 1)[0].strip()
+                  if marker in line
+                  else line
+              )
               if dep.startswith(("/Library/", "/usr/lib/", "@")):
                   deps.append(dep)
 
@@ -2755,22 +2643,62 @@ jobs:
               "@rpath/Facetune.dylib",
               "@rpath/blatantsPatch.dylib",
           ]
+
           positions = []
           for dep in expected:
               if deps.count(dep) != 1:
-                  raise SystemExit(f"❌ Facetune: load command inválido/duplicado: {dep}")
+                  raise SystemExit(
+                      f"❌ Facetune: load command ausente ou duplicado: {dep}"
+                  )
               positions.append(deps.index(dep))
-          if positions != sorted(positions):
-              raise SystemExit("❌ Facetune: ordem final dos dylibs incorreta")
 
-          print("✅ Facetune: layout final idêntico ao perfil auditado")
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Facetune: ordem dos dylibs divergiu da referência "
+                  "(sideloadKeychainfix → Facetune → blatantsPatch)"
+              )
+
+          proc = subprocess.run(
+              [Executable.otool, "-l", str(exe)],
+              capture_output=True,
+              text=True,
+              check=True,
+          )
+          load_text = proc.stdout
+
+          for dep in expected:
+              idx = load_text.find(dep)
+              if idx < 0:
+                  raise SystemExit(
+                      f"❌ Facetune: load command não encontrado: {dep}"
+                  )
+              prefix = load_text[max(0, idx - 500):idx]
+              if "cmd LC_LOAD_WEAK_DYLIB" not in prefix:
+                  raise SystemExit(
+                      f"❌ Facetune: {dep} não é LC_LOAD_WEAK_DYLIB"
+                  )
+
+          rpaths = [
+              line.strip().split("path ", 1)[1].split(
+                  " (offset", 1
+              )[0]
+              for line in load_text.splitlines()
+              if line.strip().startswith("path ")
+          ]
+
+          if "@executable_path/Frameworks" not in rpaths:
+              raise SystemExit(
+                  "❌ Facetune: @executable_path/Frameworks ausente"
+              )
+
+          print("✅ Facetune: 3 dylibs presentes")
+          print("✅ Facetune: 5 extensões removidas")
+          print("✅ Facetune: cyan.entitlements presente")
+          print("✅ Facetune: weak-loads na ordem 1:1 da referência")
+          print("✅ Facetune: layout funcional 26.26 reproduzido")
+
           shutil.rmtree(work)
           PY
-
-      # =========================================================
-      # 8A. BLATANTSPATCH - EXTENSÕES AUDITADAS
-      # =========================================================
-
       - name: Documents / PDF Expert / Duolingo / InShot / Picsart / Media Converter - inject blatantsPatch into extensions
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert') }}
         run: |
