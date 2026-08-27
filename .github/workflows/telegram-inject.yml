@@ -2110,8 +2110,171 @@ jobs:
           print("✅ Facetune: layout auditado reproduzido sem Cyan")
           PY
 
+      - name: Install Pocket Terço using audited Satella layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.edsonteco.PocketTerco' }}
+        run: |
+          python <<'PY'
+          import json
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("pocketterco_work")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit("❌ Pocket Terço: .app principal não identificado")
+
+          app = apps[0]
+          plist_path = app / "Info.plist"
+          with plist_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.edsonteco.PocketTerco":
+              raise SystemExit("❌ Pocket Terço: bundle ID inesperado")
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit("❌ Pocket Terço: CFBundleExecutable ausente")
+
+          executable_path = app / executable_name
+
+          with open("selected_addon.json", "r", encoding="utf-8") as f:
+              addon = json.load(f)
+
+          satella_source = None
+          for item in addon.get("files", []):
+              if item.get("action") != "inject":
+                  continue
+              candidate = Path(item["path"])
+              if candidate.name == "SatellaJailed.dylib":
+                  satella_source = candidate
+                  break
+
+          if satella_source is None or not satella_source.is_file():
+              raise SystemExit(
+                  "❌ Pocket Terço: SatellaJailed.dylib ausente no Core"
+              )
+
+          satella_destination = app / "SatellaJailed.dylib"
+          shutil.copy2(satella_source, satella_destination)
+          print("✅ Pocket Terço: SatellaJailed.dylib copiado para a raiz sem reprocessamento")
+
+          def dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              deps = []
+              for raw in proc.stdout.splitlines():
+                  line = raw.strip()
+                  if not line or line.endswith(":") or line.startswith("(architecture "):
+                      continue
+                  marker = " (compatibility version "
+                  dep = line.split(marker, 1)[0].strip() if marker in line else line
+                  if dep.startswith(("/Library/", "/usr/lib/", "@")):
+                      deps.append(dep)
+              return deps
+
+          expected_load = "@executable_path/SatellaJailed.dylib"
+          before = dependencies(executable_path)
+
+          if expected_load in before:
+              raise SystemExit(
+                  "❌ Pocket Terço: Satella já estava injetada na base limpa"
+              )
+
+          if "@rpath/SatellaJailed.dylib" in before:
+              raise SystemExit(
+                  "❌ Pocket Terço: base limpa contém load @rpath inesperado da Satella"
+              )
+
+          proc = subprocess.run(
+              [
+                  Executable.idylib,
+                  "--weak",
+                  "--inplace",
+                  "--all-yes",
+                  "--no-strip-codesig",
+                  expected_load,
+                  str(executable_path),
+              ],
+              capture_output=True,
+              text=True,
+          )
+          if proc.returncode != 0:
+              raise SystemExit(
+                  "❌ Pocket Terço: falha ao inserir SatellaJailed:\n"
+                  + proc.stderr
+              )
+
+          after = dependencies(executable_path)
+          if expected_load not in after:
+              raise SystemExit(
+                  "❌ Pocket Terço: weak-load da Satella não foi gravado"
+              )
+
+          if "@rpath/SatellaJailed.dylib" in after:
+              raise SystemExit(
+                  "❌ Pocket Terço: Satella ficou com load path incorreto"
+              )
+
+          if any("zxPluginsInject.dylib" in dep for dep in after):
+              raise SystemExit(
+                  "❌ Pocket Terço: zxPluginsInject foi injetado indevidamente no app principal"
+              )
+
+          proc = subprocess.run(
+              [Executable.otool, "-l", str(executable_path)],
+              capture_output=True,
+              text=True,
+              check=True,
+          )
+          load_text = proc.stdout
+          idx = load_text.find(expected_load)
+          if idx < 0:
+              raise SystemExit(
+                  "❌ Pocket Terço: load command da Satella não encontrado"
+              )
+          prefix = load_text[max(0, idx - 500):idx]
+          if "cmd LC_LOAD_WEAK_DYLIB" not in prefix:
+              raise SystemExit(
+                  "❌ Pocket Terço: Satella não está como LC_LOAD_WEAK_DYLIB"
+              )
+
+          output = Path("Cyan_Output.ipa")
+          if output.exists():
+              output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(file, file.relative_to(work))
+
+          print(
+              "✅ Pocket Terço: Satella na raiz reproduzida sem Cyan; "
+              "extensão seguirá para IPA Patch plugins-only"
+          )
+          PY
+
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.lightricks.Facetune2' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.lightricks.Facetune2' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
 
@@ -5512,6 +5675,214 @@ jobs:
           )
           print(
               "✅ MediaConverter.dylib restrito ao app principal"
+          )
+          PY
+
+      - name: Validate Pocket Terço Satella layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.edsonteco.PocketTerco' }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("pocketterco_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Pocket Terço principal não identificado"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.edsonteco.PocketTerco":
+              raise SystemExit(
+                  "❌ Bundle ID final do Pocket Terço inesperado"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable do Pocket Terço ausente"
+              )
+
+          main = app / executable_name
+          satella = app / "SatellaJailed.dylib"
+          if not main.is_file():
+              raise SystemExit(
+                  "❌ Executável principal do Pocket Terço ausente"
+              )
+          if not satella.is_file():
+              raise SystemExit(
+                  "❌ SatellaJailed.dylib não está na raiz do app"
+              )
+
+          if (app / "Frameworks" / "SatellaJailed.dylib").exists():
+              raise SystemExit(
+                  "❌ SatellaJailed.dylib permaneceu indevidamente em Frameworks"
+              )
+
+          expected_satella_sha256 = (
+              "ac8587090f3421d1ef9f629f9eac543deede82d608059a347be62b6cbad161d5"
+          )
+          actual_satella_sha256 = hashlib.sha256(
+              satella.read_bytes()
+          ).hexdigest()
+          if actual_satella_sha256 != expected_satella_sha256:
+              raise SystemExit(
+                  "❌ SatellaJailed.dylib foi alterada durante o pipeline: "
+                  f"{actual_satella_sha256}"
+              )
+
+          def dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              deps = []
+              for raw in proc.stdout.splitlines():
+                  line = raw.strip()
+                  if (
+                      not line
+                      or line.endswith(":")
+                      or line.startswith("(architecture ")
+                  ):
+                      continue
+                  marker = " (compatibility version "
+                  dep = (
+                      line.split(marker, 1)[0].strip()
+                      if marker in line
+                      else line
+                  )
+                  if dep.startswith(("/", "@")):
+                      deps.append(dep)
+              return deps
+
+          def has_rpath(path: Path, rpath: str) -> bool:
+              proc = subprocess.run(
+                  [Executable.otool, "-l", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              return f"path {rpath} " in proc.stdout
+
+          main_dependencies = dependencies(main)
+          required_main = "@executable_path/SatellaJailed.dylib"
+
+          if required_main not in main_dependencies:
+              raise SystemExit(
+                  "❌ App principal não carrega SatellaJailed pela raiz"
+              )
+
+          if "@rpath/SatellaJailed.dylib" in main_dependencies:
+              raise SystemExit(
+                  "❌ App principal carrega Satella pelo caminho incorreto"
+              )
+
+          if any(
+              "zxPluginsInject.dylib" in dep
+              for dep in main_dependencies
+          ):
+              raise SystemExit(
+                  "❌ IPA Patch atingiu indevidamente o app principal"
+              )
+
+          extensions = sorted(
+              (app / "PlugIns").glob("*.appex")
+          )
+          if len(extensions) != 1:
+              raise SystemExit(
+                  "❌ Esperava 1 extensão no Pocket Terço; "
+                  f"encontrei {len(extensions)}"
+              )
+
+          extension = extensions[0]
+          if extension.name != "OneSignalNotificationServiceExtension.appex":
+              raise SystemExit(
+                  "❌ Extensão final inesperada: "
+                  f"{extension.name}"
+              )
+
+          with (extension / "Info.plist").open("rb") as f:
+              extension_info = plistlib.load(f)
+
+          extension_executable_name = extension_info.get(
+              "CFBundleExecutable"
+          )
+          if not extension_executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable da extensão do Pocket Terço ausente"
+              )
+
+          extension_executable = (
+              extension / extension_executable_name
+          )
+          if not extension_executable.is_file():
+              raise SystemExit(
+                  "❌ Executável da extensão do Pocket Terço ausente"
+              )
+
+          extension_dependencies = dependencies(
+              extension_executable
+          )
+
+          required_extension = "@rpath/zxPluginsInject.dylib"
+          if required_extension not in extension_dependencies:
+              raise SystemExit(
+                  "❌ IPA Patch não injetou zxPluginsInject na extensão"
+              )
+
+          if any(
+              "SatellaJailed.dylib" in dep
+              for dep in extension_dependencies
+          ):
+              raise SystemExit(
+                  "❌ SatellaJailed foi injetada indevidamente na extensão"
+              )
+
+          if not has_rpath(
+              extension_executable,
+              "@executable_path/../../Frameworks",
+          ):
+              raise SystemExit(
+                  "❌ Extensão sem @executable_path/../../Frameworks"
+              )
+
+          zx = app / "Frameworks" / "zxPluginsInject.dylib"
+          if not zx.is_file():
+              raise SystemExit(
+                  "❌ zxPluginsInject.dylib não foi criado em Frameworks"
+              )
+
+          print(
+              "✅ SatellaJailed.dylib preservada byte a byte na raiz"
+          )
+          print(
+              "✅ App principal carrega somente @executable_path/SatellaJailed.dylib"
+          )
+          print(
+              "✅ OneSignalNotificationServiceExtension carrega "
+              "@rpath/zxPluginsInject.dylib"
+          )
+          print(
+              "✅ IPA Patch plugins-only restrito à extensão"
           )
           PY
 
