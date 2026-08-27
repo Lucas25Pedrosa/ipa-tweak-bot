@@ -52,6 +52,7 @@ jobs:
         run: |
           test -f private-core/telegram_download.py
           test -f private-core/telegram_send.py
+          test -f private-core/feather_package_transport.py
           test -d private-core/addons
           test -d private-core/config
           test -d private-core/translations
@@ -81,6 +82,7 @@ jobs:
 
           cp private-core/telegram_download.py ./telegram_download.py
           cp private-core/telegram_send.py ./telegram_send.py
+          cp private-core/feather_package_transport.py ./feather_package_transport.py
 
           echo "✅ Bot-Injector-Core ativado"
 
