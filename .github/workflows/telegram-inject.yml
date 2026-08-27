@@ -2044,6 +2044,10 @@ jobs:
                   "sideloadbypass1.dylib",
                   "sideloadbypass2.dylib",
               ],
+              "com.duolingo.DuolingoMobile": [
+                  "CachefixPatch.dylib",
+                  "Duolingo.dylib",
+              ],
               "net.whatsapp.WhatsApp": [
                   "Watusi.dylib",
                   "libWatusiToolsSL.dylib",
@@ -2367,11 +2371,11 @@ jobs:
           PY
 
       # =========================================================
-      # 8A. READDLE - BLATANTSPATCH NAS EXTENSÕES
+      # 8A. BLATANTSPATCH - EXTENSÕES AUDITADAS
       # =========================================================
 
-      - name: Readdle - inject blatantsPatch into extensions
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5') }}
+      - name: Documents / PDF Expert / Duolingo - inject blatantsPatch into extensions
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile') }}
         run: |
           python <<'PY'
           import plistlib
@@ -2386,21 +2390,38 @@ jobs:
           profiles = {
               "com.readdle.ReaddleDocsIPad": {
                   "name": "Documents",
-                  "main_dylib": "Documents.dylib",
+                  "required_paths": (
+                      "Frameworks/FilePickerFix.dylib",
+                      "Frameworks/Documents.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
               },
               "com.readdle.PDFExpert5": {
                   "name": "PDF Expert",
-                  "main_dylib": "PDFExpert.dylib",
+                  "required_paths": (
+                      "Frameworks/FilePickerFix.dylib",
+                      "Frameworks/PDFExpert.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
+              },
+              "com.duolingo.DuolingoMobile": {
+                  "name": "Duolingo",
+                  "required_paths": (
+                      "CachefixPatch.dylib",
+                      "Duolingo.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                      "Frameworks/CydiaSubstrate.framework/CydiaSubstrate",
+                  ),
               },
           }
 
           source_ipa = Path("Layout_Output.ipa")
-          work = Path("readdle_extensions_work")
-          output_ipa = Path("Readdle_Extensions_Output.ipa")
+          work = Path("blatant_extensions_work")
+          output_ipa = Path("Blatant_Extensions_Output.ipa")
 
           if not source_ipa.is_file():
               raise SystemExit(
-                  "❌ Layout_Output.ipa não encontrado para app Readdle"
+                  "❌ Layout_Output.ipa não encontrado"
               )
 
           if work.exists():
@@ -2432,34 +2453,19 @@ jobs:
 
           if profile is None:
               raise SystemExit(
-                  "❌ Etapa Readdle acionada para Bundle ID incorreto: "
+                  "❌ Etapa blatantsPatch acionada para Bundle ID incorreto: "
                   f"{bundle_id}"
               )
 
           app_name = profile["name"]
-          main_dylib = profile["main_dylib"]
 
-          frameworks = app / "Frameworks"
-          patch_dylib = frameworks / "blatantsPatch.dylib"
+          for relative_path in profile["required_paths"]:
+              required = app / relative_path
 
-          if not patch_dylib.is_file():
-              raise SystemExit(
-                  "❌ Frameworks/blatantsPatch.dylib não encontrado"
-              )
-
-          required_main_dylibs = (
-              "FilePickerFix.dylib",
-              main_dylib,
-              "blatantsPatch.dylib",
-          )
-
-          for dylib_name in required_main_dylibs:
-              dylib_path = frameworks / dylib_name
-
-              if not dylib_path.is_file():
+              if not required.is_file():
                   raise SystemExit(
-                      f"❌ Dylib principal do {app_name} ausente: "
-                      f"Frameworks/{dylib_name}"
+                      f"❌ Componente obrigatório do {app_name} ausente: "
+                      f"{relative_path}"
                   )
 
           plugins = app / "PlugIns"
@@ -2637,7 +2643,7 @@ jobs:
 
           if not output_ipa.is_file():
               raise SystemExit(
-                  "❌ Readdle_Extensions_Output.ipa não foi gerado"
+                  "❌ Blatant_Extensions_Output.ipa não foi gerado"
               )
 
           shutil.move(
@@ -4083,6 +4089,306 @@ jobs:
           )
           print(
               "✅ AppMigrationExtension.appex removida seletivamente"
+          )
+          PY
+
+      - name: Validate Duolingo MAX layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("duolingo_validate")
+
+          if work.exists():
+              shutil.rmtree(work)
+
+          work.mkdir()
+
+          with zipfile.ZipFile(
+              "Final.ipa",
+              "r",
+          ) as z:
+              z.extractall(work)
+
+          apps = list(
+              (work / "Payload").glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Duolingo principal não identificado"
+              )
+
+          app = apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              plist = plistlib.load(f)
+
+          if (
+              plist.get("CFBundleIdentifier")
+              != "com.duolingo.DuolingoMobile"
+          ):
+              raise SystemExit(
+                  "❌ Bundle ID final do Duolingo inesperado"
+              )
+
+          executable_name = plist.get(
+              "CFBundleExecutable"
+          )
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CFBundleExecutable do Duolingo ausente"
+              )
+
+          main = app / executable_name
+
+          if not main.is_file():
+              raise SystemExit(
+                  "❌ Executável principal do Duolingo ausente"
+              )
+
+          required_files = (
+              app / "CachefixPatch.dylib",
+              app / "Duolingo.dylib",
+              app / "Frameworks" / "blatantsPatch.dylib",
+              (
+                  app
+                  / "Frameworks"
+                  / "CydiaSubstrate.framework"
+                  / "CydiaSubstrate"
+              ),
+          )
+
+          for required in required_files:
+              if not required.is_file():
+                  raise SystemExit(
+                      "❌ Componente final do Duolingo ausente: "
+                      f"{required.relative_to(app)}"
+                  )
+
+          def dependencies(executable_path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-L",
+                      str(executable_path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              result = []
+
+              for raw_line in proc.stdout.splitlines():
+                  line = raw_line.strip()
+
+                  if (
+                      not line
+                      or line.endswith(":")
+                      or line.startswith("(architecture ")
+                  ):
+                      continue
+
+                  marker = " (compatibility version "
+
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+
+                  line = line.strip()
+
+                  if line.startswith(
+                      (
+                          "/",
+                          "@",
+                      )
+                  ):
+                      result.append(line)
+
+              return result
+
+          def has_rpath(
+              executable_path: Path,
+              rpath: str,
+          ) -> bool:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-l",
+                      str(executable_path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              return (
+                  f"path {rpath} "
+                  in proc.stdout
+              )
+
+          main_dependencies = dependencies(main)
+
+          expected_main = [
+              "@executable_path/CachefixPatch.dylib",
+              "@executable_path/Duolingo.dylib",
+              "@rpath/blatantsPatch.dylib",
+          ]
+
+          for dependency in expected_main:
+              if dependency not in main_dependencies:
+                  raise SystemExit(
+                      "❌ Dependência principal do Duolingo ausente: "
+                      f"{dependency}"
+                  )
+
+          positions = [
+              main_dependencies.index(dependency)
+              for dependency in expected_main
+          ]
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Ordem dos dylibs do Duolingo diverge do IPA de referência"
+              )
+
+          forbidden_main = (
+              "@rpath/CachefixPatch.dylib",
+              "@rpath/Duolingo.dylib",
+          )
+
+          for dependency in forbidden_main:
+              if dependency in main_dependencies:
+                  raise SystemExit(
+                      "❌ Load path antigo ainda presente no Duolingo: "
+                      f"{dependency}"
+                  )
+
+          cachefix_dependencies = dependencies(
+              app / "CachefixPatch.dylib"
+          )
+
+          substrate_dependency = (
+              "@rpath/CydiaSubstrate.framework/"
+              "CydiaSubstrate"
+          )
+
+          if (
+              substrate_dependency
+              not in cachefix_dependencies
+          ):
+              raise SystemExit(
+                  "❌ CachefixPatch perdeu a dependência do CydiaSubstrate"
+              )
+
+          if not has_rpath(
+              main,
+              "@executable_path/Frameworks",
+          ):
+              raise SystemExit(
+                  "❌ Executável principal sem @executable_path/Frameworks"
+              )
+
+          plugins = app / "PlugIns"
+          extensions = sorted(
+              path
+              for path in plugins.glob("*.appex")
+              if path.is_dir()
+          )
+
+          if not extensions:
+              raise SystemExit(
+                  "❌ Nenhuma extensão do Duolingo encontrada"
+              )
+
+          required_extension_dependency = (
+              "@rpath/blatantsPatch.dylib"
+          )
+          required_extension_rpath = (
+              "@executable_path/../../Frameworks"
+          )
+
+          for extension in extensions:
+              plist_path = (
+                  extension
+                  / "Info.plist"
+              )
+
+              if not plist_path.is_file():
+                  raise SystemExit(
+                      f"❌ Info.plist ausente em {extension.name}"
+                  )
+
+              with plist_path.open("rb") as f:
+                  extension_info = plistlib.load(f)
+
+              extension_executable_name = (
+                  extension_info.get(
+                      "CFBundleExecutable"
+                  )
+              )
+
+              if not extension_executable_name:
+                  raise SystemExit(
+                      "❌ CFBundleExecutable ausente em "
+                      f"{extension.name}"
+                  )
+
+              extension_executable = (
+                  extension
+                  / extension_executable_name
+              )
+
+              if not extension_executable.is_file():
+                  raise SystemExit(
+                      "❌ Executável ausente em "
+                      f"{extension.name}"
+                  )
+
+              extension_dependencies = dependencies(
+                  extension_executable
+              )
+
+              if (
+                  required_extension_dependency
+                  not in extension_dependencies
+              ):
+                  raise SystemExit(
+                      "❌ blatantsPatch ausente em "
+                      f"{extension.name}"
+                  )
+
+              if not has_rpath(
+                  extension_executable,
+                  required_extension_rpath,
+              ):
+                  raise SystemExit(
+                      "❌ RPATH compartilhado ausente em "
+                      f"{extension.name}"
+                  )
+
+          print(
+              "✅ Duolingo.dylib e CachefixPatch.dylib na raiz"
+          )
+          print(
+              "✅ Load commands principais normalizados"
+          )
+          print(
+              "✅ Ordem CachefixPatch -> Duolingo -> blatantsPatch validada"
+          )
+          print(
+              "✅ CydiaSubstrate.framework validado"
+          )
+          print(
+              f"✅ blatantsPatch validado em {len(extensions)} extensão(ões)"
           )
           PY
 
