@@ -2367,11 +2367,11 @@ jobs:
           PY
 
       # =========================================================
-      # 8A. DOCUMENTS - BLATANTSPATCH NAS EXTENSÕES
+      # 8A. READDLE - BLATANTSPATCH NAS EXTENSÕES
       # =========================================================
 
-      - name: Documents - inject blatantsPatch into extensions
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' }}
+      - name: Readdle - inject blatantsPatch into extensions
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5') }}
         run: |
           python <<'PY'
           import plistlib
@@ -2383,13 +2383,24 @@ jobs:
           from cyan.tbhtypes.executable import Executable
           from cyan.tbhtypes.main_executable import MainExecutable
 
+          profiles = {
+              "com.readdle.ReaddleDocsIPad": {
+                  "name": "Documents",
+                  "main_dylib": "Documents.dylib",
+              },
+              "com.readdle.PDFExpert5": {
+                  "name": "PDF Expert",
+                  "main_dylib": "PDFExpert.dylib",
+              },
+          }
+
           source_ipa = Path("Layout_Output.ipa")
-          work = Path("documents_extensions_work")
-          output_ipa = Path("Documents_Extensions_Output.ipa")
+          work = Path("readdle_extensions_work")
+          output_ipa = Path("Readdle_Extensions_Output.ipa")
 
           if not source_ipa.is_file():
               raise SystemExit(
-                  "❌ Layout_Output.ipa não encontrado para o Documents"
+                  "❌ Layout_Output.ipa não encontrado para app Readdle"
               )
 
           if work.exists():
@@ -2417,12 +2428,16 @@ jobs:
               app_plist = plistlib.load(f)
 
           bundle_id = app_plist.get("CFBundleIdentifier")
+          profile = profiles.get(bundle_id)
 
-          if bundle_id != "com.readdle.ReaddleDocsIPad":
+          if profile is None:
               raise SystemExit(
-                  "❌ Etapa Documents acionada para Bundle ID incorreto: "
+                  "❌ Etapa Readdle acionada para Bundle ID incorreto: "
                   f"{bundle_id}"
               )
+
+          app_name = profile["name"]
+          main_dylib = profile["main_dylib"]
 
           frameworks = app / "Frameworks"
           patch_dylib = frameworks / "blatantsPatch.dylib"
@@ -2434,7 +2449,7 @@ jobs:
 
           required_main_dylibs = (
               "FilePickerFix.dylib",
-              "Documents.dylib",
+              main_dylib,
               "blatantsPatch.dylib",
           )
 
@@ -2443,7 +2458,7 @@ jobs:
 
               if not dylib_path.is_file():
                   raise SystemExit(
-                      "❌ Dylib principal do Documents ausente: "
+                      f"❌ Dylib principal do {app_name} ausente: "
                       f"Frameworks/{dylib_name}"
                   )
 
@@ -2456,7 +2471,7 @@ jobs:
 
           if not appex_dirs:
               raise SystemExit(
-                  "❌ Nenhuma extensão .appex encontrada no Documents"
+                  f"❌ Nenhuma extensão .appex encontrada no {app_name}"
               )
 
           expected_load = "@rpath/blatantsPatch.dylib"
@@ -2622,7 +2637,7 @@ jobs:
 
           if not output_ipa.is_file():
               raise SystemExit(
-                  "❌ Documents_Extensions_Output.ipa não foi gerado"
+                  "❌ Readdle_Extensions_Output.ipa não foi gerado"
               )
 
           shutil.move(
@@ -2632,7 +2647,7 @@ jobs:
 
           print()
           print(
-              "✅ Documents: blatantsPatch aplicado às extensões"
+              f"✅ {app_name}: blatantsPatch aplicado às extensões"
           )
           print(
               f"✅ Extensões encontradas: {len(appex_dirs)}"
