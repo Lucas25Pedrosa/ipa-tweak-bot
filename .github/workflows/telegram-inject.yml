@@ -2128,10 +2128,20 @@ jobs:
             -w
           )
 
-          if [ "${#INJECT_FILES[@]}" -gt 0 ]; then
+          CYAN_INJECT_FILES=()
+          for FILE in "${INJECT_FILES[@]}"; do
+            if [ "${{ steps.prepare.outputs.bundle_id }}" = "com.lightricks.Facetune2" ] \
+               && [ "$(basename "$FILE")" = "blatantsPatch.dylib" ]; then
+              echo "🧩 Facetune 1:1: blatantsPatch será aplicado na segunda etapa, fora do Cyan"
+              continue
+            fi
+            CYAN_INJECT_FILES+=("$FILE")
+          done
+
+          if [ "${#CYAN_INJECT_FILES[@]}" -gt 0 ]; then
             CYAN_ARGS+=("-f")
 
-            for FILE in "${INJECT_FILES[@]}"; do
+            for FILE in "${CYAN_INJECT_FILES[@]}"; do
               CYAN_ARGS+=("$FILE")
             done
           fi
@@ -2157,6 +2167,125 @@ jobs:
           fi
 
           echo "✅ Cyan concluído"
+
+      - name: Facetune - reproduce developer second-stage blatant patch 1:1
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          import lief
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("facetune_second_stage")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Cyan_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit("❌ Facetune: .app não identificado na segunda etapa")
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.lightricks.Facetune2":
+              raise SystemExit("❌ Facetune: bundle inesperado na segunda etapa")
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit("❌ Facetune: CFBundleExecutable ausente")
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+          frameworks.mkdir(exist_ok=True)
+
+          # O IPA funcional mostra que sideloadKeychainfix + Facetune entram pelo
+          # Cyan primeiro. blatantsPatch é aplicado depois por um backend que
+          # reescreve o Mach-O (timestamp 2 no LC_LOAD_WEAK_DYLIB).
+          candidates = []
+          for raw in Path("inject_files.txt").read_text().splitlines():
+              raw = raw.strip()
+              if raw and Path(raw).name == "blatantsPatch.dylib":
+                  candidates.append(Path(raw))
+
+          if len(candidates) != 1 or not candidates[0].is_file():
+              raise SystemExit("❌ Facetune: blatantsPatch.dylib original não localizado")
+
+          blatant_src = candidates[0]
+          blatant_dst = frameworks / "blatantsPatch.dylib"
+          shutil.copy2(blatant_src, blatant_dst)
+
+          binary = lief.parse(str(exe))
+          if binary is None:
+              raise SystemExit("❌ Facetune: LIEF não conseguiu abrir o executável")
+
+          dep = "@rpath/blatantsPatch.dylib"
+          existing = [str(x.name) for x in binary.libraries]
+          if dep in existing:
+              raise SystemExit(
+                  "❌ Facetune: blatantsPatch já foi injetado pelo Cyan; "
+                  "a sequência 1:1 foi violada"
+              )
+
+          binary.add(lief.MachO.DylibCommand.weak_lib(dep))
+          binary.write(str(exe))
+
+          # O IPA funcional reassina exatamente estes cinco frameworks; no IPA
+          # do nosso Injector eles permaneciam byte-a-byte iguais à IPA limpa.
+          resign_frameworks = [
+              frameworks / "FullStory.framework" / "FullStory",
+              frameworks / "RxCocoa.framework" / "RxCocoa",
+              frameworks / "RxRelay.framework" / "RxRelay",
+              frameworks / "RxSwift.framework" / "RxSwift",
+              frameworks / "Sentry.framework" / "Sentry",
+          ]
+
+          for fw in resign_frameworks:
+              if not fw.is_file():
+                  raise SystemExit(f"❌ Facetune: framework esperado ausente: {fw}")
+              subprocess.run(
+                  [Executable.ldid, "-S", "-M", str(fw)],
+                  check=True,
+              )
+
+          entitlements = app / "cyan.entitlements"
+          if not entitlements.is_file():
+              raise SystemExit("❌ Facetune: cyan.entitlements ausente")
+
+          zero_requirements = Path(Executable.install_dir) / "extras" / "zero.requirements"
+          subprocess.run(
+              [
+                  Executable.ldid,
+                  f"-S{entitlements}",
+                  "-M",
+                  "-Cadhoc",
+                  f"-Q{zero_requirements}",
+                  str(exe),
+              ],
+              check=True,
+          )
+
+          output = Path("Cyan_Output.ipa")
+          output.unlink()
+          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(file, file.relative_to(work))
+
+          print("✅ Facetune: blatantsPatch aplicado em segunda etapa via LIEF")
+          print("✅ Facetune: 5 frameworks reassinados como na IPA funcional")
+          print("✅ Facetune: executável reassinado com cyan.entitlements")
+
+          shutil.rmtree(work)
+          PY
 
       - name: Progresso da injeção - 40%
         if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
@@ -2691,10 +2820,56 @@ jobs:
                   "❌ Facetune: @executable_path/Frameworks ausente"
               )
 
+          # O 3-way 1:1 mostrou que a referência reassina exatamente cinco
+          # frameworks e que o blatant é o terceiro load, vindo da etapa LIEF.
+          expected_framework_sizes_2626 = {
+              "FullStory.framework/FullStory": 2563248,
+              "RxCocoa.framework/RxCocoa": 797568,
+              "RxRelay.framework/RxRelay": 87008,
+              "RxSwift.framework/RxSwift": 1062224,
+              "Sentry.framework/Sentry": 1750832,
+          }
+          if info.get("CFBundleShortVersionString") == "26.26":
+              for rel, expected_size in expected_framework_sizes_2626.items():
+                  target = frameworks / rel
+                  actual_size = target.stat().st_size
+                  if actual_size != expected_size:
+                      raise SystemExit(
+                          f"❌ Facetune 26.26: {rel} com {actual_size} bytes; "
+                          f"referência funcional = {expected_size}"
+                      )
+
+              expected_main_size = 133677056
+              if exe.stat().st_size != expected_main_size:
+                  raise SystemExit(
+                      f"❌ Facetune 26.26: executável com {exe.stat().st_size} bytes; "
+                      f"referência funcional = {expected_main_size}"
+                  )
+
+          load_proc = subprocess.run(
+              [Executable.otool, "-l", str(exe)],
+              capture_output=True,
+              text=True,
+              check=True,
+          )
+          load_text = load_proc.stdout
+          marker = "name @rpath/blatantsPatch.dylib"
+          marker_pos = load_text.find(marker)
+          if marker_pos < 0:
+              raise SystemExit("❌ Facetune: load command do blatant ausente")
+          nearby = load_text[marker_pos:marker_pos + 300]
+          if "time stamp 2" not in nearby:
+              raise SystemExit(
+                  "❌ Facetune: blatant não foi criado pelo backend da segunda etapa "
+                  "(timestamp esperado = 2)"
+              )
+
           print("✅ Facetune: 3 dylibs presentes")
           print("✅ Facetune: 5 extensões removidas")
           print("✅ Facetune: cyan.entitlements presente")
           print("✅ Facetune: weak-loads na ordem 1:1 da referência")
+          print("✅ Facetune: blatant aplicado na segunda etapa (timestamp 2)")
+          print("✅ Facetune: 5 frameworks reassinados 1:1")
           print("✅ Facetune: layout funcional 26.26 reproduzido")
 
           shutil.rmtree(work)
