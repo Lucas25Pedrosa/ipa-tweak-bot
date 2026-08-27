@@ -2382,6 +2382,7 @@ jobs:
           unzip -q Layout_Output.ipa -d ipapatch_main_work
 
           python <<'PY'
+          import hashlib
           import json
           import shutil
           from pathlib import Path
