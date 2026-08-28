@@ -1,5 +1,6 @@
 #import <objc/runtime.h>
 #import <stdatomic.h>
+#import <stdbool.h>
 
 // XLegacyGlass prototype for X 12.21.
 // Goal: reproduce the X 12.20 separation between global Liquid Glass
@@ -34,9 +35,9 @@ static inline void XLGLeaveRootBuild(bool markReady) {
 }
 
 static BOOL XLGIsLiquidGlassEnabled(id self, SEL _cmd) {
-    // 12.20 effectively allowed the normal/root UI to be assembled independently
-    // of the system Liquid Glass state. During 12.21 root bootstrap we therefore
-    // expose Glass as disabled. Once the normal root has completed, Glass is enabled.
+    // During 12.21 root bootstrap expose Glass as disabled so the complete
+    // legacy/root content tree can be assembled. Once root setup is finished,
+    // expose Glass as enabled for the normal appearance path.
     if (!atomic_load_explicit(&gRootReady, memory_order_seq_cst) ||
         atomic_load_explicit(&gRootBuildDepth, memory_order_seq_cst) > 0) {
         return NO;
