@@ -42,6 +42,8 @@ jobs:
             -Wl,-dead_strip \
             -Wl,-install_name,@rpath/XLegacyGlass.dylib \
             prototype/XLegacyGlass/XLegacyGlass.m \
+            -framework UIKit \
+            -framework CoreGraphics \
             -lobjc \
             -o prototype/XLegacyGlass/build/XLegacyGlass.dylib
 
