@@ -2245,14 +2245,40 @@ jobs:
                   "a sequência 1:1 foi violada"
               )
 
-          # insert_dylib trabalha sobre Mach-O sem assinatura válida.
-          Executable(str(exe)).remove_signature()
+          # 3-way 1:1: a referência funcional mantém a assinatura da
+          # primeira etapa dentro de __LINKEDIT. Nessa assinatura, o
+          # Requirements blob tem 124 bytes (em vez dos 12 bytes do
+          # zero.requirements usado pelo Cyan atual). Reassinamos primeiro
+          # sem -Q para reproduzir esse requirements antes de inserir blatant.
+          entitlements = app / "cyan.entitlements"
+          if not entitlements.is_file():
+              raise SystemExit("❌ Facetune: cyan.entitlements ausente")
 
+          subprocess.run(
+              [
+                  Executable.ldid,
+                  f"-S{entitlements}",
+                  "-M",
+                  "-Cadhoc",
+                  str(exe),
+              ],
+              check=True,
+          )
+
+          stage1_size = exe.stat().st_size
+          print(
+              "ℹ️ Facetune: executável após assinatura intermediária "
+              f"= {stage1_size} bytes"
+          )
+
+          # O IPA funcional preserva o blob de assinatura intermediário.
+          # --no-strip-codesig impede o insert_dylib de truncar __LINKEDIT.
           proc = subprocess.run(
               [
                   str(insert_dylib),
                   "--weak",
                   "--inplace",
+                  "--no-strip-codesig",
                   "--all-yes",
                   dep,
                   str(exe),
@@ -2295,10 +2321,6 @@ jobs:
                   check=True,
               )
 
-          entitlements = app / "cyan.entitlements"
-          if not entitlements.is_file():
-              raise SystemExit("❌ Facetune: cyan.entitlements ausente")
-
           zero_requirements = Path(Executable.install_dir) / "extras" / "zero.requirements"
           subprocess.run(
               [
@@ -2319,7 +2341,7 @@ jobs:
                   if file.is_file():
                       z.write(file, file.relative_to(work))
 
-          print("✅ Facetune: blatantsPatch aplicado em segunda etapa via insert_dylib do Cyan")
+          print("✅ Facetune: assinatura intermediária preservada + blatantsPatch aplicado via insert_dylib")
           print("✅ Facetune: 5 frameworks reassinados como na IPA funcional")
           print("✅ Facetune: executável reassinado com cyan.entitlements")
 
