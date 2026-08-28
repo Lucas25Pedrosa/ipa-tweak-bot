@@ -237,6 +237,13 @@ jobs:
               or plist.get("CFBundleName")
               or "Unknown"
           )
+
+          # CamScanner pode vir com CFBundleDisplayName localizado (ex.: chinês).
+          # O nome canônico é usado apenas pelo fluxo do Injector/Telegram e
+          # pelo nome do arquivo final; o Info.plist interno do app não é alterado.
+          if bundle_id == "com.intsig.CamScannerLite":
+              app_name = "CamScanner"
+
           version = plist.get("CFBundleShortVersionString", "Unknown")
           build = str(plist.get("CFBundleVersion", "Unknown"))
 
