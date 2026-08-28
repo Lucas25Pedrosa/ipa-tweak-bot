@@ -11,9 +11,6 @@ static const void *kXLGDelegateKey = &kXLGDelegateKey;
 static const void *kXLGOriginalBarKey = &kXLGOriginalBarKey;
 
 typedef void (*Void0IMP)(id, SEL);
-typedef void (*Void1IMP)(id, SEL, id);
-
-static Void1IMP gOrigViewDidAppear = NULL;
 static Void0IMP gOrigViewDidLayoutSubviews = NULL;
 
 static id XLGSendId(id obj, const char *selName) {
@@ -30,8 +27,8 @@ static NSInteger XLGIndexOfItem(UITabBar *bar, UITabBarItem *item) {
 }
 
 @interface XLegacyGlassTabDelegate : NSObject <UITabBarDelegate>
-@property(nonatomic, weak) id owner;
-@property(nonatomic, weak) id originalTabBarController;
+@property(nonatomic, assign) id owner;
+@property(nonatomic, assign) id originalTabBarController;
 @end
 
 @implementation XLegacyGlassTabDelegate
@@ -42,8 +39,6 @@ static NSInteger XLGIndexOfItem(UITabBar *bar, UITabBarItem *item) {
     NSInteger index = XLGIndexOfItem(tabBar, item);
     if (index < 0) return;
 
-    // X 12.21 still exposes the legacy delegate method that existed beside
-    // the removed Liquid Glass delegate surface.
     SEL selectSel = sel_registerName("tabBarViewController:selectTabAtIndex:withView:");
     if ([owner respondsToSelector:selectSel]) {
         ((void (*)(id, SEL, id, NSInteger, id))objc_msgSend)(
@@ -52,8 +47,6 @@ static NSInteger XLGIndexOfItem(UITabBar *bar, UITabBarItem *item) {
         return;
     }
 
-    // Defensive fallback: if the underlying controller has selectedIndex,
-    // update it directly. No assumption is made that this selector exists.
     id tabVC = self.originalTabBarController;
     SEL setIndex = sel_registerName("setSelectedIndex:");
     if (tabVC && [tabVC respondsToSelector:setIndex]) {
@@ -100,10 +93,8 @@ static void XLGInstallBridgeIfNeeded(id self) {
 
     UITabBar *glassBar = [[UITabBar alloc] initWithFrame:CGRectZero];
     glassBar.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleTopMargin;
-
-    // Reuse the same UITabBarItem objects so titles, images, badges and accessibility
-    // state remain exactly those produced by X 12.21.
     glassBar.items = items;
+
     if (originalBar.selectedItem && [items containsObject:originalBar.selectedItem]) {
         glassBar.selectedItem = originalBar.selectedItem;
     }
@@ -122,16 +113,6 @@ static void XLGInstallBridgeIfNeeded(id self) {
 
     // Hide only the old bar itself. The original controller/content hierarchy remains intact.
     originalBar.hidden = YES;
-}
-
-static void XLGViewDidAppear(id self, SEL _cmd, id animatedValue) {
-    // This function is installed using the exact UIViewController signature below;
-    // animatedValue is never dereferenced and is kept only to avoid private selector assumptions.
-    if (gOrigViewDidAppear) {
-        // ARM64 passes BOOL in w2; using objc runtime IMP with an id-sized third argument is unsafe.
-        // This hook is therefore not installed; see constructor. Kept only as a guard/documentation.
-        gOrigViewDidAppear(self, _cmd, animatedValue);
-    }
 }
 
 static void XLGViewDidLayoutSubviews(id self, SEL _cmd) {
@@ -162,8 +143,7 @@ static BOOL XLGHookVoid0(const char *className,
 
 __attribute__((constructor))
 static void XLegacyGlassBridgeInitialize(void) {
-    // viewDidLayoutSubviews has the stable UIViewController signature -(void)method.
-    // We deliberately avoid hooking private bootstrap methods or the Swift Appearance getter.
+    // Stable UIViewController signature. No private bootstrap hooks and no Swift gate hooks.
     XLGHookVoid0("T1TabbedAppNavigationViewController",
                  "viewDidLayoutSubviews",
                  (IMP)XLGViewDidLayoutSubviews,
