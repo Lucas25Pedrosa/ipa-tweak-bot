@@ -155,9 +155,46 @@ jobs:
           INJECTOR_EMOJIS_FILE: shared-config/injector_r2_emojis.json
           TELEGRAM_PROGRESS_STATE_FILE: .telegram-progress.json
         run: |
-          python private-core/scripts/postprocess.py input.ipa \
-            --status-file .private-status.json \
-            --github-output "$GITHUB_OUTPUT"
+          INPUT_BUNDLE_ID="$(python <<'PY'
+          import plistlib
+          import zipfile
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              plist_files = [
+                  name
+                  for name in z.namelist()
+                  if name.startswith("Payload/")
+                  and name.count("/") == 2
+                  and name.endswith(".app/Info.plist")
+              ]
+
+              if len(plist_files) != 1:
+                  raise SystemExit(
+                      f"Esperava 1 app principal; encontrei {len(plist_files)}"
+                  )
+
+              with z.open(plist_files[0]) as f:
+                  info = plistlib.load(f)
+
+          print(info.get("CFBundleIdentifier") or "")
+          PY
+          )"
+
+          case "$INPUT_BUNDLE_ID" in
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1)
+              echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
+              echo "ℹ️ V5 será aplicado somente no Final.ipa"
+              echo "processing_route=standard" >> "$GITHUB_OUTPUT"
+              echo "bundle_id=$INPUT_BUNDLE_ID" >> "$GITHUB_OUTPUT"
+              echo "initial_private_bypassed=true" >> "$GITHUB_OUTPUT"
+              rm -f .private-status.json
+              ;;
+            *)
+              python private-core/scripts/postprocess.py input.ipa \
+                --status-file .private-status.json \
+                --github-output "$GITHUB_OUTPUT"
+              ;;
+          esac
 
       # =========================================================
       # 3. DETECTAR APP E TWEAK
@@ -8310,6 +8347,153 @@ jobs:
           shutil.rmtree(work)
           PY
 
+      - name: Validate Moovit V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.tranzmate.tranzmate1' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import plistlib
+          import shutil
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit(
+                  "❌ Moovit: status do pós-processamento V5 ausente"
+              )
+
+          status = json.loads(
+              status_path.read_text(encoding="utf-8")
+          )
+
+          if status.get("processing_route") != "private":
+              raise SystemExit(
+                  "❌ Moovit: Final.ipa não entrou na rota privada V5"
+              )
+
+          nopopup = status.get("nopopup", {})
+          if nopopup.get("status") not in {
+              "applied",
+              "already_applied",
+          }:
+              raise SystemExit(
+                  "❌ Moovit: V5 não foi aplicado: "
+                  + json.dumps(
+                      nopopup,
+                      ensure_ascii=False,
+                  )
+              )
+
+          work = Path("moovit_post_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Moovit: .app final não identificado após V5"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.tranzmate.tranzmate1":
+              raise SystemExit(
+                  "❌ Moovit: bundle final inesperado após V5"
+              )
+
+          patch = (
+              app
+              / "Frameworks"
+              / "MoovitBusTransitTrackerPatch.dylib"
+          )
+          if not patch.is_file():
+              raise SystemExit(
+                  "❌ Moovit: MoovitBusTransitTrackerPatch.dylib ausente"
+              )
+
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_moovit",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ Moovit: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ Moovit: V5 não redirecionou viewDidLoad"
+              )
+
+          # A referência funcional preserva as extensões sem carregar o patch.
+          plugins = app / "PlugIns"
+          if plugins.is_dir():
+              for appex in sorted(plugins.glob("*.appex")):
+                  plist_path = appex / "Info.plist"
+                  if not plist_path.is_file():
+                      continue
+
+                  with plist_path.open("rb") as f:
+                      ext_info = plistlib.load(f)
+
+                  ext_exec_name = ext_info.get("CFBundleExecutable")
+                  if not ext_exec_name:
+                      continue
+
+                  ext_exec = appex / ext_exec_name
+                  if not ext_exec.is_file():
+                      continue
+
+                  proc = subprocess.run(
+                      [Executable.otool, "-L", str(ext_exec)],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                  )
+
+                  if "MoovitBusTransitTrackerPatch.dylib" in proc.stdout:
+                      raise SystemExit(
+                          "❌ Moovit: patch foi injetado indevidamente na extensão "
+                          + appex.name
+                      )
+
+          print(
+              "✅ Moovit: rota inicial STANDARD confirmada"
+          )
+          print(
+              "✅ Moovit: V5 aplicado somente no Final.ipa"
+          )
+          print(
+              "✅ Moovit: extensões preservadas sem Moovit patch"
+          )
+          print(
+              f"✅ Moovit: bytes alterados pelo V5: "
+              f"{nopopup.get('changed_bytes', 0)}"
+          )
+
+          shutil.rmtree(work)
+          PY
+
       - name: Validate final IPA
         run: |
           if [ ! -f Final.ipa ]; then
@@ -8360,6 +8544,51 @@ jobs:
       # =========================================================
       # 13. TELEGRAM BOT
       # =========================================================
+
+      - name: Validate Feather package metadata
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+          APP_VERSION: ${{ steps.prepare.outputs.version }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
+        run: |
+          python <<'PY'
+          import feather_package_transport as transport
+
+          metadata = transport._load_package_metadata("Final.ipa")
+
+          if not metadata:
+              raise SystemExit(
+                  "❌ Feather metadata não pôde ser gerado para o IPA final"
+              )
+
+          required = (
+              "bundle",
+              "appVersion",
+              "packageName",
+              "packageVersion",
+              "packageRevision",
+          )
+
+          missing = [
+              key
+              for key in required
+              if not str(metadata.get(key) or "").strip()
+          ]
+
+          if missing:
+              raise SystemExit(
+                  "❌ Feather metadata incompleto: "
+                  + ", ".join(missing)
+              )
+
+          print(
+              "🪶 Feather metadata validado: "
+              f"{metadata['packageName']} "
+              f"{metadata['packageVersion']} | "
+              f"rev {metadata['packageRevision'][:12]}"
+          )
+          PY
 
       - name: Send final IPA to Telegram bot
         env:
