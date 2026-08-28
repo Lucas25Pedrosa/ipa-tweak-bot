@@ -2172,6 +2172,7 @@ jobs:
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
         run: |
           python <<'PY'
+          import hashlib
           import plistlib
           import shutil
           import struct
@@ -2180,6 +2181,37 @@ jobs:
           from pathlib import Path
 
           from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.lightricks.Facetune2"
+          REFERENCE_VERSION = "26.26"
+
+          # Referência funcional 26.26, obtida pelo 3-way:
+          # clean -> IPA funcional -> nosso Injector.
+          REF_STAGE1_DATAOFF = 131582432
+          REF_STAGE1_TOTAL_SIZE = 132613520
+          REF_STAGE1_REGION_SHA256 = (
+              "58e731c6de358f3bba1aad2efce488a4a0fdc676f3631c189de2291c39249683"
+          )
+
+          REF_FINAL_CODELIMIT = 132613520
+          REF_FINAL_SIGNATURE_SIZE = 1063536
+          REF_FINAL_SIZE = 133677056
+          REF_LINKEDIT_FILEOFF = 128466944
+          REF_LINKEDIT_SIZE = 5210112
+          REF_TEXT_EXEC_LIMIT = 119930880
+
+          REF_PREFIX_SHA256 = (
+              "b5073de41055779a0d655bb33fbac84d4735d7e640a7a6c2d685a7eb9879496b"
+          )
+          REF_SUPERBLOB_SHA256 = (
+              "c3b7ec6877fd228afef51affa7f5ccce784eb549ebbef9621ac1bd0154e4df05"
+          )
+          REF_SIGNATURE_AREA_SHA256 = (
+              "27b9ec6d3c82cae0578adad0b179ce8c07f278050016dcb8642823b1747d8f46"
+          )
+          REF_MAIN_SHA256 = (
+              "6bf9a84646b2e0e8468c6dd2be146fee3cdc22bf1be818f2f4aec616b60f599a"
+          )
 
           work = Path("facetune_second_stage")
           if work.exists():
@@ -2197,27 +2229,38 @@ jobs:
           with (app / "Info.plist").open("rb") as f:
               info = plistlib.load(f)
 
-          if info.get("CFBundleIdentifier") != "com.lightricks.Facetune2":
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
               raise SystemExit("❌ Facetune: bundle inesperado na segunda etapa")
+
+          version = str(info.get("CFBundleShortVersionString") or "")
+          if version != REFERENCE_VERSION:
+              raise SystemExit(
+                  "❌ Facetune: rota 1:1 desta etapa foi auditada somente para "
+                  f"{REFERENCE_VERSION}; recebido {version or '?'}"
+              )
 
           exe_name = info.get("CFBundleExecutable")
           if not exe_name:
               raise SystemExit("❌ Facetune: CFBundleExecutable ausente")
+
           exe = app / exe_name
           frameworks = app / "Frameworks"
           frameworks.mkdir(exist_ok=True)
 
-          # O IPA funcional mostra que sideloadKeychainfix + Facetune entram pelo
-          # Cyan primeiro. blatantsPatch é aplicado depois por um backend que
-          # reescreve o Mach-O (timestamp 2 no LC_LOAD_WEAK_DYLIB).
+          entitlements = app / "cyan.entitlements"
+          if not entitlements.is_file():
+              raise SystemExit("❌ Facetune: cyan.entitlements ausente")
+
           candidates = []
-          for raw in Path("inject_files.txt").read_text().splitlines():
-              raw = raw.strip()
-              if raw and Path(raw).name == "blatantsPatch.dylib":
-                  candidates.append(Path(raw))
+          for raw_path in Path("inject_files.txt").read_text().splitlines():
+              raw_path = raw_path.strip()
+              if raw_path and Path(raw_path).name == "blatantsPatch.dylib":
+                  candidates.append(Path(raw_path))
 
           if len(candidates) != 1 or not candidates[0].is_file():
-              raise SystemExit("❌ Facetune: blatantsPatch.dylib original não localizado")
+              raise SystemExit(
+                  "❌ Facetune: blatantsPatch.dylib original não localizado"
+              )
 
           blatant_src = candidates[0]
           blatant_dst = frameworks / "blatantsPatch.dylib"
@@ -2225,13 +2268,11 @@ jobs:
 
           dep = "@rpath/blatantsPatch.dylib"
 
-          # Usa o mesmo insert_dylib empacotado pelo Cyan. Assim a segunda
-          # etapa não depende de LIEF e reproduz o backend nativo já usado
-          # pelo próprio Cyan quando a ferramenta está disponível.
           insert_dylib = Path(Executable.idylib)
           if not insert_dylib.is_file():
               raise SystemExit(
-                  f"❌ Facetune: insert_dylib do Cyan não encontrado: {insert_dylib}"
+                  "❌ Facetune: insert_dylib do Cyan não encontrado: "
+                  f"{insert_dylib}"
               )
 
           before = subprocess.run(
@@ -2240,21 +2281,21 @@ jobs:
               text=True,
               check=True,
           ).stdout
+
           if dep in before:
               raise SystemExit(
                   "❌ Facetune: blatantsPatch já foi injetado pelo Cyan; "
                   "a sequência 1:1 foi violada"
               )
 
-          # 3-way 1:1: a referência funcional mantém a assinatura da
-          # primeira etapa dentro de __LINKEDIT. Nessa assinatura, o
-          # Requirements blob tem 124 bytes (em vez dos 12 bytes do
-          # zero.requirements usado pelo Cyan atual). Reassinamos primeiro
-          # sem -Q para reproduzir esse requirements antes de inserir blatant.
-          entitlements = app / "cyan.entitlements"
-          if not entitlements.is_file():
-              raise SystemExit("❌ Facetune: cyan.entitlements ausente")
-
+          # ---------------------------------------------------------
+          # ETAPA 1 — reproduzir a assinatura intermediária preservada
+          # ---------------------------------------------------------
+          #
+          # A referência funcional contém, entre 131582432 e 132613520,
+          # a assinatura da primeira etapa. Ela tem Requirements de 124
+          # bytes. O ldid atual só reproduz esse formato quando NÃO recebe
+          # zero.requirements (-Q).
           subprocess.run(
               [
                   Executable.ldid,
@@ -2266,14 +2307,136 @@ jobs:
               check=True,
           )
 
-          stage1_size = exe.stat().st_size
+          if exe.stat().st_size != REF_STAGE1_TOTAL_SIZE:
+              raise SystemExit(
+                  "❌ Facetune: executável após assinatura intermediária = "
+                  f"{exe.stat().st_size}; referência = {REF_STAGE1_TOTAL_SIZE}"
+              )
+
+          stage1_raw = exe.read_bytes()
+
+          # Localiza LC_CODE_SIGNATURE da etapa intermediária.
+          ncmds = struct.unpack_from("<I", stage1_raw, 16)[0]
+          command_offset = 32
+          stage1_sig = None
+
+          for _ in range(ncmds):
+              cmd, cmdsize = struct.unpack_from(
+                  "<II",
+                  stage1_raw,
+                  command_offset,
+              )
+              if cmd == 0x1D:
+                  stage1_sig = struct.unpack_from(
+                      "<II",
+                      stage1_raw,
+                      command_offset + 8,
+                  )
+              command_offset += cmdsize
+
+          expected_stage1_sig = (
+              REF_STAGE1_DATAOFF,
+              REF_STAGE1_TOTAL_SIZE - REF_STAGE1_DATAOFF,
+          )
+          if stage1_sig != expected_stage1_sig:
+              raise SystemExit(
+                  "❌ Facetune: LC_CODE_SIGNATURE intermediária = "
+                  f"{stage1_sig}; referência = {expected_stage1_sig}"
+              )
+
+          stage1_region = stage1_raw[
+              REF_STAGE1_DATAOFF:REF_STAGE1_TOTAL_SIZE
+          ]
+          stage1_region_sha = hashlib.sha256(stage1_region).hexdigest()
+
+          if stage1_region_sha != REF_STAGE1_REGION_SHA256:
+              raise SystemExit(
+                  "❌ Facetune: assinatura intermediária divergiu da referência "
+                  f"(sha256={stage1_region_sha})"
+              )
+
+          # Confirma estrutura interna da assinatura intermediária.
+          if len(stage1_region) < 44:
+              raise SystemExit(
+                  "❌ Facetune: assinatura intermediária truncada"
+              )
+
+          sb_magic, sb_length, sb_count = struct.unpack_from(
+              ">III",
+              stage1_region,
+              0,
+          )
+          if (
+              sb_magic != 0xFADE0CC0
+              or sb_length != 1031074
+              or sb_count != 4
+          ):
+              raise SystemExit(
+                  "❌ Facetune: SuperBlob intermediário inesperado: "
+                  f"magic={sb_magic:#x}, length={sb_length}, count={sb_count}"
+              )
+
+          stage1_indexes = [
+              struct.unpack_from(
+                  ">II",
+                  stage1_region,
+                  12 + index * 8,
+              )
+              for index in range(sb_count)
+          ]
+          if [item[0] for item in stage1_indexes] != [0, 2, 5, 7]:
+              raise SystemExit(
+                  "❌ Facetune: slots da assinatura intermediária divergiram"
+              )
+
+          cd_offset = stage1_indexes[0][1]
+          cd_version = struct.unpack_from(
+              ">I",
+              stage1_region,
+              cd_offset + 8,
+          )[0]
+          cd_flags = struct.unpack_from(
+              ">I",
+              stage1_region,
+              cd_offset + 12,
+          )[0]
+          cd_code_limit = struct.unpack_from(
+              ">I",
+              stage1_region,
+              cd_offset + 32,
+          )[0]
+
+          if (
+              cd_version != 0x20400
+              or cd_flags != 0
+              or cd_code_limit != REF_STAGE1_DATAOFF
+          ):
+              raise SystemExit(
+                  "❌ Facetune: CodeDirectory intermediário divergiu "
+                  f"(version={cd_version:#x}, flags={cd_flags:#x}, "
+                  f"codeLimit={cd_code_limit})"
+              )
+
+          req_offset = stage1_indexes[1][1]
+          req_length = struct.unpack_from(
+              ">I",
+              stage1_region,
+              req_offset + 4,
+          )[0]
+          if req_length != 124:
+              raise SystemExit(
+                  "❌ Facetune: Requirements intermediário = "
+                  f"{req_length}; referência = 124"
+              )
+
           print(
-              "ℹ️ Facetune: executável após assinatura intermediária "
-              f"= {stage1_size} bytes"
+              "✅ Facetune: assinatura intermediária é byte-a-byte "
+              "a mesma da referência"
           )
 
-          # O IPA funcional preserva o blob de assinatura intermediário.
-          # --no-strip-codesig impede o insert_dylib de truncar __LINKEDIT.
+          # ---------------------------------------------------------
+          # ETAPA 2 — inserir blatantsPatch preservando a etapa 1
+          # ---------------------------------------------------------
           proc = subprocess.run(
               [
                   str(insert_dylib),
@@ -2287,6 +2450,7 @@ jobs:
               capture_output=True,
               text=True,
           )
+
           if proc.returncode != 0:
               raise SystemExit(
                   "❌ Facetune: insert_dylib falhou na segunda etapa:\n"
@@ -2299,137 +2463,561 @@ jobs:
               text=True,
               check=True,
           ).stdout
+
           if dep not in after:
               raise SystemExit(
-                  "❌ Facetune: blatantsPatch não apareceu no Mach-O após insert_dylib"
+                  "❌ Facetune: blatantsPatch não apareceu no Mach-O "
+                  "após insert_dylib"
               )
 
-          # 3-way 1:1 do executável principal:
-          # - a referência usa timestamp 2 no blatant;
-          # - LC_CODE_SIGNATURE final começa exatamente no fim da
-          #   assinatura intermediária.
-          def prepare_final_signature_layout(binary):
-              raw = bytearray(binary.read_bytes())
+          # ---------------------------------------------------------
+          # ETAPA 3 — montar o Mach-O final antes da assinatura
+          # ---------------------------------------------------------
+          #
+          # Não usamos o último ldid. A run #125 provou que o ldid moderno
+          # reduz codeLimit ao fim de LC_SYMTAB e trunca o blob intermediário.
+          # Aqui reproduzimos diretamente o CodeSignature da referência.
+          raw = bytearray(exe.read_bytes())
 
-              if len(raw) < 32:
-                  raise SystemExit("❌ Facetune: Mach-O principal truncado")
+          if len(raw) != REF_FINAL_CODELIMIT:
+              raise SystemExit(
+                  "❌ Facetune: tamanho antes da assinatura final = "
+                  f"{len(raw)}; referência = {REF_FINAL_CODELIMIT}"
+              )
 
-              magic = struct.unpack_from("<I", raw, 0)[0]
-              if magic != 0xFEEDFACF:
+          if struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+              raise SystemExit(
+                  "❌ Facetune: Mach-O 64-bit little-endian esperado"
+              )
+
+          ncmds = struct.unpack_from("<I", raw, 16)[0]
+          command_offset = 32
+
+          code_signature_offset = None
+          linkedit_offset = None
+          text_exec_limit = None
+          blatant_found = False
+
+          for _ in range(ncmds):
+              if command_offset + 8 > len(raw):
                   raise SystemExit(
-                      f"❌ Facetune: Mach-O 64-bit little-endian esperado; "
-                      f"magic={magic:#x}"
+                      "❌ Facetune: load commands truncados"
                   )
 
-              ncmds = struct.unpack_from("<I", raw, 16)[0]
-              command_offset = 32
-              blatant_found = False
-              code_signature_offset = None
+              cmd, cmdsize = struct.unpack_from(
+                  "<II",
+                  raw,
+                  command_offset,
+              )
 
-              for _ in range(ncmds):
-                  if command_offset + 8 > len(raw):
-                      raise SystemExit("❌ Facetune: load commands truncados")
+              if cmdsize < 8 or command_offset + cmdsize > len(raw):
+                  raise SystemExit(
+                      "❌ Facetune: load command inválido"
+                  )
 
-                  cmd, cmdsize = struct.unpack_from(
-                      "<II",
+              if cmd == 0x80000018:
+                  name_offset = struct.unpack_from(
+                      "<I",
                       raw,
-                      command_offset,
-                  )
+                      command_offset + 8,
+                  )[0]
 
-                  if cmdsize < 8 or command_offset + cmdsize > len(raw):
-                      raise SystemExit("❌ Facetune: load command inválido")
+                  if name_offset < cmdsize:
+                      string_start = command_offset + name_offset
+                      string_end = raw.find(
+                          b"\0",
+                          string_start,
+                          command_offset + cmdsize,
+                      )
+                      if string_end < 0:
+                          string_end = command_offset + cmdsize
 
-                  # LC_LOAD_WEAK_DYLIB | LC_REQ_DYLD
-                  if cmd == 0x80000018:
-                      name_offset = struct.unpack_from(
-                          "<I",
+                      dylib_name = raw[
+                          string_start:string_end
+                      ].decode("utf-8", errors="replace")
+
+                      if dylib_name == dep:
+                          # O backend funcional usa timestamp 2.
+                          struct.pack_into(
+                              "<I",
+                              raw,
+                              command_offset + 12,
+                              2,
+                          )
+                          struct.pack_into(
+                              "<I",
+                              raw,
+                              command_offset + 16,
+                              0,
+                          )
+                          struct.pack_into(
+                              "<I",
+                              raw,
+                              command_offset + 20,
+                              0,
+                          )
+                          blatant_found = True
+
+              if cmd == 0x1D:
+                  code_signature_offset = command_offset
+
+              if cmd == 0x19:
+                  segname = raw[
+                      command_offset + 8:command_offset + 24
+                  ].split(b"\0", 1)[0]
+
+                  if segname == b"__TEXT":
+                      text_exec_limit = struct.unpack_from(
+                          "<Q",
                           raw,
-                          command_offset + 8,
+                          command_offset + 32,
                       )[0]
 
-                      if name_offset < cmdsize:
-                          string_start = command_offset + name_offset
-                          string_end = raw.find(
-                              b"\0",
-                              string_start,
-                              command_offset + cmdsize,
-                          )
-                          if string_end < 0:
-                              string_end = command_offset + cmdsize
+                  if segname == b"__LINKEDIT":
+                      linkedit_offset = command_offset
+                      linkedit_fileoff = struct.unpack_from(
+                          "<Q",
+                          raw,
+                          command_offset + 40,
+                      )[0]
 
-                          dylib_name = raw[
-                              string_start:string_end
-                          ].decode("utf-8", errors="replace")
+              command_offset += cmdsize
 
-                          if dylib_name == "@rpath/blatantsPatch.dylib":
-                              struct.pack_into(
-                                  "<I",
-                                  raw,
-                                  command_offset + 12,
-                                  2,
-                              )
-                              blatant_found = True
-
-                  # LC_CODE_SIGNATURE
-                  if cmd == 0x1D:
-                      code_signature_offset = command_offset
-
-                  command_offset += cmdsize
-
-              if not blatant_found:
-                  raise SystemExit(
-                      "❌ Facetune: load command do blatantsPatch não localizado"
-                  )
-
-              if code_signature_offset is None:
-                  raise SystemExit(
-                      "❌ Facetune: LC_CODE_SIGNATURE não localizado"
-                  )
-
-              final_signature_dataoff = len(raw)
-
-              if (
-                  info.get("CFBundleShortVersionString") == "26.26"
-                  and final_signature_dataoff != 132613520
-              ):
-                  raise SystemExit(
-                      "❌ Facetune 26.26: fim da assinatura intermediária = "
-                      f"{final_signature_dataoff}; referência = 132613520"
-                  )
-
-              # ldid usa dataoff do LC_CODE_SIGNATURE como codeLimit.
-              # Apontar para o fim atual faz a assinatura intermediária virar
-              # parte dos bytes cobertos pela assinatura final, exatamente
-              # como na referência funcional.
-              struct.pack_into(
-                  "<I",
-                  raw,
-                  code_signature_offset + 8,
-                  final_signature_dataoff,
-              )
-              struct.pack_into(
-                  "<I",
-                  raw,
-                  code_signature_offset + 12,
-                  1,
+          if not blatant_found:
+              raise SystemExit(
+                  "❌ Facetune: load do blatantsPatch não localizado"
               )
 
-              # ldid exige dataoff < tamanho mapeado. Esse byte é apenas uma
-              # sentinela temporária e será substituído pela assinatura final.
-              raw.append(0)
-              binary.write_bytes(raw)
+          if code_signature_offset is None:
+              raise SystemExit(
+                  "❌ Facetune: LC_CODE_SIGNATURE não localizado"
+              )
 
-              return final_signature_dataoff
+          if linkedit_offset is None:
+              raise SystemExit(
+                  "❌ Facetune: __LINKEDIT não localizado"
+              )
 
-          final_signature_dataoff = prepare_final_signature_layout(exe)
-          print(
-              "✅ Facetune: blatant timestamp = 2; "
-              "LC_CODE_SIGNATURE final preparado em "
-              f"{final_signature_dataoff}"
+          if linkedit_fileoff != REF_LINKEDIT_FILEOFF:
+              raise SystemExit(
+                  "❌ Facetune: __LINKEDIT.fileoff = "
+                  f"{linkedit_fileoff}; referência = {REF_LINKEDIT_FILEOFF}"
+              )
+
+          if text_exec_limit != REF_TEXT_EXEC_LIMIT:
+              raise SystemExit(
+                  "❌ Facetune: __TEXT.vmsize = "
+                  f"{text_exec_limit}; referência = {REF_TEXT_EXEC_LIMIT}"
+              )
+
+          # Header final 1:1.
+          struct.pack_into(
+              "<I",
+              raw,
+              code_signature_offset + 8,
+              REF_FINAL_CODELIMIT,
+          )
+          struct.pack_into(
+              "<I",
+              raw,
+              code_signature_offset + 12,
+              REF_FINAL_SIGNATURE_SIZE,
           )
 
-          # O IPA funcional reassina exatamente estes cinco frameworks; no IPA
-          # do nosso Injector eles permaneciam byte-a-byte iguais à IPA limpa.
+          struct.pack_into(
+              "<Q",
+              raw,
+              linkedit_offset + 32,
+              REF_LINKEDIT_SIZE,
+          )
+          struct.pack_into(
+              "<Q",
+              raw,
+              linkedit_offset + 48,
+              REF_LINKEDIT_SIZE,
+          )
+
+          prefix_sha = hashlib.sha256(raw).hexdigest()
+          if prefix_sha != REF_PREFIX_SHA256:
+              raise SystemExit(
+                  "❌ Facetune: prefixo antes da assinatura final não é "
+                  "byte-a-byte igual à referência "
+                  f"(sha256={prefix_sha})"
+              )
+
+          print(
+              "✅ Facetune: prefixo Mach-O até codeLimit é byte-a-byte "
+              "igual à referência"
+          )
+
+          # ---------------------------------------------------------
+          # ETAPA 4 — CodeSignature final exato da referência funcional
+          # ---------------------------------------------------------
+          def der_length(value):
+              if value < 128:
+                  return bytes([value])
+
+              size = (value.bit_length() + 7) // 8
+              return (
+                  bytes([0x80 | size])
+                  + value.to_bytes(size, "big")
+              )
+
+          def encode_der(value):
+              if isinstance(value, bool):
+                  return (
+                      b"\x01\x01"
+                      + (b"\xff" if value else b"\x00")
+                  )
+
+              if isinstance(value, int):
+                  if value == 0:
+                      encoded = b"\x00"
+                  else:
+                      encoded = value.to_bytes(
+                          (value.bit_length() + 7) // 8,
+                          "big",
+                      )
+                      if encoded[0] & 0x80:
+                          encoded = b"\x00" + encoded
+
+                  return (
+                      b"\x02"
+                      + der_length(len(encoded))
+                      + encoded
+                  )
+
+              if isinstance(value, str):
+                  encoded = value.encode("utf-8")
+                  return (
+                      b"\x0c"
+                      + der_length(len(encoded))
+                      + encoded
+                  )
+
+              if isinstance(value, bytes):
+                  return (
+                      b"\x04"
+                      + der_length(len(value))
+                      + value
+                  )
+
+              if isinstance(value, list):
+                  encoded = b"".join(
+                      encode_der(item)
+                      for item in value
+                  )
+                  return (
+                      b"\x30"
+                      + der_length(len(encoded))
+                      + encoded
+                  )
+
+              if isinstance(value, dict):
+                  entries = []
+
+                  for key, item in value.items():
+                      key_bytes = str(key).encode("utf-8")
+                      entry_body = (
+                          b"\x0c"
+                          + der_length(len(key_bytes))
+                          + key_bytes
+                          + encode_der(item)
+                      )
+                      entries.append(
+                          b"\x30"
+                          + der_length(len(entry_body))
+                          + entry_body
+                      )
+
+                  # DER SET OF usa ordem lexicográfica do TLV completo.
+                  entries.sort()
+                  encoded = b"".join(entries)
+
+                  return (
+                      b"\x31"
+                      + der_length(len(encoded))
+                      + encoded
+                  )
+
+              raise SystemExit(
+                  "❌ Facetune: tipo de entitlement não suportado "
+                  f"pelo encoder DER: {type(value).__name__}"
+              )
+
+          entitlement_xml = entitlements.read_bytes()
+          if not entitlement_xml.endswith(b"\n"):
+              entitlement_xml += b"\n"
+
+          try:
+              entitlement_plist = plistlib.loads(
+                  entitlement_xml
+              )
+          except Exception as exc:
+              raise SystemExit(
+                  "❌ Facetune: cyan.entitlements inválido: "
+                  f"{exc}"
+              )
+
+          requirements_blob = struct.pack(
+              ">III",
+              0xFADE0C01,
+              12,
+              0,
+          )
+
+          entitlements_blob = (
+              struct.pack(
+                  ">II",
+                  0xFADE7171,
+                  len(entitlement_xml) + 8,
+              )
+              + entitlement_xml
+          )
+
+          der_body = encode_der(entitlement_plist)
+          der_blob = (
+              struct.pack(
+                  ">II",
+                  0xFADE7172,
+                  len(der_body) + 8,
+              )
+              + der_body
+          )
+
+          if len(entitlements_blob) != 1647:
+              raise SystemExit(
+                  "❌ Facetune: slot XML de entitlements = "
+                  f"{len(entitlements_blob)}; referência = 1647"
+              )
+
+          if len(der_blob) != 938:
+              raise SystemExit(
+                  "❌ Facetune: slot DER de entitlements = "
+                  f"{len(der_blob)}; referência = 938"
+              )
+
+          req_hash = hashlib.sha256(
+              requirements_blob
+          ).digest()
+          ent_hash = hashlib.sha256(
+              entitlements_blob
+          ).digest()
+          der_hash = hashlib.sha256(
+              der_blob
+          ).digest()
+          zero_hash = b"\0" * 32
+
+          page_size = 4096
+          code_hashes = b"".join(
+              hashlib.sha256(
+                  bytes(raw[offset:offset + page_size])
+              ).digest()
+              for offset in range(
+                  0,
+                  REF_FINAL_CODELIMIT,
+                  page_size,
+              )
+          )
+
+          n_code_slots = (
+              REF_FINAL_CODELIMIT + page_size - 1
+          ) // page_size
+
+          if len(code_hashes) != n_code_slots * 32:
+              raise SystemExit(
+                  "❌ Facetune: tabela de hashes de páginas inválida"
+              )
+
+          identifier = exe_name.encode("utf-8") + b"\0"
+
+          # Serialização dos slots negativos -7 ... -1.
+          special_slots = b"".join(
+              [
+                  der_hash,     # -7 DER entitlements
+                  zero_hash,    # -6 rep-specific
+                  ent_hash,     # -5 XML entitlements
+                  zero_hash,    # -4 application
+                  zero_hash,    # -3 resources
+                  req_hash,     # -2 requirements
+                  zero_hash,    # -1 Info.plist
+              ]
+          )
+
+          code_directory_header_size = 96
+          hash_offset = (
+              code_directory_header_size
+              + len(identifier)
+              + len(special_slots)
+          )
+
+          code_directory_length = (
+              hash_offset + len(code_hashes)
+          )
+
+          code_directory_header = struct.pack(
+              ">IIIIIIIIIBBBBIIIIQQQQII",
+              0xFADE0C02,
+              code_directory_length,
+              0x20500,
+              0x2,
+              hash_offset,
+              code_directory_header_size,
+              7,
+              n_code_slots,
+              REF_FINAL_CODELIMIT,
+              32,
+              2,
+              0,
+              12,
+              0,
+              0,
+              0,
+              0,
+              0,
+              0,
+              REF_TEXT_EXEC_LIMIT,
+              1,
+              0,
+              0,
+          )
+
+          if len(code_directory_header) != 96:
+              raise SystemExit(
+                  "❌ Facetune: header do CodeDirectory != 96"
+              )
+
+          code_directory = (
+              code_directory_header
+              + identifier
+              + special_slots
+              + code_hashes
+          )
+
+          if len(code_directory) != 1036393:
+              raise SystemExit(
+                  "❌ Facetune: CodeDirectory = "
+                  f"{len(code_directory)}; referência = 1036393"
+              )
+
+          # O IPA funcional possui um CSSLOT_SIGNATURESLOT ad-hoc
+          # com blob de 8 bytes + 8 bytes zero ainda dentro do SuperBlob.
+          adhoc_cms_slot = (
+              struct.pack(
+                  ">II",
+                  0xFADE0B01,
+                  8,
+              )
+              + b"\0" * 8
+          )
+
+          slots = [
+              (0, code_directory),
+              (2, requirements_blob),
+              (5, entitlements_blob),
+              (7, der_blob),
+              (0x10000, adhoc_cms_slot),
+          ]
+
+          super_header_size = 12 + len(slots) * 8
+          cursor = super_header_size
+          indexes = []
+          payload = bytearray()
+
+          for slot_type, slot_data in slots:
+              indexes.append(
+                  struct.pack(
+                      ">II",
+                      slot_type,
+                      cursor,
+                  )
+              )
+              payload.extend(slot_data)
+              cursor += len(slot_data)
+
+          superblob_length = (
+              super_header_size + len(payload)
+          )
+
+          superblob = (
+              struct.pack(
+                  ">III",
+                  0xFADE0CC0,
+                  superblob_length,
+                  len(slots),
+              )
+              + b"".join(indexes)
+              + bytes(payload)
+          )
+
+          if superblob_length != 1039058:
+              raise SystemExit(
+                  "❌ Facetune: SuperBlob = "
+                  f"{superblob_length}; referência = 1039058"
+              )
+
+          superblob_sha = hashlib.sha256(
+              superblob
+          ).hexdigest()
+          if superblob_sha != REF_SUPERBLOB_SHA256:
+              raise SystemExit(
+                  "❌ Facetune: SuperBlob final divergiu da referência "
+                  f"(sha256={superblob_sha})"
+              )
+
+          if len(superblob) > REF_FINAL_SIGNATURE_SIZE:
+              raise SystemExit(
+                  "❌ Facetune: SuperBlob não cabe em LC_CODE_SIGNATURE"
+              )
+
+          signature_area = (
+              superblob
+              + b"\0" * (
+                  REF_FINAL_SIGNATURE_SIZE
+                  - len(superblob)
+              )
+          )
+
+          signature_area_sha = hashlib.sha256(
+              signature_area
+          ).hexdigest()
+          if signature_area_sha != REF_SIGNATURE_AREA_SHA256:
+              raise SystemExit(
+                  "❌ Facetune: área final de assinatura divergiu "
+                  f"(sha256={signature_area_sha})"
+              )
+
+          final_raw = bytes(raw) + signature_area
+
+          if len(final_raw) != REF_FINAL_SIZE:
+              raise SystemExit(
+                  "❌ Facetune: executável final = "
+                  f"{len(final_raw)}; referência = {REF_FINAL_SIZE}"
+              )
+
+          exe.write_bytes(final_raw)
+
+          main_sha = hashlib.sha256(
+              exe.read_bytes()
+          ).hexdigest()
+          if main_sha != REF_MAIN_SHA256:
+              raise SystemExit(
+                  "❌ Facetune: executável final não ficou byte-a-byte "
+                  "igual à referência "
+                  f"(sha256={main_sha})"
+              )
+
+          print(
+              "✅ Facetune: executável principal reproduzido "
+              "BYTE-A-BYTE com a IPA funcional"
+          )
+          print(
+              f"✅ Facetune: SHA256 principal = {main_sha}"
+          )
+
+          # ---------------------------------------------------------
+          # ETAPA 5 — cinco frameworks alterados na referência
+          # ---------------------------------------------------------
           resign_frameworks = [
               frameworks / "FullStory.framework" / "FullStory",
               frameworks / "RxCocoa.framework" / "RxCocoa",
@@ -2440,35 +3028,62 @@ jobs:
 
           for fw in resign_frameworks:
               if not fw.is_file():
-                  raise SystemExit(f"❌ Facetune: framework esperado ausente: {fw}")
+                  raise SystemExit(
+                      "❌ Facetune: framework esperado ausente: "
+                      f"{fw}"
+                  )
+
               subprocess.run(
-                  [Executable.ldid, "-S", "-M", str(fw)],
+                  [
+                      Executable.ldid,
+                      "-S",
+                      "-M",
+                      str(fw),
+                  ],
                   check=True,
               )
 
-          zero_requirements = Path(Executable.install_dir) / "extras" / "zero.requirements"
-          subprocess.run(
-              [
-                  Executable.ldid,
-                  f"-S{entitlements}",
-                  "-M",
-                  "-Cadhoc",
-                  f"-Q{zero_requirements}",
-                  str(exe),
-              ],
-              check=True,
-          )
+          expected_framework_sizes = {
+              "FullStory.framework/FullStory": 2563248,
+              "RxCocoa.framework/RxCocoa": 797568,
+              "RxRelay.framework/RxRelay": 87008,
+              "RxSwift.framework/RxSwift": 1062224,
+              "Sentry.framework/Sentry": 1750832,
+          }
+
+          for relative, expected_size in expected_framework_sizes.items():
+              actual = (
+                  frameworks / relative
+              ).stat().st_size
+
+              if actual != expected_size:
+                  raise SystemExit(
+                      "❌ Facetune: "
+                      f"{relative} = {actual}; "
+                      f"referência = {expected_size}"
+                  )
 
           output = Path("Cyan_Output.ipa")
           output.unlink()
-          with zipfile.ZipFile(output, "w", compression=zipfile.ZIP_DEFLATED) as z:
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
               for file in work.rglob("*"):
                   if file.is_file():
-                      z.write(file, file.relative_to(work))
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
 
-          print("✅ Facetune: assinatura final anexada após o blob intermediário")
-          print("✅ Facetune: 5 frameworks reassinados como na IPA funcional")
-          print("✅ Facetune: executável reassinado com cyan.entitlements")
+          print(
+              "✅ Facetune: assinatura final direta reproduzida 1:1"
+          )
+          print(
+              "✅ Facetune: 5 frameworks reassinados como na referência"
+          )
 
           shutil.rmtree(work)
           PY
@@ -3030,6 +3645,21 @@ jobs:
                   raise SystemExit(
                       f"❌ Facetune 26.26: executável com {exe.stat().st_size} bytes; "
                       f"referência funcional = {expected_main_size}"
+                  )
+
+              import hashlib
+              expected_main_sha256 = (
+                  "6bf9a84646b2e0e8468c6dd2be146fee"
+                  "3cdc22bf1be818f2f4aec616b60f599a"
+              )
+              actual_main_sha256 = hashlib.sha256(
+                  exe.read_bytes()
+              ).hexdigest()
+              if actual_main_sha256 != expected_main_sha256:
+                  raise SystemExit(
+                      "❌ Facetune 26.26: SHA256 do executável = "
+                      f"{actual_main_sha256}; referência = "
+                      f"{expected_main_sha256}"
                   )
 
               raw = exe.read_bytes()
