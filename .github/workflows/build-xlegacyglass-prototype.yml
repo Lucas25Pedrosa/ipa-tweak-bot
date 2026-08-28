@@ -51,10 +51,11 @@ jobs:
           otool -L prototype/XLegacyGlass/build/XLegacyGlass.dylib
           lipo -archs prototype/XLegacyGlass/build/XLegacyGlass.dylib
 
-      - name: Export dylib as base64
+      - name: Export compiled prototype
         shell: bash
         run: |
           set -euo pipefail
+          cp prototype/XLegacyGlass/build/XLegacyGlass.dylib prototype/XLegacyGlass/XLegacyGlass.dylib
           base64 < prototype/XLegacyGlass/build/XLegacyGlass.dylib > prototype/XLegacyGlass/XLegacyGlass.dylib.b64
           shasum -a 256 prototype/XLegacyGlass/build/XLegacyGlass.dylib > prototype/XLegacyGlass/XLegacyGlass.dylib.sha256
 
@@ -66,8 +67,9 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-          git add prototype/XLegacyGlass/XLegacyGlass.dylib.b64 \
-                  prototype/XLegacyGlass/XLegacyGlass.dylib.sha256
+          git add -f prototype/XLegacyGlass/XLegacyGlass.dylib \
+                     prototype/XLegacyGlass/XLegacyGlass.dylib.b64 \
+                     prototype/XLegacyGlass/XLegacyGlass.dylib.sha256
 
           if git diff --cached --quiet; then
             echo "Compiled prototype unchanged."
