@@ -51,6 +51,14 @@ jobs:
           otool -L prototype/XLegacyGlass/build/XLegacyGlass.dylib
           lipo -archs prototype/XLegacyGlass/build/XLegacyGlass.dylib
 
+      - name: Upload prototype artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XLegacyGlass-prototype
+          path: prototype/XLegacyGlass/build/XLegacyGlass.dylib
+          if-no-files-found: error
+          retention-days: 1
+
       - name: Export compiled prototype
         shell: bash
         run: |
