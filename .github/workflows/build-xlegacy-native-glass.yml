@@ -38,6 +38,7 @@ jobs:
             prototype/XLegacyNativeGlass/XLegacyNativeGlass.m \
             -framework Foundation \
             -framework UIKit \
+            -framework CoreGraphics \
             -lobjc \
             -o prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
 
