@@ -181,7 +181,7 @@ jobs:
           )"
 
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -5542,6 +5542,318 @@ jobs:
           shutil.rmtree(input_work)
           PY
 
+      - name: Validate CamScanner structural layout before V5
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.intsig.CamScannerLite' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.intsig.CamScannerLite"
+          EXPECTED_DYLIBS = [
+              "NewFix1.dylib",
+              "libpro.dylib",
+              "Sideloadbypass2.dylib",
+              "FixCrash.dylib",
+              "Sideloadbypass1.dylib",
+              "CachefixPatch.dylib",
+              "NewFix2.dylib",
+              "CamScannerPDFScannerAppPatch.dylib",
+          ]
+          EXPECTED_LOADS = [
+              f"@rpath/{name}"
+              for name in EXPECTED_DYLIBS
+          ]
+          PATCH_NAME = "CamScannerPDFScannerAppPatch.dylib"
+
+          work = Path("camscanner_pre_v5_validate")
+          input_work = Path("camscanner_input_compare")
+
+          for path in (work, input_work):
+              if path.exists():
+                  shutil.rmtree(path)
+              path.mkdir()
+
+          with zipfile.ZipFile("Layout_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(input_work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          input_apps = list((input_work / "Payload").glob("*.app"))
+
+          if len(apps) != 1 or len(input_apps) != 1:
+              raise SystemExit(
+                  "❌ CamScanner: .app principal não identificado"
+              )
+
+          app = apps[0]
+          input_app = input_apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ CamScanner: bundle ID inesperado"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ CamScanner: CFBundleExecutable ausente"
+              )
+
+          executable = app / executable_name
+          frameworks = app / "Frameworks"
+
+          if not executable.is_file():
+              raise SystemExit(
+                  "❌ CamScanner: executável principal ausente"
+              )
+
+          for name in EXPECTED_DYLIBS:
+              if not (frameworks / name).is_file():
+                  raise SystemExit(
+                      f"❌ CamScanner: dylib obrigatória ausente: {name}"
+                  )
+
+          substrate = (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          )
+          if not substrate.is_file():
+              raise SystemExit(
+                  "❌ CamScanner: CydiaSubstrate.framework ausente"
+              )
+
+          def parse_macho(path: Path):
+              raw = path.read_bytes()
+
+              if (
+                  len(raw) < 32
+                  or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF
+              ):
+                  raise SystemExit(
+                      f"❌ CamScanner: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              loads = []
+              rpaths = []
+
+              for _ in range(ncmds):
+                  if offset + 8 > len(raw):
+                      raise SystemExit(
+                          f"❌ CamScanner: load command truncado: {path}"
+                      )
+
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmdsize < 8 or offset + cmdsize > len(raw):
+                      raise SystemExit(
+                          f"❌ CamScanner: cmdsize inválido: {path}"
+                      )
+
+                  if cmd in {0xC, 0x80000018}:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      loads.append(
+                          (
+                              cmd,
+                              raw[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                              timestamp,
+                          )
+                      )
+
+                  elif cmd == 0x8000001C:
+                      path_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + path_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      rpaths.append(
+                          raw[start:end].decode(
+                              "utf-8",
+                              errors="replace",
+                          )
+                      )
+
+                  offset += cmdsize
+
+              return loads, rpaths
+
+          main_loads, main_rpaths = parse_macho(executable)
+
+          positions = []
+          for dep in EXPECTED_LOADS:
+              matches = [
+                  (index, cmd, timestamp)
+                  for index, (cmd, name, timestamp)
+                  in enumerate(main_loads)
+                  if name == dep
+              ]
+
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"❌ CamScanner: load ausente/duplicado: {dep}"
+                  )
+
+              index, cmd, timestamp = matches[0]
+              positions.append(index)
+
+              if cmd != 0x80000018 or timestamp != 0:
+                  raise SystemExit(
+                      f"❌ CamScanner: {dep} não está weak(0): "
+                      f"cmd=0x{cmd:x}, timestamp={timestamp}"
+                  )
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ CamScanner: ordem dos 8 dylibs divergiu da funcional"
+              )
+
+          if "@executable_path/Frameworks" not in main_rpaths:
+              raise SystemExit(
+                  "❌ CamScanner: @executable_path/Frameworks ausente"
+              )
+
+          # A IPA funcional não preserva nenhuma extensão.
+          def count_appex(root_app: Path) -> int:
+              found = set()
+              for base_name in ("PlugIns", "Extensions"):
+                  base = root_app / base_name
+                  if base.is_dir():
+                      for appex in base.rglob("*.appex"):
+                          found.add(appex.resolve())
+              return len(found)
+
+          clean_extension_count = count_appex(input_app)
+          final_extension_count = count_appex(app)
+
+          if clean_extension_count == 0:
+              raise SystemExit(
+                  "❌ CamScanner: a IPA clean usada na validação "
+                  "não contém extensões"
+              )
+
+          if final_extension_count != 0:
+              raise SystemExit(
+                  "❌ CamScanner: extensões permaneceram após "
+                  "remove_extensions=true: "
+                  f"{final_extension_count}"
+              )
+
+          # Os frameworks originais da clean devem continuar presentes.
+          clean_frameworks = input_app / "Frameworks"
+          if clean_frameworks.is_dir():
+              missing_original = []
+              for original in clean_frameworks.iterdir():
+                  if not (frameworks / original.name).exists():
+                      missing_original.append(original.name)
+
+              if missing_original:
+                  raise SystemExit(
+                      "❌ CamScanner: framework(s) original(is) removido(s): "
+                      + ", ".join(sorted(missing_original))
+                  )
+
+          # V5 precisa continuar pendente neste ponto.
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_camscanner_pre",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ CamScanner: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              (frameworks / PATCH_NAME).read_bytes()
+          )
+
+          if candidate.view_did_load.imp == candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ CamScanner: V5 foi aplicado antes do Final.ipa"
+              )
+
+          print(
+              f"✅ CamScanner {info.get('CFBundleShortVersionString', '?')}: "
+              "layout funcional pré-V5 validado"
+          )
+          print(
+              "✅ Principal: 8 dylibs weak(0) na ordem 1:1"
+          )
+          print(
+              f"✅ Extensões removidas: {clean_extension_count} -> 0"
+          )
+          print(
+              "✅ Frameworks originais preservados"
+          )
+          print(
+              "✅ CydiaSubstrate.framework presente"
+          )
+          print(
+              "✅ V5 confirmado como pendente até o Final.ipa"
+          )
+          print(
+              "ℹ️ CamScanner: validação estrutural sem trava de "
+              "versão/hash/offset"
+          )
+
+          shutil.rmtree(work)
+          shutil.rmtree(input_work)
+          PY
+
       - name: Validate Photoleap Unlimited 1:1 layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' }}
         run: |
@@ -9007,6 +9319,247 @@ jobs:
           )
           print(
               f"✅ BoldVoice: bytes alterados pelo V5: "
+              f"{nopopup.get('changed_bytes', 0)}"
+          )
+
+          shutil.rmtree(work)
+          PY
+
+      - name: Validate CamScanner V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.intsig.CamScannerLite' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import plistlib
+          import shutil
+          import struct
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          EXPECTED_DYLIBS = [
+              "NewFix1.dylib",
+              "libpro.dylib",
+              "Sideloadbypass2.dylib",
+              "FixCrash.dylib",
+              "Sideloadbypass1.dylib",
+              "CachefixPatch.dylib",
+              "NewFix2.dylib",
+              "CamScannerPDFScannerAppPatch.dylib",
+          ]
+          EXPECTED_LOADS = [
+              f"@rpath/{name}"
+              for name in EXPECTED_DYLIBS
+          ]
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit(
+                  "❌ CamScanner: status do pós-processamento V5 ausente"
+              )
+
+          status = json.loads(
+              status_path.read_text(encoding="utf-8")
+          )
+
+          if status.get("processing_route") != "private":
+              raise SystemExit(
+                  "❌ CamScanner: Final.ipa não entrou na rota privada V5"
+              )
+
+          nopopup = status.get("nopopup", {})
+          if nopopup.get("status") not in {
+              "applied",
+              "already_applied",
+          }:
+              raise SystemExit(
+                  "❌ CamScanner: V5 não foi aplicado: "
+                  + json.dumps(
+                      nopopup,
+                      ensure_ascii=False,
+                  )
+              )
+
+          work = Path("camscanner_post_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ CamScanner: .app final não identificado após V5"
+              )
+
+          app = apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.intsig.CamScannerLite":
+              raise SystemExit(
+                  "❌ CamScanner: bundle final inesperado após V5"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          executable = app / str(executable_name or "")
+          frameworks = app / "Frameworks"
+          patch = frameworks / "CamScannerPDFScannerAppPatch.dylib"
+
+          if not executable.is_file():
+              raise SystemExit(
+                  "❌ CamScanner: executável final ausente"
+              )
+
+          for name in EXPECTED_DYLIBS:
+              if not (frameworks / name).is_file():
+                  raise SystemExit(
+                      f"❌ CamScanner: componente final ausente: {name}"
+                  )
+
+          if not (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          ).is_file():
+              raise SystemExit(
+                  "❌ CamScanner: CydiaSubstrate.framework ausente após V5"
+              )
+
+          # Extensões precisam continuar totalmente removidas.
+          remaining_appex = []
+          for base_name in ("PlugIns", "Extensions"):
+              base = app / base_name
+              if base.is_dir():
+                  remaining_appex.extend(
+                      str(path.relative_to(app))
+                      for path in base.rglob("*.appex")
+                  )
+
+          if remaining_appex:
+              raise SystemExit(
+                  "❌ CamScanner: extensão(ões) reapareceram após V5: "
+                  + ", ".join(sorted(remaining_appex))
+              )
+
+          # V5 estrutural deve ter sido aplicado ao Patch.
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_camscanner_post",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ CamScanner: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ CamScanner: V5 não redirecionou viewDidLoad"
+              )
+
+          # O pós-processamento V5 não deve alterar a ordem/tipo dos loads.
+          raw = executable.read_bytes()
+          if (
+              len(raw) < 32
+              or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF
+          ):
+              raise SystemExit(
+                  "❌ CamScanner: executável final não é Mach-O arm64 esperado"
+              )
+
+          ncmds = struct.unpack_from("<I", raw, 16)[0]
+          offset = 32
+          loads = []
+
+          for _ in range(ncmds):
+              cmd, cmdsize = struct.unpack_from("<II", raw, offset)
+
+              if cmd in {0xC, 0x80000018}:
+                  name_offset = struct.unpack_from(
+                      "<I",
+                      raw,
+                      offset + 8,
+                  )[0]
+                  timestamp = struct.unpack_from(
+                      "<I",
+                      raw,
+                      offset + 12,
+                  )[0]
+                  start = offset + name_offset
+                  end = raw.find(
+                      b"\0",
+                      start,
+                      offset + cmdsize,
+                  )
+                  if end < 0:
+                      end = offset + cmdsize
+
+                  loads.append(
+                      (
+                          cmd,
+                          raw[start:end].decode(
+                              "utf-8",
+                              errors="replace",
+                          ),
+                          timestamp,
+                      )
+                  )
+
+              offset += cmdsize
+
+          positions = []
+          for dep in EXPECTED_LOADS:
+              matches = [
+                  (index, cmd, timestamp)
+                  for index, (cmd, name, timestamp)
+                  in enumerate(loads)
+                  if name == dep
+              ]
+
+              if len(matches) != 1:
+                  raise SystemExit(
+                      f"❌ CamScanner: load final ausente/duplicado: {dep}"
+                  )
+
+              index, cmd, timestamp = matches[0]
+              positions.append(index)
+
+              if cmd != 0x80000018 or timestamp != 0:
+                  raise SystemExit(
+                      f"❌ CamScanner: load final divergente em {dep}"
+                  )
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ CamScanner: ordem dos dylibs mudou após o V5"
+              )
+
+          print(
+              "✅ CamScanner: rota inicial STANDARD confirmada"
+          )
+          print(
+              "✅ CamScanner: 8 dylibs weak(0) preservados no Final.ipa"
+          )
+          print(
+              "✅ CamScanner: extensões continuam removidas"
+          )
+          print(
+              "✅ CamScanner: V5 aplicado somente no Final.ipa"
+          )
+          print(
+              f"✅ CamScanner: bytes alterados pelo V5: "
               f"{nopopup.get('changed_bytes', 0)}"
           )
 
