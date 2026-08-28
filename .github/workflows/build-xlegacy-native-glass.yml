@@ -1,0 +1,56 @@
+name: Build XLegacyNativeGlass Prototype
+
+on:
+  push:
+    branches:
+      - xlegacy-native-glass
+    paths:
+      - "prototype/XLegacyNativeGlass/XLegacyNativeGlass.m"
+      - ".github/workflows/build-xlegacy-native-glass.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout prototype branch
+        uses: actions/checkout@v4
+        with:
+          ref: xlegacy-native-glass
+
+      - name: Build arm64 iOS dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p prototype/XLegacyNativeGlass/build
+
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -dynamiclib \
+            -fno-objc-arc \
+            -Wl,-dead_strip \
+            -Wl,-install_name,@rpath/XLegacyNativeGlass.dylib \
+            prototype/XLegacyNativeGlass/XLegacyNativeGlass.m \
+            -framework Foundation \
+            -framework UIKit \
+            -lobjc \
+            -o prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+
+          codesign --force --sign - prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+          file prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+          otool -L prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+          lipo -archs prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+          shasum -a 256 prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+
+      - name: Upload prototype artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: XLegacyNativeGlass-prototype
+          path: prototype/XLegacyNativeGlass/build/XLegacyNativeGlass.dylib
+          retention-days: 1
+          if-no-files-found: error
