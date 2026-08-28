@@ -181,7 +181,7 @@ jobs:
           )"
 
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -5195,6 +5195,353 @@ jobs:
           shutil.rmtree(work)
           PY
 
+      - name: Validate BoldVoice structural layout before V5
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.wellocution.iosapp' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.wellocution.iosapp"
+          EXPECTED_DYLIBS = [
+              "NewFix1.dylib",
+              "libpro.dylib",
+              "Sideloadbypass2.dylib",
+              "Sideloadbypass1.dylib",
+              "CachefixPatch.dylib",
+              "NewFix2.dylib",
+              "BoldVoiceAccentTrainingPatch.dylib",
+          ]
+          EXPECTED_LOADS = [
+              f"@rpath/{name}"
+              for name in EXPECTED_DYLIBS
+          ]
+          PATCH_NAME = "BoldVoiceAccentTrainingPatch.dylib"
+
+          work = Path("boldvoice_pre_v5_validate")
+          input_work = Path("boldvoice_input_compare")
+
+          for path in (work, input_work):
+              if path.exists():
+                  shutil.rmtree(path)
+              path.mkdir()
+
+          with zipfile.ZipFile("Layout_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(input_work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          input_apps = list((input_work / "Payload").glob("*.app"))
+
+          if len(apps) != 1 or len(input_apps) != 1:
+              raise SystemExit(
+                  "❌ BoldVoice: .app principal não identificado"
+              )
+
+          app = apps[0]
+          input_app = input_apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ BoldVoice: bundle ID final inesperado"
+              )
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit(
+                  "❌ BoldVoice: CFBundleExecutable ausente"
+              )
+
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+
+          for name in EXPECTED_DYLIBS:
+              path = frameworks / name
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ BoldVoice: dylib obrigatória ausente: {name}"
+                  )
+
+          substrate = (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          )
+          if not substrate.is_file():
+              raise SystemExit(
+                  "❌ BoldVoice: CydiaSubstrate.framework ausente"
+              )
+
+          def dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = []
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+                  marker = " (compatibility version "
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+                  if line.startswith(("/", "@")):
+                      result.append(line)
+              return result
+
+          def parse_macho(path: Path):
+              raw = path.read_bytes()
+              if (
+                  len(raw) < 32
+                  or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF
+              ):
+                  raise SystemExit(
+                      f"❌ BoldVoice: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              loads = []
+              rpaths = []
+
+              for _ in range(ncmds):
+                  if offset + 8 > len(raw):
+                      raise SystemExit(
+                          f"❌ BoldVoice: load command truncado: {path}"
+                      )
+
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmdsize < 8 or offset + cmdsize > len(raw):
+                      raise SystemExit(
+                          f"❌ BoldVoice: cmdsize inválido: {path}"
+                      )
+
+                  if cmd in {
+                      0xC,
+                      0x80000018,
+                  }:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      loads.append(
+                          (
+                              cmd,
+                              raw[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                              timestamp,
+                          )
+                      )
+
+                  elif cmd == 0x8000001C:
+                      path_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + path_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      rpaths.append(
+                          raw[start:end].decode(
+                              "utf-8",
+                              errors="replace",
+                          )
+                      )
+
+                  offset += cmdsize
+
+              return loads, rpaths
+
+          main_deps = dependencies(exe)
+          positions = []
+
+          for dep in EXPECTED_LOADS:
+              if main_deps.count(dep) != 1:
+                  raise SystemExit(
+                      "❌ BoldVoice: load principal ausente/duplicado: "
+                      f"{dep}"
+                  )
+              positions.append(main_deps.index(dep))
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ BoldVoice: ordem dos 7 dylibs divergiu da funcional"
+              )
+
+          main_loads, main_rpaths = parse_macho(exe)
+
+          for dep in EXPECTED_LOADS:
+              matches = [
+                  (cmd, timestamp)
+                  for cmd, name, timestamp in main_loads
+                  if name == dep
+              ]
+              if matches != [
+                  (
+                      0x80000018,
+                      0,
+                  )
+              ]:
+                  raise SystemExit(
+                      f"❌ BoldVoice: load divergente em {dep}: "
+                      f"{matches}; esperado weak(0)"
+                  )
+
+          if "@executable_path/Frameworks" not in main_rpaths:
+              raise SystemExit(
+                  "❌ BoldVoice: rpath Frameworks ausente no principal"
+              )
+
+          # Compara estruturalmente as extensões da clean com a saída:
+          # todas devem ser preservadas e nenhuma recebe os 7 dylibs.
+          def appex_map(root_app: Path) -> dict[str, Path]:
+              result = {}
+              for base_name in ("PlugIns", "Extensions"):
+                  base = root_app / base_name
+                  if not base.is_dir():
+                      continue
+                  for appex in sorted(base.glob("*.appex")):
+                      plist_path = appex / "Info.plist"
+                      if not plist_path.is_file():
+                          continue
+                      with plist_path.open("rb") as f:
+                          ext_info = plistlib.load(f)
+                      bid = str(
+                          ext_info.get("CFBundleIdentifier")
+                          or ""
+                      ).strip()
+                      if bid:
+                          result[bid] = appex
+              return result
+
+          input_exts = appex_map(input_app)
+          output_exts = appex_map(app)
+
+          if set(input_exts) != set(output_exts):
+              raise SystemExit(
+                  "❌ BoldVoice: conjunto de extensões divergiu da clean: "
+                  f"input={sorted(input_exts)} "
+                  f"output={sorted(output_exts)}"
+              )
+
+          if not output_exts:
+              raise SystemExit(
+                  "❌ BoldVoice: nenhuma extensão preservada"
+              )
+
+          for bid, appex in output_exts.items():
+              with (appex / "Info.plist").open("rb") as f:
+                  ext_info = plistlib.load(f)
+
+              ext_exe_name = ext_info.get("CFBundleExecutable")
+              if not ext_exe_name:
+                  raise SystemExit(
+                      f"❌ BoldVoice: executável ausente em {bid}"
+                  )
+
+              ext_exe = appex / ext_exe_name
+              ext_deps = dependencies(ext_exe)
+
+              leaked = [
+                  dep
+                  for dep in EXPECTED_LOADS
+                  if dep in ext_deps
+              ]
+              if leaked:
+                  raise SystemExit(
+                      f"❌ BoldVoice: extensão {bid} recebeu dylib indevida: "
+                      f"{leaked}"
+                  )
+
+          # Confirma que o patch estrutural existe mas ainda não foi aplicado.
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_boldvoice_pre",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ BoldVoice: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              (frameworks / PATCH_NAME).read_bytes()
+          )
+
+          if candidate.view_did_load.imp == candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ BoldVoice: V5 foi aplicado antes do Final.ipa"
+              )
+
+          print(
+              f"✅ BoldVoice {info.get('CFBundleShortVersionString', '?')}: "
+              "layout funcional pré-V5 validado"
+          )
+          print(
+              "✅ Principal: 7 dylibs weak(0) na ordem 1:1"
+          )
+          print(
+              f"✅ {len(output_exts)} extensão(ões) preservada(s), "
+              "sem injeção"
+          )
+          print(
+              "✅ CydiaSubstrate.framework presente"
+          )
+          print(
+              "✅ V5 confirmado como pendente até o Final.ipa"
+          )
+          print(
+              "ℹ️ BoldVoice: validação estrutural sem trava de versão/hash/offset"
+          )
+
+          shutil.rmtree(work)
+          shutil.rmtree(input_work)
+          PY
+
       - name: Validate Photoleap Unlimited 1:1 layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' }}
         run: |
@@ -8488,6 +8835,178 @@ jobs:
           )
           print(
               f"✅ Moovit: bytes alterados pelo V5: "
+              f"{nopopup.get('changed_bytes', 0)}"
+          )
+
+          shutil.rmtree(work)
+          PY
+
+      - name: Validate BoldVoice V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.wellocution.iosapp' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import plistlib
+          import shutil
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          EXPECTED_DYLIBS = [
+              "NewFix1.dylib",
+              "libpro.dylib",
+              "Sideloadbypass2.dylib",
+              "Sideloadbypass1.dylib",
+              "CachefixPatch.dylib",
+              "NewFix2.dylib",
+              "BoldVoiceAccentTrainingPatch.dylib",
+          ]
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit(
+                  "❌ BoldVoice: status do pós-processamento V5 ausente"
+              )
+
+          status = json.loads(
+              status_path.read_text(encoding="utf-8")
+          )
+
+          if status.get("processing_route") != "private":
+              raise SystemExit(
+                  "❌ BoldVoice: Final.ipa não entrou na rota privada V5"
+              )
+
+          nopopup = status.get("nopopup", {})
+          if nopopup.get("status") not in {
+              "applied",
+              "already_applied",
+          }:
+              raise SystemExit(
+                  "❌ BoldVoice: V5 não foi aplicado: "
+                  + json.dumps(
+                      nopopup,
+                      ensure_ascii=False,
+                  )
+              )
+
+          work = Path("boldvoice_post_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ BoldVoice: .app final não identificado após V5"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.wellocution.iosapp":
+              raise SystemExit(
+                  "❌ BoldVoice: bundle final inesperado após V5"
+              )
+
+          frameworks = app / "Frameworks"
+          patch = frameworks / "BoldVoiceAccentTrainingPatch.dylib"
+
+          if not patch.is_file():
+              raise SystemExit(
+                  "❌ BoldVoice: BoldVoiceAccentTrainingPatch.dylib ausente"
+              )
+
+          for name in EXPECTED_DYLIBS:
+              if not (frameworks / name).is_file():
+                  raise SystemExit(
+                      f"❌ BoldVoice: componente final ausente: {name}"
+                  )
+
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_boldvoice_post",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ BoldVoice: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ BoldVoice: V5 não redirecionou viewDidLoad"
+              )
+
+          # Depois do V5, as extensões continuam sem os 7 dylibs.
+          for base_name in ("PlugIns", "Extensions"):
+              base = app / base_name
+              if not base.is_dir():
+                  continue
+
+              for appex in sorted(base.glob("*.appex")):
+                  plist_path = appex / "Info.plist"
+                  if not plist_path.is_file():
+                      continue
+
+                  with plist_path.open("rb") as f:
+                      ext_info = plistlib.load(f)
+
+                  ext_exec_name = ext_info.get("CFBundleExecutable")
+                  if not ext_exec_name:
+                      continue
+
+                  ext_exec = appex / ext_exec_name
+                  if not ext_exec.is_file():
+                      continue
+
+                  proc = subprocess.run(
+                      [Executable.otool, "-L", str(ext_exec)],
+                      capture_output=True,
+                      text=True,
+                      check=True,
+                  )
+
+                  leaked = [
+                      name
+                      for name in EXPECTED_DYLIBS
+                      if name in proc.stdout
+                  ]
+                  if leaked:
+                      raise SystemExit(
+                          f"❌ BoldVoice: {appex.name} recebeu dylib indevida: "
+                          f"{leaked}"
+                      )
+
+          print(
+              "✅ BoldVoice: rota inicial STANDARD confirmada"
+          )
+          print(
+              "✅ BoldVoice: 7 dylibs preservados no Final.ipa"
+          )
+          print(
+              "✅ BoldVoice: V5 aplicado somente no Final.ipa"
+          )
+          print(
+              "✅ BoldVoice: extensões preservadas sem injeção"
+          )
+          print(
+              f"✅ BoldVoice: bytes alterados pelo V5: "
               f"{nopopup.get('changed_bytes', 0)}"
           )
 
