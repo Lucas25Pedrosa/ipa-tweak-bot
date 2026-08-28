@@ -1,0 +1,78 @@
+name: Build XLegacyGlass Prototype
+
+on:
+  push:
+    branches:
+      - xlegacyglass-prototype
+    paths:
+      - "prototype/XLegacyGlass/XLegacyGlass.m"
+      - ".github/workflows/build-xlegacyglass-prototype.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout prototype branch
+        uses: actions/checkout@v4
+        with:
+          ref: xlegacyglass-prototype
+
+      - name: Build arm64 iOS dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Xcode:"
+          xcodebuild -version
+          echo "iPhoneOS SDK: $(xcrun --sdk iphoneos --show-sdk-version)"
+
+          mkdir -p prototype/XLegacyGlass/build
+
+          xcrun --sdk iphoneos clang \
+            -arch arm64 \
+            -miphoneos-version-min=15.0 \
+            -dynamiclib \
+            -fvisibility=hidden \
+            -fno-stack-protector \
+            -Wl,-dead_strip \
+            -Wl,-install_name,@rpath/XLegacyGlass.dylib \
+            prototype/XLegacyGlass/XLegacyGlass.m \
+            -lobjc \
+            -o prototype/XLegacyGlass/build/XLegacyGlass.dylib
+
+          codesign --force --sign - prototype/XLegacyGlass/build/XLegacyGlass.dylib
+
+          file prototype/XLegacyGlass/build/XLegacyGlass.dylib
+          otool -L prototype/XLegacyGlass/build/XLegacyGlass.dylib
+          lipo -archs prototype/XLegacyGlass/build/XLegacyGlass.dylib
+
+      - name: Export dylib as base64
+        shell: bash
+        run: |
+          set -euo pipefail
+          base64 < prototype/XLegacyGlass/build/XLegacyGlass.dylib > prototype/XLegacyGlass/XLegacyGlass.dylib.b64
+          shasum -a 256 prototype/XLegacyGlass/build/XLegacyGlass.dylib > prototype/XLegacyGlass/XLegacyGlass.dylib.sha256
+
+      - name: Commit compiled prototype to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git add prototype/XLegacyGlass/XLegacyGlass.dylib.b64 \
+                  prototype/XLegacyGlass/XLegacyGlass.dylib.sha256
+
+          if git diff --cached --quiet; then
+            echo "Compiled prototype unchanged."
+            exit 0
+          fi
+
+          git commit -m "Build XLegacyGlass prototype dylib"
+          git push origin HEAD:xlegacyglass-prototype
