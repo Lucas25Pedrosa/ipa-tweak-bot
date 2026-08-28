@@ -2132,7 +2132,8 @@ jobs:
           for FILE in "${INJECT_FILES[@]}"; do
             if { [ "${{ steps.prepare.outputs.bundle_id }}" = "com.lightricks.Facetune2" ] \
                  || [ "${{ steps.prepare.outputs.bundle_id }}" = "com.ilovepdf.www" ] \
-                 || [ "${{ steps.prepare.outputs.bundle_id }}" = "com.outerspaceapps.itranslate" ]; } \
+                 || [ "${{ steps.prepare.outputs.bundle_id }}" = "com.outerspaceapps.itranslate" ] \
+                 || [ "${{ steps.prepare.outputs.bundle_id }}" = "com.alohabrowser.alohabrowser" ]; } \
                && [ "$(basename "$FILE")" = "blatantsPatch.dylib" ]; then
               echo "🧩 blatantsPatch será aplicado na segunda etapa, fora do Cyan"
               continue
@@ -2845,6 +2846,493 @@ jobs:
               f"✅ iTranslate: {resigned} framework(s) Mach-O reassinado(s)"
           )
           print("ℹ️ iTranslate: ipapatch não utilizado")
+
+          shutil.rmtree(work)
+          PY
+
+      - name: Aloha - apply structural second-stage patch
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.alohabrowser.alohabrowser' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.alohabrowser.alohabrowser"
+          DEP = "@rpath/blatantsPatch.dylib"
+          EXTRA_RPATH = "@executable_path/../Frameworks"
+
+          work = Path("aloha_second_stage")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Cyan_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Aloha: .app principal não identificado"
+              )
+
+          app = apps[0]
+          info_path = app / "Info.plist"
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ Aloha: bundle ID inesperado"
+              )
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit(
+                  "❌ Aloha: CFBundleExecutable ausente"
+              )
+
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+          entitlements = app / "cyan.entitlements"
+
+          if not exe.is_file():
+              raise SystemExit(
+                  "❌ Aloha: executável principal ausente"
+              )
+          if not frameworks.is_dir():
+              raise SystemExit(
+                  "❌ Aloha: Frameworks ausente"
+              )
+          if not entitlements.is_file():
+              raise SystemExit(
+                  "❌ Aloha: cyan.entitlements ausente"
+              )
+
+          required_first_stage = (
+              frameworks / "CachefixPatch.dylib",
+              frameworks / "AlohaBrowserPrivateVPNPatch.dylib",
+              (
+                  frameworks
+                  / "CydiaSubstrate.framework"
+                  / "CydiaSubstrate"
+              ),
+          )
+          for path in required_first_stage:
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Aloha: primeira etapa incompleta: {path}"
+                  )
+
+          candidates = []
+          for raw in Path("inject_files.txt").read_text().splitlines():
+              raw = raw.strip()
+              if raw and Path(raw).name == "blatantsPatch.dylib":
+                  candidates.append(Path(raw))
+
+          if len(candidates) != 1 or not candidates[0].is_file():
+              raise SystemExit(
+                  "❌ Aloha: blatantsPatch.dylib não localizado"
+              )
+
+          blatant_dst = frameworks / "blatantsPatch.dylib"
+          shutil.copy2(candidates[0], blatant_dst)
+
+          def dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = []
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+                  marker = " (compatibility version "
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+                  if line.startswith(("/", "@")):
+                      result.append(line)
+              return result
+
+          def load_commands(path: Path) -> list[dict]:
+              raw = bytearray(path.read_bytes())
+              if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit(
+                      f"❌ Aloha: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              result = []
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+                  if cmd in {
+                      0xC,
+                      0x80000018,
+                  }:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      name = raw[start:end].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+                      result.append(
+                          {
+                              "cmd": cmd,
+                              "name": name,
+                              "timestamp": timestamp,
+                          }
+                      )
+                  offset += cmdsize
+
+              return result
+
+          def patch_timestamp(
+              path: Path,
+              dependency: str,
+              expected_cmd: int,
+              timestamp: int,
+          ) -> None:
+              raw = bytearray(path.read_bytes())
+              if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit(
+                      f"❌ Aloha: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              found = False
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+                  if cmd == expected_cmd:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      name = raw[start:end].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+                      if name == dependency:
+                          struct.pack_into(
+                              "<I",
+                              raw,
+                              offset + 12,
+                              timestamp,
+                          )
+                          found = True
+                  offset += cmdsize
+
+              if not found:
+                  raise SystemExit(
+                      "❌ Aloha: load command esperado não localizado: "
+                      f"{dependency}"
+                  )
+
+              path.write_bytes(raw)
+
+          def rpaths(path: Path) -> set[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-l", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = set()
+              for raw_line in proc.stdout.splitlines():
+                  line = raw_line.strip()
+                  if not line.startswith("path "):
+                      continue
+                  value = line.split("path ", 1)[1].split(
+                      " (offset",
+                      1,
+                  )[0]
+                  result.add(value)
+              return result
+
+          insert_dylib = Path(Executable.idylib)
+          if not insert_dylib.is_file():
+              raise SystemExit(
+                  f"❌ Aloha: insert_dylib do Cyan ausente: {insert_dylib}"
+              )
+
+          main_before = dependencies(exe)
+          for expected in (
+              "@rpath/CachefixPatch.dylib",
+              "@rpath/AlohaBrowserPrivateVPNPatch.dylib",
+          ):
+              if main_before.count(expected) != 1:
+                  raise SystemExit(
+                      "❌ Aloha: primeira etapa não contém exatamente um "
+                      f"{expected}"
+                  )
+
+          if DEP in main_before:
+              raise SystemExit(
+                  "❌ Aloha: blatant entrou no principal antes da segunda etapa"
+              )
+
+          # A referência funcional usa LC_LOAD_DYLIB normal no blatant
+          # do executável principal, não weak-load.
+          Executable(str(exe)).remove_signature()
+          proc = subprocess.run(
+              [
+                  str(insert_dylib),
+                  "--inplace",
+                  "--all-yes",
+                  DEP,
+                  str(exe),
+              ],
+              capture_output=True,
+              text=True,
+          )
+          if proc.returncode != 0:
+              raise SystemExit(
+                  "❌ Aloha: insert_dylib principal falhou:\n"
+                  + (proc.stderr or proc.stdout or "sem diagnóstico")
+              )
+
+          patch_timestamp(
+              exe,
+              DEP,
+              0xC,
+              2,
+          )
+
+          # Reproduz as cinco extensões do IPA funcional:
+          # blatant normal + timestamp 2 + rpath adicional ../Frameworks.
+          appex_dirs = sorted(
+              [
+                  p
+                  for root in (
+                      app / "PlugIns",
+                      app / "Extensions",
+                  )
+                  for p in root.glob("*.appex")
+                  if p.is_dir()
+              ],
+              key=lambda p: str(p.relative_to(app)),
+          )
+
+          if not appex_dirs:
+              raise SystemExit(
+                  "❌ Aloha: nenhuma extensão original encontrada"
+              )
+
+          for appex in appex_dirs:
+              plist_path = appex / "Info.plist"
+              with plist_path.open("rb") as f:
+                  appex_info = plistlib.load(f)
+
+              appex_bundle = appex_info.get("CFBundleIdentifier")
+              if not appex_bundle:
+                  raise SystemExit(
+                      f"❌ Aloha: bundle ID ausente em {appex.name}"
+                  )
+
+              appex_exe_name = appex_info.get("CFBundleExecutable")
+              if not appex_exe_name:
+                  raise SystemExit(
+                      f"❌ Aloha: CFBundleExecutable ausente em {appex.name}"
+                  )
+
+              appex_exe = appex / appex_exe_name
+              if not appex_exe.is_file():
+                  raise SystemExit(
+                      f"❌ Aloha: executável ausente em {appex.name}"
+                  )
+
+              current = dependencies(appex_exe)
+
+              for forbidden in (
+                  "@rpath/CachefixPatch.dylib",
+                  "@rpath/AlohaBrowserPrivateVPNPatch.dylib",
+              ):
+                  if forbidden in current:
+                      raise SystemExit(
+                          f"❌ Aloha: {appex.name} recebeu dylib indevido: "
+                          f"{forbidden}"
+                      )
+
+              Executable(str(appex_exe)).remove_signature()
+
+              current_rpaths = rpaths(appex_exe)
+              if EXTRA_RPATH not in current_rpaths:
+                  add_rpath = subprocess.run(
+                      [
+                          Executable.nt,
+                          "-add_rpath",
+                          EXTRA_RPATH,
+                          str(appex_exe),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if add_rpath.returncode != 0:
+                      raise SystemExit(
+                          f"❌ Aloha: falha ao adicionar rpath em {appex.name}: "
+                          + (
+                              add_rpath.stderr
+                              or add_rpath.stdout
+                              or "sem diagnóstico"
+                          )
+                      )
+
+              current = dependencies(appex_exe)
+              if DEP not in current:
+                  inject = subprocess.run(
+                      [
+                          str(insert_dylib),
+                          "--inplace",
+                          "--all-yes",
+                          DEP,
+                          str(appex_exe),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+                  if inject.returncode != 0:
+                      raise SystemExit(
+                          f"❌ Aloha: insert_dylib falhou em {appex.name}:\n"
+                          + (
+                              inject.stderr
+                              or inject.stdout
+                              or "sem diagnóstico"
+                          )
+                      )
+
+              patch_timestamp(
+                  appex_exe,
+                  DEP,
+                  0xC,
+                  2,
+              )
+
+              subprocess.run(
+                  [
+                      Executable.ldid,
+                      "-S",
+                      "-M",
+                      str(appex_exe),
+                  ],
+                  check=True,
+              )
+
+          zero_requirements = (
+              Path(Executable.install_dir)
+              / "extras"
+              / "zero.requirements"
+          )
+          sign_args = [
+              Executable.ldid,
+              f"-S{entitlements}",
+              "-M",
+              "-Cadhoc",
+          ]
+          if zero_requirements.is_file():
+              sign_args.append(
+                  f"-Q{zero_requirements}"
+              )
+          sign_args.append(str(exe))
+          subprocess.run(sign_args, check=True)
+
+          main_after = dependencies(exe)
+          expected_order = [
+              "@rpath/CachefixPatch.dylib",
+              "@rpath/AlohaBrowserPrivateVPNPatch.dylib",
+              DEP,
+          ]
+          positions = []
+          for expected in expected_order:
+              if main_after.count(expected) != 1:
+                  raise SystemExit(
+                      "❌ Aloha: load principal ausente/duplicado: "
+                      f"{expected}"
+                  )
+              positions.append(main_after.index(expected))
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Aloha: ordem dos dylibs divergiu da referência "
+                  "(CachefixPatch → AlohaBrowserPrivateVPNPatch → blatant)"
+              )
+
+          output = Path("Cyan_Output.ipa")
+          output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
+
+          print(
+              "✅ Aloha: CachefixPatch → "
+              "AlohaBrowserPrivateVPNPatch → blatant"
+          )
+          print(
+              "✅ Aloha: blatant principal em LC_LOAD_DYLIB timestamp 2"
+          )
+          print(
+              f"✅ Aloha: {len(appex_dirs)} extensão(ões) preservada(s) "
+              "com blatant normal(2)"
+          )
+          print(
+              "✅ Aloha: rpath ../Frameworks reproduzido nas extensões"
+          )
+          print(
+              "✅ Aloha: CydiaSubstrate fornecido pelo Cyan"
+          )
+          print(
+              "ℹ️ Aloha: V5 ainda NÃO aplicado; será executado no Final.ipa"
+          )
 
           shutil.rmtree(work)
           PY
@@ -4307,6 +4795,364 @@ jobs:
           )
           print(
               "✅ Sem zxPluginsInject / IPA Patch"
+          )
+
+          shutil.rmtree(work)
+          PY
+
+      - name: Validate Aloha structural layout before V5
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.alohabrowser.alohabrowser' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import plistlib
+          import sys
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.alohabrowser.alohabrowser"
+          DEP = "@rpath/blatantsPatch.dylib"
+          work = Path("aloha_pre_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Layout_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Aloha: .app final não identificado"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ Aloha: bundle ID final inesperado"
+              )
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit(
+                  "❌ Aloha: CFBundleExecutable ausente"
+              )
+
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+
+          required = (
+              frameworks / "CachefixPatch.dylib",
+              frameworks / "AlohaBrowserPrivateVPNPatch.dylib",
+              frameworks / "blatantsPatch.dylib",
+              (
+                  frameworks
+                  / "CydiaSubstrate.framework"
+                  / "CydiaSubstrate"
+              ),
+          )
+          for path in required:
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Aloha: componente obrigatório ausente: {path}"
+                  )
+
+          def dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = []
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+                  marker = " (compatibility version "
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+                  if line.startswith(("/", "@")):
+                      result.append(line)
+              return result
+
+          def parse_macho(path: Path):
+              raw = path.read_bytes()
+              if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit(
+                      f"❌ Aloha: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              loads = []
+              rpaths = []
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmd in {
+                      0xC,
+                      0x80000018,
+                  }:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      loads.append(
+                          (
+                              cmd,
+                              raw[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                              timestamp,
+                          )
+                      )
+
+                  elif cmd == 0x8000001C:
+                      path_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + path_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      rpaths.append(
+                          raw[start:end].decode(
+                              "utf-8",
+                              errors="replace",
+                          )
+                      )
+
+                  offset += cmdsize
+
+              return loads, rpaths
+
+          main_deps = dependencies(exe)
+          expected_order = [
+              "@rpath/CachefixPatch.dylib",
+              "@rpath/AlohaBrowserPrivateVPNPatch.dylib",
+              DEP,
+          ]
+          positions = []
+          for dep in expected_order:
+              if main_deps.count(dep) != 1:
+                  raise SystemExit(
+                      "❌ Aloha: load principal ausente/duplicado: "
+                      f"{dep}"
+                  )
+              positions.append(main_deps.index(dep))
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Aloha: ordem principal incorreta "
+                  "(CachefixPatch → AlohaBrowserPrivateVPNPatch → blatant)"
+              )
+
+          main_loads, main_rpaths = parse_macho(exe)
+          expected_main_loads = {
+              "@rpath/CachefixPatch.dylib": (
+                  0x80000018,
+                  0,
+              ),
+              "@rpath/AlohaBrowserPrivateVPNPatch.dylib": (
+                  0x80000018,
+                  0,
+              ),
+              DEP: (
+                  0xC,
+                  2,
+              ),
+          }
+
+          for dep, expected in expected_main_loads.items():
+              matches = [
+                  (cmd, timestamp)
+                  for cmd, name, timestamp in main_loads
+                  if name == dep
+              ]
+              if matches != [expected]:
+                  raise SystemExit(
+                      f"❌ Aloha: load principal divergente em {dep}: "
+                      f"{matches}; esperado {[expected]}"
+                  )
+
+          if "@executable_path/Frameworks" not in main_rpaths:
+              raise SystemExit(
+                  "❌ Aloha: rpath Frameworks ausente no principal"
+              )
+
+          cachefix_deps = dependencies(
+              frameworks / "CachefixPatch.dylib"
+          )
+          substrate_dep = (
+              "@rpath/CydiaSubstrate.framework/"
+              "CydiaSubstrate"
+          )
+          if substrate_dep not in cachefix_deps:
+              raise SystemExit(
+                  "❌ Aloha: CachefixPatch perdeu a dependência "
+                  "do CydiaSubstrate"
+              )
+
+          appex_dirs = sorted(
+              [
+                  p
+                  for root in (
+                      app / "PlugIns",
+                      app / "Extensions",
+                  )
+                  for p in root.glob("*.appex")
+                  if p.is_dir()
+              ],
+              key=lambda p: str(p.relative_to(app)),
+          )
+
+          if not appex_dirs:
+              raise SystemExit(
+                  "❌ Aloha: nenhuma extensão preservada"
+              )
+
+          expected_rpaths = {
+              "/usr/lib/swift",
+              "@executable_path/Frameworks",
+              "@executable_path/../../Frameworks",
+              "@executable_path/../Frameworks",
+          }
+
+          for appex in appex_dirs:
+              with (appex / "Info.plist").open("rb") as f:
+                  appex_info = plistlib.load(f)
+
+              bundle_id = appex_info.get("CFBundleIdentifier")
+              if not bundle_id:
+                  raise SystemExit(
+                      f"❌ Aloha: bundle ID ausente em {appex.name}"
+                  )
+
+              appex_exe_name = appex_info.get("CFBundleExecutable")
+              if not appex_exe_name:
+                  raise SystemExit(
+                      f"❌ Aloha: CFBundleExecutable ausente em {appex.name}"
+                  )
+
+              appex_exe = appex / appex_exe_name
+              appex_deps = dependencies(appex_exe)
+
+              if appex_deps.count(DEP) != 1:
+                  raise SystemExit(
+                      f"❌ Aloha: {appex.name} sem exatamente um blatant"
+                  )
+
+              for forbidden in (
+                  "@rpath/CachefixPatch.dylib",
+                  "@rpath/AlohaBrowserPrivateVPNPatch.dylib",
+              ):
+                  if forbidden in appex_deps:
+                      raise SystemExit(
+                          f"❌ Aloha: {appex.name} recebeu dylib indevido: "
+                          f"{forbidden}"
+                      )
+
+              loads, appex_rpaths = parse_macho(appex_exe)
+              blatant_matches = [
+                  (cmd, timestamp)
+                  for cmd, name, timestamp in loads
+                  if name == DEP
+              ]
+              if blatant_matches != [
+                  (
+                      0xC,
+                      2,
+                  )
+              ]:
+                  raise SystemExit(
+                      f"❌ Aloha: blatant de {appex.name} divergiu: "
+                      f"{blatant_matches}"
+                  )
+
+              missing_rpaths = expected_rpaths.difference(
+                  set(appex_rpaths)
+              )
+              if missing_rpaths:
+                  raise SystemExit(
+                      f"❌ Aloha: rpath(s) ausente(s) em {appex.name}: "
+                      f"{sorted(missing_rpaths)}"
+                  )
+
+          # Garante que a dylib ainda está no estado pré-V5.
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ Aloha: não foi possível carregar postprocess.py"
+              )
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              (
+                  frameworks
+                  / "AlohaBrowserPrivateVPNPatch.dylib"
+              ).read_bytes()
+          )
+
+          if candidate.view_did_load.imp == candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ Aloha: V5 foi aplicado antes da hora"
+              )
+
+          print(
+              f"✅ Aloha {info.get('CFBundleShortVersionString', '?')}: "
+              "layout funcional pré-V5 validado"
+          )
+          print(
+              "✅ Principal: CachefixPatch weak(0) → "
+              "AlohaBrowserPrivateVPNPatch weak(0) → blatant normal(2)"
+          )
+          print(
+              f"✅ {len(appex_dirs)} extensão(ões) preservada(s) "
+              "com blatant normal(2)"
+          )
+          print(
+              "✅ V5 confirmado como pendente até o Final.ipa"
+          )
+          print(
+              "ℹ️ Aloha: validação estrutural sem trava de versão/hash/offset"
           )
 
           shutil.rmtree(work)
@@ -7355,6 +8201,114 @@ jobs:
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
+
+      - name: Validate Aloha V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.alohabrowser.alohabrowser' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import sys
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit(
+                  "❌ Aloha: status do pós-processamento V5 ausente"
+              )
+
+          status = json.loads(
+              status_path.read_text(encoding="utf-8")
+          )
+
+          if status.get("processing_route") != "private":
+              raise SystemExit(
+                  "❌ Aloha: Final.ipa não entrou na rota privada V5"
+              )
+
+          nopopup = status.get("nopopup", {})
+          if nopopup.get("status") not in {
+              "applied",
+              "already_applied",
+          }:
+              raise SystemExit(
+                  "❌ Aloha: V5 não foi aplicado: "
+                  + json.dumps(
+                      nopopup,
+                      ensure_ascii=False,
+                  )
+              )
+
+          work = Path("aloha_post_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Aloha: .app final não identificado após V5"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.alohabrowser.alohabrowser":
+              raise SystemExit(
+                  "❌ Aloha: bundle final inesperado após V5"
+              )
+
+          patch = (
+              app
+              / "Frameworks"
+              / "AlohaBrowserPrivateVPNPatch.dylib"
+          )
+          if not patch.is_file():
+              raise SystemExit(
+                  "❌ Aloha: dylib V5 ausente no Final.ipa"
+              )
+
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ Aloha: não foi possível carregar postprocess.py"
+              )
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ Aloha: V5 não redirecionou viewDidLoad"
+              )
+
+          print(
+              "✅ Aloha: injeção 1:1 concluída antes do V5"
+          )
+          print(
+              "✅ Aloha: V5 aplicado somente no Final.ipa"
+          )
+          print(
+              f"✅ Aloha: bytes alterados pelo V5: "
+              f"{nopopup.get('changed_bytes', 0)}"
+          )
+
+          shutil.rmtree(work)
+          PY
 
       - name: Validate final IPA
         run: |
