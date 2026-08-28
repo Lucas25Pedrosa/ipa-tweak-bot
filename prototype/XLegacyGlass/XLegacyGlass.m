@@ -5,6 +5,7 @@
 // XLegacyGlass prototype for X 12.21.
 // Goal: reproduce the X 12.20 separation between global Liquid Glass
 // and the internal redesign/navigation bootstrap introduced in 12.21.
+// Build revision: 2.
 
 static _Atomic int gRootBuildDepth = 0;
 static _Atomic bool gRootReady = false;
