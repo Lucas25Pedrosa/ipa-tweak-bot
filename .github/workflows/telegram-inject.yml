@@ -2130,9 +2130,10 @@ jobs:
 
           CYAN_INJECT_FILES=()
           for FILE in "${INJECT_FILES[@]}"; do
-            if [ "${{ steps.prepare.outputs.bundle_id }}" = "com.lightricks.Facetune2" ] \
+            if { [ "${{ steps.prepare.outputs.bundle_id }}" = "com.lightricks.Facetune2" ] \
+                 || [ "${{ steps.prepare.outputs.bundle_id }}" = "com.ilovepdf.www" ]; } \
                && [ "$(basename "$FILE")" = "blatantsPatch.dylib" ]; then
-              echo "🧩 Facetune: blatantsPatch será aplicado na segunda etapa, fora do Cyan"
+              echo "🧩 blatantsPatch será aplicado na segunda etapa, fora do Cyan"
               continue
             fi
             CYAN_INJECT_FILES+=("$FILE")
@@ -2378,6 +2379,228 @@ jobs:
           print(
               "ℹ️ Facetune: nenhum perfil exato de versão foi utilizado"
           )
+
+          shutil.rmtree(work)
+          PY
+
+      - name: iLovePDF - apply structural second-stage patch
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.ilovepdf.www"
+          DEP = "@rpath/blatantsPatch.dylib"
+
+          work = Path("ilovepdf_second_stage")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Cyan_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit("❌ iLovePDF: .app principal não identificado")
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit("❌ iLovePDF: bundle ID inesperado")
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit("❌ iLovePDF: CFBundleExecutable ausente")
+
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+          entitlements = app / "cyan.entitlements"
+
+          if not exe.is_file():
+              raise SystemExit("❌ iLovePDF: executável principal ausente")
+          if not frameworks.is_dir():
+              raise SystemExit("❌ iLovePDF: Frameworks ausente")
+          if not entitlements.is_file():
+              raise SystemExit("❌ iLovePDF: cyan.entitlements ausente")
+
+          required_first_stage = [
+              frameworks / "FilePickerFix.dylib",
+              frameworks / "iLovePDF.dylib",
+          ]
+          for path in required_first_stage:
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ iLovePDF: primeira etapa incompleta: {path.name}"
+                  )
+
+          candidates = []
+          for raw in Path("inject_files.txt").read_text().splitlines():
+              raw = raw.strip()
+              if raw and Path(raw).name == "blatantsPatch.dylib":
+                  candidates.append(Path(raw))
+
+          if len(candidates) != 1 or not candidates[0].is_file():
+              raise SystemExit("❌ iLovePDF: blatantsPatch.dylib não localizado")
+
+          blatant_dst = frameworks / "blatantsPatch.dylib"
+          shutil.copy2(candidates[0], blatant_dst)
+
+          before = subprocess.run(
+              [Executable.otool, "-L", str(exe)],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout
+
+          if DEP in before:
+              raise SystemExit(
+                  "❌ iLovePDF: blatant já estava no executável antes da segunda etapa"
+              )
+
+          insert_dylib = Path(Executable.idylib)
+          if not insert_dylib.is_file():
+              raise SystemExit(
+                  f"❌ iLovePDF: insert_dylib do Cyan ausente: {insert_dylib}"
+              )
+
+          Executable(str(exe)).remove_signature()
+
+          proc = subprocess.run(
+              [
+                  str(insert_dylib),
+                  "--weak",
+                  "--inplace",
+                  "--all-yes",
+                  DEP,
+                  str(exe),
+              ],
+              capture_output=True,
+              text=True,
+          )
+          if proc.returncode != 0:
+              raise SystemExit(
+                  "❌ iLovePDF: insert_dylib falhou:\n"
+                  + (proc.stderr or proc.stdout or "sem diagnóstico")
+              )
+
+          # A rota funcional usa timestamp 2 no blatant da segunda etapa.
+          raw = bytearray(exe.read_bytes())
+          if struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+              raise SystemExit("❌ iLovePDF: Mach-O principal inesperado")
+
+          ncmds = struct.unpack_from("<I", raw, 16)[0]
+          offset = 32
+          found = False
+
+          for _ in range(ncmds):
+              cmd, cmdsize = struct.unpack_from("<II", raw, offset)
+              if cmd == 0x80000018:
+                  name_off = struct.unpack_from("<I", raw, offset + 8)[0]
+                  start = offset + name_off
+                  end = raw.find(b"\0", start, offset + cmdsize)
+                  if end < 0:
+                      end = offset + cmdsize
+                  name = raw[start:end].decode("utf-8", errors="replace")
+                  if name == DEP:
+                      struct.pack_into("<I", raw, offset + 12, 2)
+                      found = True
+              offset += cmdsize
+
+          if not found:
+              raise SystemExit("❌ iLovePDF: load command do blatant não localizado")
+
+          exe.write_bytes(raw)
+
+          # O audit 4.0.4 mostrou que todos os frameworks Mach-O do app
+          # passam por reassinatura. Fazemos isso por descoberta, sem perfil
+          # de versão, para manter a rota compatível com atualizações.
+          resigned = 0
+          for framework in sorted(frameworks.glob("*.framework")):
+              plist_path = framework / "Info.plist"
+              executable_name = framework.stem
+
+              if plist_path.is_file():
+                  try:
+                      with plist_path.open("rb") as f:
+                          framework_info = plistlib.load(f)
+                      executable_name = (
+                          framework_info.get("CFBundleExecutable")
+                          or executable_name
+                      )
+                  except Exception:
+                      pass
+
+              binary = framework / executable_name
+              if not binary.is_file():
+                  continue
+
+              magic = binary.read_bytes()[:4]
+              if magic not in {
+                  b"\xcf\xfa\xed\xfe",
+                  b"\xca\xfe\xba\xbe",
+                  b"\xbe\xba\xfe\xca",
+              }:
+                  continue
+
+              subprocess.run(
+                  [Executable.ldid, "-S", "-M", str(binary)],
+                  check=True,
+              )
+              resigned += 1
+
+          zero_requirements = (
+              Path(Executable.install_dir)
+              / "extras"
+              / "zero.requirements"
+          )
+
+          sign_args = [
+              Executable.ldid,
+              f"-S{entitlements}",
+              "-M",
+              "-Cadhoc",
+          ]
+          if zero_requirements.is_file():
+              sign_args.append(f"-Q{zero_requirements}")
+          sign_args.append(str(exe))
+
+          subprocess.run(sign_args, check=True)
+
+          after = subprocess.run(
+              [Executable.otool, "-L", str(exe)],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout
+          if DEP not in after:
+              raise SystemExit("❌ iLovePDF: blatant não persistiu no executável")
+
+          output = Path("Cyan_Output.ipa")
+          output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(file, file.relative_to(work))
+
+          print("✅ iLovePDF: blatant aplicado na segunda etapa")
+          print("✅ iLovePDF: timestamp 2 aplicado no load do blatant")
+          print(f"✅ iLovePDF: {resigned} framework(s) Mach-O reassinado(s)")
+          print("ℹ️ iLovePDF: rota estrutural sem trava de versão")
 
           shutil.rmtree(work)
           PY
@@ -3010,12 +3233,13 @@ jobs:
           shutil.rmtree(work)
           PY
 
-      - name: Documents / PDF Expert / Duolingo / InShot / Picsart / Media Converter / Photoleap - inject blatantsPatch into extensions
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor') }}
+      - name: Documents / PDF Expert / Duolingo / InShot / Picsart / Media Converter / Photoleap / iLovePDF - inject blatantsPatch into extensions
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www') }}
         run: |
           python <<'PY'
           import plistlib
           import shutil
+          import struct
           import subprocess
           import zipfile
           from pathlib import Path
@@ -3076,6 +3300,14 @@ jobs:
                   "required_paths": (
                       "Frameworks/sideloadKeychainfix.dylib",
                       "Frameworks/Photoleap.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
+              },
+              "com.ilovepdf.www": {
+                  "name": "iLovePDF",
+                  "required_paths": (
+                      "Frameworks/FilePickerFix.dylib",
+                      "Frameworks/iLovePDF.dylib",
                       "Frameworks/blatantsPatch.dylib",
                   ),
               },
@@ -3291,6 +3523,60 @@ jobs:
                       f"{appex.name}: {expected_load}"
                   )
 
+              if bundle_id == "com.ilovepdf.www":
+                  raw_binary = bytearray(executable_path.read_bytes())
+                  if struct.unpack_from("<I", raw_binary, 0)[0] != 0xFEEDFACF:
+                      raise SystemExit(
+                          f"❌ iLovePDF: Mach-O inesperado em {appex.name}"
+                      )
+
+                  ncmds = struct.unpack_from("<I", raw_binary, 16)[0]
+                  cmd_offset = 32
+                  timestamp_patched = False
+
+                  for _ in range(ncmds):
+                      cmd, cmdsize = struct.unpack_from(
+                          "<II",
+                          raw_binary,
+                          cmd_offset,
+                      )
+                      if cmd == 0x80000018:
+                          name_offset = struct.unpack_from(
+                              "<I",
+                              raw_binary,
+                              cmd_offset + 8,
+                          )[0]
+                          string_start = cmd_offset + name_offset
+                          string_end = raw_binary.find(
+                              b"\0",
+                              string_start,
+                              cmd_offset + cmdsize,
+                          )
+                          if string_end < 0:
+                              string_end = cmd_offset + cmdsize
+
+                          dylib_name = raw_binary[
+                              string_start:string_end
+                          ].decode("utf-8", errors="replace")
+
+                          if dylib_name == expected_load:
+                              struct.pack_into(
+                                  "<I",
+                                  raw_binary,
+                                  cmd_offset + 12,
+                                  2,
+                              )
+                              timestamp_patched = True
+
+                      cmd_offset += cmdsize
+
+                  if not timestamp_patched:
+                      raise SystemExit(
+                          f"❌ iLovePDF: timestamp do blatant não localizado em {appex.name}"
+                      )
+
+                  executable_path.write_bytes(raw_binary)
+
               if not has_shared_rpath(executable_path):
                   raise SystemExit(
                       "❌ RPATH compartilhado não persistiu em "
@@ -3337,6 +3623,173 @@ jobs:
           print(
               f"ℹ️ Já configuradas: {already_patched}"
           )
+          PY
+
+      - name: Validate iLovePDF structural layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("ilovepdf_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Layout_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit("❌ iLovePDF: .app final não identificado")
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.ilovepdf.www":
+              raise SystemExit("❌ iLovePDF: bundle ID final inesperado")
+
+          exe_name = info.get("CFBundleExecutable")
+          if not exe_name:
+              raise SystemExit("❌ iLovePDF: CFBundleExecutable ausente")
+
+          exe = app / exe_name
+          frameworks = app / "Frameworks"
+
+          for name in (
+              "FilePickerFix.dylib",
+              "iLovePDF.dylib",
+              "blatantsPatch.dylib",
+          ):
+              if not (frameworks / name).is_file():
+                  raise SystemExit(
+                      f"❌ iLovePDF: Frameworks/{name} ausente"
+                  )
+
+          def deps(path):
+              proc = subprocess.run(
+                  [Executable.otool, "-L", str(path)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = []
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+                  marker = " (compatibility version "
+                  if marker in line:
+                      line = line.split(marker, 1)[0]
+                  if line.startswith(("/", "@")):
+                      result.append(line)
+              return result
+
+          main_expected = [
+              "@rpath/FilePickerFix.dylib",
+              "@rpath/iLovePDF.dylib",
+              "@rpath/blatantsPatch.dylib",
+          ]
+          main_deps = deps(exe)
+
+          positions = []
+          for dep in main_expected:
+              if main_deps.count(dep) != 1:
+                  raise SystemExit(
+                      f"❌ iLovePDF: load principal ausente/duplicado: {dep}"
+                  )
+              positions.append(main_deps.index(dep))
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ iLovePDF: ordem principal incorreta "
+                  "(FilePickerFix → iLovePDF → blatant)"
+              )
+
+          load_text = subprocess.run(
+              [Executable.otool, "-l", str(exe)],
+              capture_output=True,
+              text=True,
+              check=True,
+          ).stdout
+
+          for dep in main_expected:
+              pos = load_text.find(dep)
+              if pos < 0:
+                  raise SystemExit(f"❌ iLovePDF: load não encontrado: {dep}")
+              prefix = load_text[max(0, pos - 500):pos]
+              if "cmd LC_LOAD_WEAK_DYLIB" not in prefix:
+                  raise SystemExit(f"❌ iLovePDF: {dep} não é weak-load")
+
+          blatant_pos = load_text.find("name @rpath/blatantsPatch.dylib")
+          blatant_near = load_text[blatant_pos:blatant_pos + 300]
+          if "time stamp 2" not in blatant_near:
+              raise SystemExit(
+                  "❌ iLovePDF: blatant principal não está com timestamp 2"
+              )
+
+          appex_dirs = sorted(
+              [
+                  p
+                  for root in (app / "PlugIns", app / "Extensions")
+                  for p in root.glob("*.appex")
+                  if p.is_dir()
+              ],
+              key=lambda p: str(p.relative_to(app)),
+          )
+          if not appex_dirs:
+              raise SystemExit("❌ iLovePDF: nenhuma extensão preservada")
+
+          shared_rpath = "@executable_path/../../Frameworks"
+
+          for appex in appex_dirs:
+              with (appex / "Info.plist").open("rb") as f:
+                  extension_info = plistlib.load(f)
+
+              extension_exe = appex / extension_info["CFBundleExecutable"]
+              extension_deps = deps(extension_exe)
+
+              if extension_deps.count("@rpath/blatantsPatch.dylib") != 1:
+                  raise SystemExit(
+                      f"❌ iLovePDF: blatant ausente/duplicado em {appex.name}"
+                  )
+
+              extension_load = subprocess.run(
+                  [Executable.otool, "-l", str(extension_exe)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              ).stdout
+
+              if f"path {shared_rpath} " not in extension_load:
+                  raise SystemExit(
+                      f"❌ iLovePDF: rpath compartilhado ausente em {appex.name}"
+                  )
+
+              marker_pos = extension_load.find(
+                  "name @rpath/blatantsPatch.dylib"
+              )
+              nearby = extension_load[marker_pos:marker_pos + 300]
+              if "time stamp 2" not in nearby:
+                  raise SystemExit(
+                      f"❌ iLovePDF: blatant sem timestamp 2 em {appex.name}"
+                  )
+
+          print(
+              f"✅ iLovePDF {info.get('CFBundleShortVersionString', '?')}: "
+              "rota estrutural validada"
+          )
+          print("✅ Principal: FilePickerFix → iLovePDF → blatant")
+          print(f"✅ Extensões preservadas e patchadas: {len(appex_dirs)}")
+          print("✅ blatant timestamp 2 no principal e extensões")
+          print("ℹ️ Sem trava de versão, hash, offset ou tamanho")
+
+          shutil.rmtree(work)
           PY
 
       - name: Validate Photoleap Unlimited 1:1 layout
