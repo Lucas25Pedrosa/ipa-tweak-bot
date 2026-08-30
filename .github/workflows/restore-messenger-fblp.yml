@@ -27,7 +27,6 @@ jobs:
           path = Path('.github/workflows/telegram-inject.yml')
           text = path.read_text(encoding='utf-8')
           old = Path('/tmp/old-telegram-inject.yml').read_text(encoding='utf-8')
-
           sep = '      # =========================================================\n'
 
           def get_section(src, title, next_title):
@@ -39,7 +38,6 @@ jobs:
               b = src.index(next_token, a)
               return src[a:b]
 
-          # Activate private core: restore only translation helper copy.
           copy_line = '          cp private-core/telegram_messenger_translation.py ./telegram_messenger_translation.py\n'
           download_line = '          cp private-core/telegram_download.py ./telegram_download.py\n'
           if copy_line not in text:
@@ -47,7 +45,6 @@ jobs:
                   raise SystemExit('telegram_download copy anchor missing')
               text = text.replace(download_line, download_line + copy_line, 1)
 
-          # Restore section 3A exactly from the last known working FBLP workflow.
           old_3a = get_section(old, '3A. MESSENGER - PREPARAR TRADUÇÃO PT-BR', '4. IPAPATCH')
           marker4 = sep + '      # 4. IPAPATCH\n' + sep
           if '      # 3A. MESSENGER - PREPARAR TRADUÇÃO PT-BR\n' not in text:
@@ -55,11 +52,8 @@ jobs:
                   raise SystemExit('section 4 marker missing in current workflow')
               text = text.replace(marker4, old_3a + marker4, 1)
 
-          # Restore only section 11A; leave every other current section untouched.
           old_11a = get_section(old, '11A. MESSENGER - EMBUTIR TRADUÇÃO PT-BR', '12. VALIDAÇÃO')
-          current_11a_re = re.compile(
-              re.escape(sep) + r'      # 11A\. MESSENGER - [^\n]+\n' + re.escape(sep)
-          )
+          current_11a_re = re.compile(re.escape(sep) + r'      # 11A\. MESSENGER - [^\n]+\n' + re.escape(sep))
           m = current_11a_re.search(text)
           marker12 = sep + '      # 12. VALIDAÇÃO\n' + sep
           if not m or marker12 not in text[m.start():]:
@@ -67,18 +61,13 @@ jobs:
           end_11a = text.index(marker12, m.start())
           text = text[:m.start()] + old_11a + text[end_11a:]
 
-          # Add only the FBLP validation block back into the CURRENT validator,
-          # preserving all newer Messenger/zx validations around it.
           old_v_start = old.index('      - name: Validate Messenger MSGPlusX + pt-BR layout\n')
           old_comment = '          # As extensões devem receber somente o shim do IPA Patch.\n'
           old_pack_start = old.index('          primary_pack = (\n', old_v_start)
           old_pack_end = old.index(old_comment, old_pack_start)
           fblp_validation = old[old_pack_start:old_pack_end]
 
-          current_match = re.search(
-              r'      - name: Validate Messenger MSGPlusX[^\n]*\n',
-              text,
-          )
+          current_match = re.search(r'      - name: Validate Messenger MSGPlusX[^\n]*\n', text)
           if not current_match:
               raise SystemExit('current Messenger validator not found')
           v_start = current_match.start()
@@ -110,17 +99,21 @@ jobs:
                   raise SystemExit('extension validation anchor missing')
               validator = validator.replace(old_comment, fblp_validation + old_comment, 1)
 
-          native_msg = '''          print(
-              "✅ Sem tradução FBLP customizada no fluxo"
-          )
-'''
-          fblp_msgs = '''          print(
-              "✅ FBLP pt-BR e manifest validados"
-          )
-          print(
-              "✅ Versão/build da tradução correspondem ao IPA"
-          )
-'''
+          native_msg = '\n'.join([
+              '          print(',
+              '              "✅ Sem tradução FBLP customizada no fluxo"',
+              '          )',
+              '',
+          ])
+          fblp_msgs = '\n'.join([
+              '          print(',
+              '              "✅ FBLP pt-BR e manifest validados"',
+              '          )',
+              '          print(',
+              '              "✅ Versão/build da tradução correspondem ao IPA"',
+              '          )',
+              '',
+          ])
           if native_msg in validator:
               validator = validator.replace(native_msg, fblp_msgs, 1)
           elif '✅ FBLP pt-BR e manifest validados' not in validator:
@@ -140,7 +133,6 @@ jobs:
           missing = [token for token in required if token not in text]
           if missing:
               raise SystemExit('restoration incomplete: ' + ', '.join(missing))
-
           if text.count(copy_line) != 1:
               raise SystemExit('translation helper copy duplicated')
 
@@ -154,7 +146,6 @@ jobs:
           yaml.safe_load(Path('.github/workflows/telegram-inject.yml').read_text(encoding='utf-8'))
           print('YAML OK')
           PY
-
           git diff --check -- .github/workflows/telegram-inject.yml
           git diff --stat -- .github/workflows/telegram-inject.yml
 
