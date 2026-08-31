@@ -81,7 +81,6 @@ jobs:
           cp -a private-core/translations ./translations
 
           cp private-core/telegram_download.py ./telegram_download.py
-          cp private-core/telegram_messenger_translation.py ./telegram_messenger_translation.py
           cp private-core/telegram_send.py ./telegram_send.py
           cp private-core/feather_package_transport.py ./feather_package_transport.py
 
@@ -511,25 +510,15 @@ jobs:
 
 
           def main():
-              status_text = None
-              percent = None
+              if len(sys.argv) != 2:
+                  raise SystemExit("Uso: .update_injection_progress.py <percentual>")
 
-              if len(sys.argv) == 3 and sys.argv[1] == "--status":
-                  status_text = sys.argv[2].strip()
-                  if not status_text:
-                      raise SystemExit("Status vazio")
-              elif len(sys.argv) == 2:
-                  try:
-                      percent = float(sys.argv[1])
-                  except ValueError:
-                      raise SystemExit("Percentual inválido")
-                  percent = max(0.0, min(100.0, percent))
-              else:
-                  raise SystemExit(
-                      "Uso: .update_injection_progress.py <percentual> "
-                      'ou --status "<texto>"'
-                  )
+              try:
+                  percent = float(sys.argv[1])
+              except ValueError:
+                  raise SystemExit("Percentual inválido")
 
+              percent = max(0.0, min(100.0, percent))
               state = load_json(STATE, {})
               meta = load_json(META, {})
               emojis = load_json(CONFIG, {})
@@ -566,52 +555,35 @@ jobs:
               if addon_version and addon_version.lower() not in tweak_label.lower():
                   tweak_label = f"{tweak_label} {addon_version}"
 
-              if status_text is not None:
-                  rich_text = (
-                      f"{tg_emoji(inject_id, inject_fallback)} "
-                      f"{html.escape(status_text)}\n\n"
-                      f"{tg_emoji(app_emoji_id, app_fallback)} "
-                      f"{html.escape(app_name)}"
-                      + (f" {html.escape(app_version)}" if app_version else "")
-                  )
+              bar = progress_bar(percent)
+              percent_text = f"{percent:.1f}%"
 
-                  plain_text = (
-                      f"{inject_fallback} {status_text}\n\n"
-                      f"{app_fallback} {app_name}"
-                      + (f" {app_version}" if app_version else "")
-                  )
-                  log_text = f"Status da injeção: {status_text}"
-              else:
-                  bar = progress_bar(percent)
-                  percent_text = f"{percent:.1f}%"
+              rich_text = (
+                  f"{tg_emoji(inject_id, inject_fallback)} "
+                  f"Injetando {html.escape(tweak_label)}\n\n"
+                  f"{tg_emoji(app_emoji_id, app_fallback)} "
+                  f"{html.escape(app_name)}"
+                  + (f" {html.escape(app_version)}" if app_version else "")
+                  + f"\n\n{bar} {percent_text}"
+              )
 
-                  rich_text = (
-                      f"{tg_emoji(inject_id, inject_fallback)} "
-                      f"Injetando {html.escape(tweak_label)}\n\n"
-                      f"{tg_emoji(app_emoji_id, app_fallback)} "
-                      f"{html.escape(app_name)}"
-                      + (f" {html.escape(app_version)}" if app_version else "")
-                      + f"\n\n{bar} {percent_text}"
-                  )
-
-                  plain_text = (
-                      f"{inject_fallback} Injetando {tweak_label}\n\n"
-                      f"{app_fallback} {app_name}"
-                      + (f" {app_version}" if app_version else "")
-                      + f"\n\n{bar} {percent_text}"
-                  )
-                  log_text = f"Progresso da injeção: {percent_text}"
+              plain_text = (
+                  f"{inject_fallback} Injetando {tweak_label}\n\n"
+                  f"{app_fallback} {app_name}"
+                  + (f" {app_version}" if app_version else "")
+                  + f"\n\n{bar} {percent_text}"
+              )
 
               try:
                   edit_message(
                       token, chat_id, message_id, rich_text, "HTML"
                   )
-                  print(f"✅ {log_text}")
+                  print(f"✅ Progresso da injeção: {percent_text}")
               except Exception as exc:
                   print(f"⚠️ Emoji animado não pôde ser usado: {exc}")
                   try:
                       edit_message(token, chat_id, message_id, plain_text)
-                      print(f"✅ {log_text} (fallback)")
+                      print(f"✅ Progresso da injeção: {percent_text} (fallback)")
                   except Exception as fallback_exc:
                       print(
                           "⚠️ Não foi possível atualizar o progresso: "
@@ -659,32 +631,6 @@ jobs:
           PY
 
           python .update_injection_progress.py 0
-
-      # =========================================================
-      # 3A. MESSENGER - PREPARAR TRADUÇÃO PT-BR
-      # =========================================================
-
-      - name: Download and prepare Messenger pt-BR translation
-        id: messenger_translation
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
-        env:
-          TELEGRAM_API_ID: ${{ secrets.TELEGRAM_API_ID }}
-          TELEGRAM_API_HASH: ${{ secrets.TELEGRAM_API_HASH }}
-          TELEGRAM_SESSION: ${{ secrets.TELEGRAM_SESSION }}
-          TELEGRAM_TRANSLATION_CHANNEL_ID: ${{ secrets.TELEGRAM_TRANSLATION_CHANNEL_ID }}
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
-          APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
-          APP_BUILD: ${{ steps.prepare.outputs.build }}
-        run: |
-          python .update_injection_progress.py --status "Baixando tradução pt-BR"
-          python telegram_messenger_translation.py
-
-          test -f messenger_translation/fbt_language_pack.bin
-          test -f messenger_translation/manifest.plist
-          test -f messenger_translation/metadata.json
-
-          echo "✅ Tradução pt-BR do Messenger preparada"
 
       # =========================================================
       # 4. IPAPATCH
@@ -6886,123 +6832,46 @@ jobs:
           PY
 
       # =========================================================
-      # 11A. MESSENGER - EMBUTIR TRADUÇÃO PT-BR
+      # 11A. MESSENGER - LIMPEZA DO INFO.PLIST
       # =========================================================
 
-      - name: Embed Messenger pt-BR translation
+      - name: Clean Messenger Info.plist
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_BOT_CHAT_ID: ${{ secrets.TELEGRAM_BOT_CHAT_ID }}
         run: |
-          python .update_injection_progress.py --status "Injetando tradução pt-BR"
-
           python <<'PY'
-          import os
           import plistlib
           import shutil
           import zipfile
           from pathlib import Path
 
-          source_pack = (
-              Path("messenger_translation")
-              / "fbt_language_pack.bin"
-          )
-          source_manifest = (
-              Path("messenger_translation")
-              / "manifest.plist"
-          )
-
-          if not source_pack.is_file():
-              raise SystemExit(
-                  "❌ fbt_language_pack.bin preparado não encontrado"
-              )
-
-          if not source_manifest.is_file():
-              raise SystemExit(
-                  "❌ manifest.plist preparado não encontrado"
-              )
-
-          with source_pack.open("rb") as f:
-              header = f.read(8)
-
-          if len(header) < 8 or header[4:8] != b"FBLP":
-              raise SystemExit(
-                  "❌ Pack preparado não possui assinatura FBLP"
-              )
-
-          with source_manifest.open("rb") as f:
-              manifest = plistlib.load(f)
-
-          required_manifest = {
-              "Locale",
-              "BuildNumber",
-              "ContentHash",
-              "Checksum",
-          }
-
-          missing = (
-              required_manifest
-              - set(manifest)
-          )
-
-          if missing:
-              raise SystemExit(
-                  "❌ Manifest incompleto: "
-                  + ", ".join(sorted(missing))
-              )
-
-          work = Path(
-              "messenger_translation_embed_work"
-          )
+          work = Path("messenger_info_cleanup")
 
           if work.exists():
               shutil.rmtree(work)
 
           work.mkdir()
 
-          with zipfile.ZipFile(
-              "Final.ipa",
-              "r",
-          ) as z:
+          with zipfile.ZipFile("Final.ipa", "r") as z:
               z.extractall(work)
 
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
+          apps = list((work / "Payload").glob("*.app"))
 
           if len(apps) != 1:
-              raise SystemExit(
-                  "❌ Messenger principal não identificado"
-              )
+              raise SystemExit("❌ Messenger principal não identificado")
 
           app = apps[0]
+          info_path = app / "Info.plist"
 
-          with (
-              app / "Info.plist"
-          ).open("rb") as f:
+          with info_path.open("rb") as f:
               info = plistlib.load(f)
 
-          if (
-              info.get("CFBundleIdentifier")
-              != "com.facebook.Messenger"
-          ):
-              raise SystemExit(
-                  "❌ Bundle ID inesperado ao embutir pt-BR"
-              )
+          if info.get("CFBundleIdentifier") != "com.facebook.Messenger":
+              raise SystemExit("❌ Bundle ID inesperado ao limpar Info.plist")
 
-          info.pop(
-              "UIFileSharingEnabled",
-              None,
-          )
-          info.pop(
-              "LSSupportsOpeningDocumentsInPlace",
-              None,
-          )
+          info.pop("UIFileSharingEnabled", None)
+          info.pop("LSSupportsOpeningDocumentsInPlace", None)
 
-          with (
-              app / "Info.plist"
-          ).open("wb") as f:
+          with info_path.open("wb") as f:
               plistlib.dump(
                   info,
                   f,
@@ -7010,71 +6879,7 @@ jobs:
                   sort_keys=False,
               )
 
-          print(
-              "✅ Chaves de File Sharing removidas"
-          )
-
-          portuguese_dir = (
-              app
-              / "MessengerPortuguese"
-          )
-          pt_lproj = (
-              app
-              / "pt.lproj"
-          )
-
-          portuguese_dir.mkdir(
-              parents=True,
-              exist_ok=True,
-          )
-          pt_lproj.mkdir(
-              parents=True,
-              exist_ok=True,
-          )
-
-          primary_pack = (
-              portuguese_dir
-              / "fbt_language_pack.bin"
-          )
-          secondary_pack = (
-              pt_lproj
-              / "fbt_language_pack.bin"
-          )
-          final_manifest = (
-              portuguese_dir
-              / "manifest.plist"
-          )
-
-          shutil.copy2(
-              source_pack,
-              primary_pack,
-          )
-          shutil.copy2(
-              source_pack,
-              secondary_pack,
-          )
-          shutil.copy2(
-              source_manifest,
-              final_manifest,
-          )
-
-          os.chmod(
-              primary_pack,
-              0o644,
-          )
-          os.chmod(
-              secondary_pack,
-              0o644,
-          )
-          os.chmod(
-              final_manifest,
-              0o644,
-          )
-
-          output = Path(
-              "Final.ipa"
-          )
-
+          output = Path("Final.ipa")
           output.unlink()
 
           with zipfile.ZipFile(
@@ -7084,30 +6889,17 @@ jobs:
           ) as z:
               for file in work.rglob("*"):
                   if file.is_file():
-                      z.write(
-                          file,
-                          file.relative_to(work),
-                      )
+                      z.write(file, file.relative_to(work))
 
-          print(
-              "✅ MessengerPortuguese/fbt_language_pack.bin"
-          )
-          print(
-              "✅ MessengerPortuguese/manifest.plist"
-          )
-          print(
-              "✅ pt.lproj/fbt_language_pack.bin"
-          )
-          print(
-              "✅ Tradução pt-BR embutida no Messenger"
-          )
+          print("✅ Chaves de File Sharing removidas")
+          print("✅ Messenger seguirá com o idioma nativo do app/iOS")
           PY
 
       # =========================================================
       # 12. VALIDAÇÃO
       # =========================================================
 
-      - name: Validate Messenger MSGPlusX + pt-BR layout
+      - name: Validate Messenger MSGPlusX native locale layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
         env:
           APP_VERSION: ${{ steps.prepare.outputs.version || steps.private_input.outputs.version }}
@@ -7357,178 +7149,6 @@ jobs:
                   )
               )
 
-          primary_pack = (
-              app
-              / "MessengerPortuguese"
-              / "fbt_language_pack.bin"
-          )
-          secondary_pack = (
-              app
-              / "pt.lproj"
-              / "fbt_language_pack.bin"
-          )
-          manifest_path = (
-              app
-              / "MessengerPortuguese"
-              / "manifest.plist"
-          )
-
-          for path in (
-              primary_pack,
-              secondary_pack,
-              manifest_path,
-          ):
-              if not path.is_file():
-                  raise SystemExit(
-                      f"❌ Arquivo pt-BR ausente: {path.relative_to(app)}"
-                  )
-
-          def sha256_file(
-              path: Path,
-          ) -> str:
-              digest = hashlib.sha256()
-
-              with path.open("rb") as f:
-                  for chunk in iter(
-                      lambda: f.read(
-                          1024 * 1024
-                      ),
-                      b"",
-                  ):
-                      digest.update(
-                          chunk
-                      )
-
-              return digest.hexdigest()
-
-          for pack in (
-              primary_pack,
-              secondary_pack,
-          ):
-              with pack.open("rb") as f:
-                  header = f.read(8)
-
-              if (
-                  len(header) < 8
-                  or header[4:8] != b"FBLP"
-              ):
-                  raise SystemExit(
-                      "❌ Assinatura FBLP inválida em "
-                      f"{pack.relative_to(app)}"
-                  )
-
-          primary_sha = sha256_file(
-              primary_pack
-          )
-          secondary_sha = sha256_file(
-              secondary_pack
-          )
-
-          if primary_sha != secondary_sha:
-              raise SystemExit(
-                  "❌ As duas cópias do FBLP são diferentes"
-              )
-
-          with manifest_path.open(
-              "rb"
-          ) as f:
-              manifest = plistlib.load(f)
-
-          required_manifest = {
-              "Locale",
-              "BuildNumber",
-              "ContentHash",
-              "Checksum",
-          }
-
-          missing_manifest = (
-              required_manifest
-              - set(manifest)
-          )
-
-          if missing_manifest:
-              raise SystemExit(
-                  "❌ Manifest incompleto: "
-                  + ", ".join(
-                      sorted(
-                          missing_manifest
-                      )
-                  )
-              )
-
-          if manifest.get(
-              "Locale"
-          ) != "pt_BR":
-              raise SystemExit(
-                  "❌ Locale do manifest não é pt_BR"
-              )
-
-          if str(
-              manifest.get(
-                  "BuildNumber"
-              )
-          ) != build:
-              raise SystemExit(
-                  "❌ BuildNumber do manifest não corresponde ao Messenger"
-              )
-
-          if manifest.get(
-              "Checksum"
-          ) != primary_sha:
-              raise SystemExit(
-                  "❌ SHA-256 do FBLP não corresponde ao manifest"
-              )
-
-          metadata_path = (
-              Path("messenger_translation")
-              / "metadata.json"
-          )
-
-          if not metadata_path.is_file():
-              raise SystemExit(
-                  "❌ metadata.json da tradução ausente"
-              )
-
-          metadata = json.loads(
-              metadata_path.read_text(
-                  encoding="utf-8"
-              )
-          )
-
-          if str(
-              metadata.get(
-                  "app_version"
-              )
-          ) != version:
-              raise SystemExit(
-                  "❌ metadata.json aponta para outra versão"
-              )
-
-          if str(
-              metadata.get(
-                  "build_number"
-              )
-          ) != build:
-              raise SystemExit(
-                  "❌ metadata.json aponta para outro build"
-              )
-
-          if metadata.get(
-              "content_hash"
-          ) != manifest.get(
-              "ContentHash"
-          ):
-              raise SystemExit(
-                  "❌ ContentHash do metadata diverge do manifest"
-              )
-
-          if metadata.get(
-              "checksum_sha256"
-          ) != primary_sha:
-              raise SystemExit(
-                  "❌ Checksum do metadata diverge do FBLP"
-              )
-
           # As extensões devem receber somente o shim do IPA Patch.
           # MSGPlusX, Keychain Fix e MessengerEnhancements continuam
           # exclusivos do executável principal.
@@ -7666,10 +7286,7 @@ jobs:
               "✅ UIDesignRequiresCompatibility = false"
           )
           print(
-              "✅ FBLP pt-BR e manifest validados"
-          )
-          print(
-              "✅ Versão/build da tradução correspondem ao IPA"
+              "✅ Sem tradução FBLP customizada no fluxo"
           )
           print(
               "✅ File Sharing removido"
