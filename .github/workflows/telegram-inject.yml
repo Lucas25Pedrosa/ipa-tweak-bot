@@ -762,7 +762,6 @@ jobs:
                   # Apenas addons com localização validada.
                   # Telegram/Mx foi removido desta rota.
                   translatable_apps = {
-                      "x",
                       "facebook",
                       "tiktok",
                   }
