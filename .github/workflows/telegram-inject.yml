@@ -183,7 +183,7 @@ jobs:
           )"
 
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -5863,6 +5863,340 @@ jobs:
           shutil.rmtree(input_work)
           PY
 
+      - name: Validate TeraBox structural layout before V5
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.dubox.drive' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          BUNDLE_ID = "com.dubox.drive"
+          PATCH_NAME = "TeraBoxTBCloudAISpacePatch.dylib"
+          EXPECTED_LOAD = f"@rpath/{PATCH_NAME}"
+
+          work = Path("terabox_pre_v5_validate")
+          clean_work = Path("terabox_clean_compare")
+
+          for path in (work, clean_work):
+              if path.exists():
+                  shutil.rmtree(path)
+              path.mkdir()
+
+          with zipfile.ZipFile("Layout_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(clean_work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          clean_apps = list((clean_work / "Payload").glob("*.app"))
+
+          if len(apps) != 1 or len(clean_apps) != 1:
+              raise SystemExit(
+                  "❌ TeraBox: .app principal não identificado"
+              )
+
+          app = apps[0]
+          clean_app = clean_apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ TeraBox: bundle ID inesperado"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ TeraBox: CFBundleExecutable ausente"
+              )
+
+          executable = app / executable_name
+          frameworks = app / "Frameworks"
+          patch = frameworks / PATCH_NAME
+
+          if not executable.is_file():
+              raise SystemExit(
+                  "❌ TeraBox: executável principal ausente"
+              )
+
+          if not patch.is_file():
+              raise SystemExit(
+                  f"❌ TeraBox: {PATCH_NAME} ausente"
+              )
+
+          # A funcional não contém CydiaSubstrate.framework.
+          substrate = (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          )
+          if substrate.exists():
+              raise SystemExit(
+                  "❌ TeraBox: CydiaSubstrate.framework foi adicionado "
+                  "indevidamente"
+              )
+
+          def parse_macho(path: Path):
+              raw = path.read_bytes()
+
+              if (
+                  len(raw) < 32
+                  or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF
+              ):
+                  raise SystemExit(
+                      f"❌ TeraBox: Mach-O inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              loads = []
+              rpaths = []
+
+              for _ in range(ncmds):
+                  if offset + 8 > len(raw):
+                      raise SystemExit(
+                          f"❌ TeraBox: load command truncado: {path}"
+                      )
+
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmdsize < 8 or offset + cmdsize > len(raw):
+                      raise SystemExit(
+                          f"❌ TeraBox: cmdsize inválido: {path}"
+                      )
+
+                  if cmd in {0xC, 0x80000018}:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      loads.append(
+                          (
+                              cmd,
+                              raw[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                              timestamp,
+                          )
+                      )
+
+                  elif cmd == 0x8000001C:
+                      path_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + path_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      rpaths.append(
+                          raw[start:end].decode(
+                              "utf-8",
+                              errors="replace",
+                          )
+                      )
+
+                  offset += cmdsize
+
+              return loads, rpaths
+
+          loads, rpaths = parse_macho(executable)
+
+          matches = [
+              (index, cmd, timestamp)
+              for index, (cmd, name, timestamp)
+              in enumerate(loads)
+              if name == EXPECTED_LOAD
+          ]
+
+          if len(matches) != 1:
+              raise SystemExit(
+                  "❌ TeraBox: load do patch ausente ou duplicado"
+              )
+
+          _, cmd, timestamp = matches[0]
+
+          if cmd != 0x80000018 or timestamp != 0:
+              raise SystemExit(
+                  "❌ TeraBox: patch não está como "
+                  "LC_LOAD_WEAK_DYLIB timestamp 0"
+              )
+
+          if "@executable_path/Frameworks" not in rpaths:
+              raise SystemExit(
+                  "❌ TeraBox: @executable_path/Frameworks ausente"
+              )
+
+          def extension_map(root_app: Path):
+              result = {}
+              for base_name in ("PlugIns", "Extensions"):
+                  base = root_app / base_name
+                  if not base.is_dir():
+                      continue
+
+                  for appex in sorted(base.rglob("*.appex")):
+                      rel = str(appex.relative_to(root_app))
+
+                      info_path = appex / "Info.plist"
+                      if not info_path.is_file():
+                          raise SystemExit(
+                              f"❌ TeraBox: Info.plist ausente em {rel}"
+                          )
+
+                      with info_path.open("rb") as f:
+                          ext_info = plistlib.load(f)
+
+                      ext_exec_name = ext_info.get(
+                          "CFBundleExecutable"
+                      )
+                      if not ext_exec_name:
+                          raise SystemExit(
+                              f"❌ TeraBox: CFBundleExecutable ausente em {rel}"
+                          )
+
+                      ext_exec = appex / ext_exec_name
+                      if not ext_exec.is_file():
+                          raise SystemExit(
+                              f"❌ TeraBox: executável da extensão ausente: {rel}"
+                          )
+
+                      result[rel] = ext_exec
+
+              return result
+
+          clean_extensions = extension_map(clean_app)
+          final_extensions = extension_map(app)
+
+          if not clean_extensions:
+              raise SystemExit(
+                  "❌ TeraBox: IPA clean sem extensões; "
+                  "não é possível validar preservação"
+              )
+
+          if set(clean_extensions) != set(final_extensions):
+              missing = sorted(
+                  set(clean_extensions) - set(final_extensions)
+              )
+              unexpected = sorted(
+                  set(final_extensions) - set(clean_extensions)
+              )
+              raise SystemExit(
+                  "❌ TeraBox: conjunto de extensões mudou. "
+                  f"Ausentes={missing}; inesperadas={unexpected}"
+              )
+
+          # Nenhuma extensão funcional carrega o patch.
+          for rel, ext_exec in final_extensions.items():
+              ext_loads, _ = parse_macho(ext_exec)
+              leaked = [
+                  name
+                  for _, name, _ in ext_loads
+                  if PATCH_NAME in name
+              ]
+              if leaked:
+                  raise SystemExit(
+                      f"❌ TeraBox: {rel} recebeu patch indevido: {leaked}"
+                  )
+
+          # Frameworks originais da clean devem continuar presentes.
+          clean_frameworks = clean_app / "Frameworks"
+          if clean_frameworks.is_dir():
+              missing_original = [
+                  original.name
+                  for original in clean_frameworks.iterdir()
+                  if not (frameworks / original.name).exists()
+              ]
+
+              if missing_original:
+                  raise SystemExit(
+                      "❌ TeraBox: framework(s) original(is) removido(s): "
+                      + ", ".join(sorted(missing_original))
+                  )
+
+          # O patch V5 deve estar ainda pendente.
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_terabox_pre",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ TeraBox: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp == candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ TeraBox: V5 foi aplicado antes do Final.ipa"
+              )
+
+          print(
+              f"✅ TeraBox {info.get('CFBundleShortVersionString', '?')}: "
+              "layout funcional pré-V5 validado"
+          )
+          print(
+              "✅ Principal: TeraBoxTBCloudAISpacePatch.dylib weak(0)"
+          )
+          print(
+              f"✅ Extensões preservadas sem injeção: "
+              f"{len(final_extensions)}"
+          )
+          print(
+              "✅ CydiaSubstrate.framework ausente, como na funcional"
+          )
+          print(
+              "✅ V5 confirmado como pendente até o Final.ipa"
+          )
+          print(
+              "ℹ️ TeraBox: validação estrutural sem trava de "
+              "versão/hash/offset"
+          )
+
+          shutil.rmtree(work)
+          shutil.rmtree(clean_work)
+          PY
+
       - name: Validate Photoleap Unlimited 1:1 layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' }}
         run: |
@@ -9573,6 +9907,279 @@ jobs:
           )
 
           shutil.rmtree(work)
+          PY
+
+      - name: Validate TeraBox V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.dubox.drive' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import plistlib
+          import shutil
+          import struct
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          BUNDLE_ID = "com.dubox.drive"
+          PATCH_NAME = "TeraBoxTBCloudAISpacePatch.dylib"
+          EXPECTED_LOAD = f"@rpath/{PATCH_NAME}"
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit(
+                  "❌ TeraBox: status do pós-processamento V5 ausente"
+              )
+
+          status = json.loads(
+              status_path.read_text(encoding="utf-8")
+          )
+
+          if status.get("processing_route") != "private":
+              raise SystemExit(
+                  "❌ TeraBox: Final.ipa não entrou na rota privada V5. "
+                  "Confirme que com.dubox.drive está em PRIVATE_APPS."
+              )
+
+          nopopup = status.get("nopopup", {})
+          if nopopup.get("status") not in {
+              "applied",
+              "already_applied",
+          }:
+              raise SystemExit(
+                  "❌ TeraBox: V5 não foi aplicado: "
+                  + json.dumps(
+                      nopopup,
+                      ensure_ascii=False,
+                  )
+              )
+
+          work = Path("terabox_post_v5_validate")
+          clean_work = Path("terabox_post_clean_compare")
+
+          for path in (work, clean_work):
+              if path.exists():
+                  shutil.rmtree(path)
+              path.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(clean_work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          clean_apps = list((clean_work / "Payload").glob("*.app"))
+
+          if len(apps) != 1 or len(clean_apps) != 1:
+              raise SystemExit(
+                  "❌ TeraBox: .app final/clean não identificado"
+              )
+
+          app = apps[0]
+          clean_app = clean_apps[0]
+
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ TeraBox: bundle final inesperado"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          executable = app / str(executable_name or "")
+          frameworks = app / "Frameworks"
+          patch = frameworks / PATCH_NAME
+
+          if not executable.is_file():
+              raise SystemExit(
+                  "❌ TeraBox: executável final ausente"
+              )
+
+          if not patch.is_file():
+              raise SystemExit(
+                  f"❌ TeraBox: {PATCH_NAME} ausente após V5"
+              )
+
+          if (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          ).exists():
+              raise SystemExit(
+                  "❌ TeraBox: CydiaSubstrate.framework apareceu no Final.ipa"
+              )
+
+          spec = importlib.util.spec_from_file_location(
+              "private_postprocess_terabox_post",
+              "private-core/scripts/postprocess.py",
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ TeraBox: não foi possível carregar postprocess.py"
+              )
+
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ TeraBox: V5 não redirecionou viewDidLoad"
+              )
+
+          def parse_macho(path: Path):
+              raw = path.read_bytes()
+
+              if (
+                  len(raw) < 32
+                  or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF
+              ):
+                  raise SystemExit(
+                      f"❌ TeraBox: Mach-O final inesperado: {path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              loads = []
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmd in {0xC, 0x80000018}:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      timestamp = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 12,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      loads.append(
+                          (
+                              cmd,
+                              raw[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                              timestamp,
+                          )
+                      )
+
+                  offset += cmdsize
+
+              return loads
+
+          loads = parse_macho(executable)
+          matches = [
+              (cmd, timestamp)
+              for cmd, name, timestamp in loads
+              if name == EXPECTED_LOAD
+          ]
+
+          if len(matches) != 1:
+              raise SystemExit(
+                  "❌ TeraBox: load final do patch ausente/duplicado"
+              )
+
+          cmd, timestamp = matches[0]
+          if cmd != 0x80000018 or timestamp != 0:
+              raise SystemExit(
+                  "❌ TeraBox: load final não permaneceu weak(0)"
+              )
+
+          def extension_map(root_app: Path):
+              result = {}
+              for base_name in ("PlugIns", "Extensions"):
+                  base = root_app / base_name
+                  if not base.is_dir():
+                      continue
+
+                  for appex in sorted(base.rglob("*.appex")):
+                      rel = str(appex.relative_to(root_app))
+
+                      with (appex / "Info.plist").open("rb") as f:
+                          ext_info = plistlib.load(f)
+
+                      exec_name = ext_info.get("CFBundleExecutable")
+                      if not exec_name:
+                          raise SystemExit(
+                              f"❌ TeraBox: executável ausente em {rel}"
+                          )
+
+                      ext_exec = appex / exec_name
+                      if not ext_exec.is_file():
+                          raise SystemExit(
+                              f"❌ TeraBox: binário ausente em {rel}"
+                          )
+
+                      result[rel] = ext_exec
+
+              return result
+
+          clean_extensions = extension_map(clean_app)
+          final_extensions = extension_map(app)
+
+          if set(clean_extensions) != set(final_extensions):
+              raise SystemExit(
+                  "❌ TeraBox: extensões mudaram após o V5"
+              )
+
+          for rel, ext_exec in final_extensions.items():
+              leaked = [
+                  name
+                  for _, name, _ in parse_macho(ext_exec)
+                  if PATCH_NAME in name
+              ]
+              if leaked:
+                  raise SystemExit(
+                      f"❌ TeraBox: {rel} recebeu patch indevido após V5"
+                  )
+
+          print(
+              "✅ TeraBox: rota inicial STANDARD confirmada"
+          )
+          print(
+              "✅ TeraBox: 1 dylib weak(0) preservado no Final.ipa"
+          )
+          print(
+              f"✅ TeraBox: {len(final_extensions)} extensões "
+              "preservadas sem injeção"
+          )
+          print(
+              "✅ TeraBox: CydiaSubstrate.framework continua ausente"
+          )
+          print(
+              "✅ TeraBox: V5 aplicado somente no Final.ipa"
+          )
+          print(
+              f"✅ TeraBox: bytes alterados pelo V5: "
+              f"{nopopup.get('changed_bytes', 0)}"
+          )
+
+          shutil.rmtree(work)
+          shutil.rmtree(clean_work)
           PY
 
       - name: Validate final IPA
