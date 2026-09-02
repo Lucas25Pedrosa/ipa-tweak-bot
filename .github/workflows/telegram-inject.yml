@@ -3887,6 +3887,7 @@ jobs:
                   "frameworks": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "FBOLED.dylib",
                   },
                   "root": set(),
               },
@@ -4204,6 +4205,25 @@ jobs:
                   "❌ zx-compat: LC_RPATH foi alterado indevidamente. "
                   f"antes={rpaths_before}; depois={rpaths_after}"
               )
+
+          # O IPA Vault remove as assinaturas antigas antes da assinatura final.
+          # Esta limpeza fica isolada à rota zx-compat.
+          old_signature_dirs = sorted(
+              (
+                  path
+                  for path in app.rglob("_CodeSignature")
+                  if path.is_dir()
+              ),
+              key=lambda path: len(path.parts),
+              reverse=True,
+          )
+          for signature_dir in old_signature_dirs:
+              shutil.rmtree(signature_dir)
+
+          print(
+              "✅ zx-compat: assinaturas antigas removidas: "
+              f"{len(old_signature_dirs)} _CodeSignature"
+          )
 
           if BUNDLE_ID == "com.facebook.Facebook":
               for forbidden in (
@@ -8165,6 +8185,7 @@ jobs:
                   "framework_files": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "FBOLED.dylib",
                       "zxPluginsInject.dylib",
                   },
                   "root_files": {
@@ -8173,15 +8194,18 @@ jobs:
                   "main_loads": {
                       "@rpath/iQFace.dylib",
                       "@rpath/iQFaceEnhancer.dylib",
+                      "@rpath/FBOLED.dylib",
                       "@rpath/zxPluginsInject.dylib",
                   },
                   "extension_forbidden": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "FBOLED.dylib",
                   },
                   "forbidden_main": {
                       "@executable_path/iQFace.dylib",
                       "@executable_path/iQFaceEnhancer.dylib",
+                      "@executable_path/FBOLED.dylib",
                       "@executable_path/Glow.dylib",
                       "@rpath/Glow.dylib",
                   },
@@ -8332,6 +8356,17 @@ jobs:
                       combined[name] = cmd
               return combined
 
+          stale_signatures = sorted(
+              str(path.relative_to(app))
+              for path in app.rglob("_CodeSignature")
+              if path.is_dir()
+          )
+          if stale_signatures:
+              raise SystemExit(
+                  "❌ zx-compat final: _CodeSignature antigo ainda presente: "
+                  + ", ".join(stale_signatures)
+              )
+
           frameworks = app / "Frameworks"
           for name in profile["framework_files"]:
               required = frameworks / name
@@ -8451,6 +8486,7 @@ jobs:
           if BUNDLE_ID == "com.facebook.Facebook":
               iqface = frameworks / "iQFace.dylib"
               enhancer = frameworks / "iQFaceEnhancer.dylib"
+              fboled = frameworks / "FBOLED.dylib"
 
               if hashlib.sha256(iqface.read_bytes()).hexdigest() != (
                   "a3b8905f846c688c1e0886a50015563"
@@ -8466,6 +8502,14 @@ jobs:
               ):
                   raise SystemExit(
                       "❌ zx-compat final: iQFaceEnhancer.dylib inesperado"
+                  )
+
+              if hashlib.sha256(fboled.read_bytes()).hexdigest() != (
+                  "a4899c05aabef9126331ef8836351357d"
+                  "cc37268089366c8887ee190545bc111"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: FBOLED.dylib inesperado"
                   )
 
               if (app / "Glow.dylib").exists() or (
