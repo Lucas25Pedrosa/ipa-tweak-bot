@@ -58,6 +58,9 @@ jobs:
           test -d private-core/config
           test -d private-core/translations
           test -f private-core/scripts/postprocess.py
+          test -f private-core/scripts/zx_compat_patch.py
+          test -f private-core/addons/shared/zx-compat/dylib/zxPluginsInject.dylib
+          test -f private-core/addons/shared/zx-compat/framework/CydiaSubstrate.framework.zip
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
@@ -407,6 +410,10 @@ jobs:
                   "remove_extensions="
                   f"{str(addon.get('remove_extensions', False)).lower()}\n"
               )
+              out.write(
+                  "zx_compat="
+                  f"{str(addon.get('zx_compat', False)).lower()}\n"
+              )
 
           print()
           print("✅ Aplicativo identificado")
@@ -419,6 +426,10 @@ jobs:
           print(
               "🩹 Modo IPA Patch: "
               f"{ipapatch_mode}"
+          )
+          print(
+              "🧬 zx-compat: "
+              f"{addon.get('zx_compat', False)}"
           )
           PY
 
@@ -2162,7 +2173,7 @@ jobs:
           PY
 
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.zx_compat != 'true' }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
@@ -3831,6 +3842,408 @@ jobs:
           shutil.rmtree(work)
           PY
 
+
+      # =========================================================
+      # 7A. ZX-COMPAT - FACEBOOK / MESSENGER / MXGRAM
+      # =========================================================
+
+      - name: Build zx-compat layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import json
+          import os
+          import plistlib
+          import shutil
+          import subprocess
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = os.environ["BUNDLE_ID"]
+
+          SPECIAL_APPS = {
+              "com.facebook.Facebook",
+              "com.facebook.Messenger",
+              "ph.telegra.Telegraph",
+          }
+
+          EXPECTED_ZX_SHA256 = (
+              "a9ea3a54abe37ce45f456db5b071ffe8"
+              "f9e882360086847c8f042c057cf807ab"
+          )
+          EXPECTED_SUBSTRATE_SHA256 = (
+              "7d8d26bb357a1d8b5e43ff6f9898ea0"
+              "df04f7c32d82396162c8ac669caa4cf2a"
+          )
+
+          PROFILE_FILES = {
+              "com.facebook.Facebook": {
+                  "frameworks": {
+                      "iQFace.dylib",
+                      "iQFaceEnhancer.dylib",
+                  },
+                  "root": set(),
+              },
+              "com.facebook.Messenger": {
+                  "frameworks": {
+                      "MSGPlusX.dylib",
+                      "Sideload Keychain Fix.dylib",
+                      "MessengerEnhancements.dylib",
+                  },
+                  "root": set(),
+              },
+              "ph.telegra.Telegraph": {
+                  "frameworks": {
+                      "Mx.dylib",
+                  },
+                  "root": {
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                  },
+              },
+          }
+
+          if BUNDLE_ID not in SPECIAL_APPS:
+              raise SystemExit(
+                  f"❌ zx-compat acionado para Bundle ID não permitido: {BUNDLE_ID}"
+              )
+
+          work = Path("zx_compat_work")
+          framework_extract = Path("zx_compat_framework_extract")
+
+          for path in (work, framework_extract):
+              if path.exists():
+                  shutil.rmtree(path)
+              path.mkdir()
+
+          with zipfile.ZipFile("input.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ zx-compat: esperava 1 .app principal; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          info_path = app / "Info.plist"
+
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          actual_bundle_id = info.get("CFBundleIdentifier")
+          if actual_bundle_id != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "
+                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"
+              )
+
+          def bundle_executable(bundle: Path) -> Path:
+              plist_path = bundle / "Info.plist"
+              with plist_path.open("rb") as f:
+                  bundle_info = plistlib.load(f)
+              executable_name = bundle_info.get("CFBundleExecutable")
+              if not executable_name:
+                  raise SystemExit(
+                      f"❌ zx-compat: CFBundleExecutable ausente em {bundle}"
+                  )
+              executable = bundle / executable_name
+              if not executable.is_file():
+                  raise SystemExit(
+                      f"❌ zx-compat: executável ausente: {executable}"
+                  )
+              return executable
+
+          def discover_extensions(root_app: Path) -> list[Path]:
+              found = []
+              for directory_name in ("PlugIns", "Extensions"):
+                  directory = root_app / directory_name
+                  if directory.is_dir():
+                      found.extend(sorted(directory.glob("*.appex")))
+              return found
+
+          def rpaths(executable: Path) -> tuple[str, ...]:
+              proc = subprocess.run(
+                  [Executable.otool, "-l", str(executable)],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+              result = []
+              lines = proc.stdout.splitlines()
+              for index, line in enumerate(lines):
+                  if line.strip() != "cmd LC_RPATH":
+                      continue
+                  for candidate in lines[index + 1:index + 8]:
+                      stripped = candidate.strip()
+                      if stripped.startswith("path "):
+                          result.append(stripped.split(" ", 2)[1])
+                          break
+              return tuple(result)
+
+          original_extensions = discover_extensions(app)
+          original_extension_names = [
+              str(extension.relative_to(app))
+              for extension in original_extensions
+          ]
+
+          rpaths_before = {
+              "__main__": rpaths(bundle_executable(app)),
+          }
+          for extension in original_extensions:
+              rpaths_before[str(extension.relative_to(app))] = rpaths(
+                  bundle_executable(extension)
+              )
+
+          inject_paths = [
+              Path(line.strip())
+              for line in Path("inject_files.txt").read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+
+          inject_by_name = {}
+          for path in inject_paths:
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ zx-compat: arquivo de injeção ausente: {path}"
+                  )
+              if path.name in inject_by_name:
+                  raise SystemExit(
+                      f"❌ zx-compat: dylib duplicada em inject_files.txt: {path.name}"
+                  )
+              inject_by_name[path.name] = path
+
+          profile = PROFILE_FILES[BUNDLE_ID]
+          expected_names = profile["frameworks"] | profile["root"]
+          actual_names = set(inject_by_name)
+
+          if actual_names != expected_names:
+              missing = sorted(expected_names - actual_names)
+              unexpected = sorted(actual_names - expected_names)
+              raise SystemExit(
+                  "❌ zx-compat: conjunto de dylibs do addon divergiu. "
+                  f"ausentes={missing}; inesperadas={unexpected}"
+              )
+
+          frameworks = app / "Frameworks"
+          frameworks.mkdir(exist_ok=True)
+
+          for name in sorted(profile["frameworks"]):
+              source = inject_by_name[name]
+              destination = frameworks / name
+              shutil.copy2(source, destination)
+              print(f"✅ zx-compat Frameworks/{name}")
+
+          for name in sorted(profile["root"]):
+              source = inject_by_name[name]
+              destination = app / name
+              shutil.copy2(source, destination)
+              print(f"✅ zx-compat raiz/{name}")
+
+          zx_source = Path(
+              "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
+          )
+          substrate_zip = Path(
+              "addons/shared/zx-compat/framework/"
+              "CydiaSubstrate.framework.zip"
+          )
+
+          if not zx_source.is_file():
+              raise SystemExit(
+                  f"❌ zx-compat: zxPluginsInject ausente: {zx_source}"
+              )
+          if not substrate_zip.is_file():
+              raise SystemExit(
+                  f"❌ zx-compat: CydiaSubstrate ZIP ausente: {substrate_zip}"
+              )
+
+          zx_hash = hashlib.sha256(zx_source.read_bytes()).hexdigest()
+          if zx_hash != EXPECTED_ZX_SHA256:
+              raise SystemExit(
+                  "❌ zx-compat: zxPluginsInject não corresponde ao arquivo "
+                  f"de referência: {zx_hash}"
+              )
+
+          shutil.copy2(
+              zx_source,
+              frameworks / "zxPluginsInject.dylib",
+          )
+
+          with zipfile.ZipFile(substrate_zip, "r") as z:
+              z.extractall(framework_extract)
+
+          framework_candidates = [
+              path
+              for path in framework_extract.rglob(
+                  "CydiaSubstrate.framework"
+              )
+              if path.is_dir()
+          ]
+
+          if len(framework_candidates) != 1:
+              raise SystemExit(
+                  "❌ zx-compat: CydiaSubstrate.framework.zip deve conter "
+                  "exatamente um CydiaSubstrate.framework"
+              )
+
+          substrate_source = framework_candidates[0]
+          substrate_binary = (
+              substrate_source / "CydiaSubstrate"
+          )
+
+          if not substrate_binary.is_file():
+              raise SystemExit(
+                  "❌ zx-compat: binário CydiaSubstrate ausente no framework"
+              )
+
+          substrate_hash = hashlib.sha256(
+              substrate_binary.read_bytes()
+          ).hexdigest()
+
+          if substrate_hash != EXPECTED_SUBSTRATE_SHA256:
+              raise SystemExit(
+                  "❌ zx-compat: CydiaSubstrate não corresponde ao "
+                  f"framework de referência: {substrate_hash}"
+              )
+
+          substrate_destination = (
+              frameworks / "CydiaSubstrate.framework"
+          )
+
+          if substrate_destination.exists():
+              shutil.rmtree(substrate_destination)
+
+          shutil.copytree(
+              substrate_source,
+              substrate_destination,
+          )
+
+          print(
+              "✅ zx-compat: zxPluginsInject de referência confirmado "
+              f"({zx_source.stat().st_size} bytes)"
+          )
+          print(
+              "✅ zx-compat: CydiaSubstrate de referência confirmado "
+              f"({substrate_binary.stat().st_size} bytes)"
+          )
+
+          patcher = Path(
+              "private-core/scripts/zx_compat_patch.py"
+          )
+          if not patcher.is_file():
+              raise SystemExit(
+                  f"❌ zx-compat: patcher ausente: {patcher}"
+              )
+
+          patch_proc = subprocess.run(
+              [
+                  sys.executable,
+                  str(patcher),
+                  "--app",
+                  str(app),
+                  "--bundle-id",
+                  BUNDLE_ID,
+                  "--json",
+              ],
+              capture_output=True,
+              text=True,
+          )
+
+          if patch_proc.returncode != 0:
+              raise SystemExit(
+                  "❌ zx-compat: falha ao aplicar load commands:\n"
+                  + patch_proc.stderr
+              )
+
+          try:
+              patch_report = json.loads(patch_proc.stdout)
+          except json.JSONDecodeError as exc:
+              raise SystemExit(
+                  "❌ zx-compat: relatório JSON inválido do patcher: "
+                  f"{exc}\n{patch_proc.stdout}"
+              )
+
+          print(
+              "✅ zx-compat: load commands aplicados no principal e em "
+              f"{patch_report.get('extension_count', 0)} extensão(ões)"
+          )
+
+          final_extensions = discover_extensions(app)
+          final_extension_names = [
+              str(extension.relative_to(app))
+              for extension in final_extensions
+          ]
+
+          if final_extension_names != original_extension_names:
+              raise SystemExit(
+                  "❌ zx-compat: conjunto de extensões mudou durante o patch. "
+                  f"antes={original_extension_names}; "
+                  f"depois={final_extension_names}"
+              )
+
+          rpaths_after = {
+              "__main__": rpaths(bundle_executable(app)),
+          }
+          for extension in final_extensions:
+              rpaths_after[str(extension.relative_to(app))] = rpaths(
+                  bundle_executable(extension)
+              )
+
+          if rpaths_after != rpaths_before:
+              raise SystemExit(
+                  "❌ zx-compat: LC_RPATH foi alterado indevidamente. "
+                  f"antes={rpaths_before}; depois={rpaths_after}"
+              )
+
+          if BUNDLE_ID == "com.facebook.Facebook":
+              for forbidden in (
+                  app / "Glow.dylib",
+                  frameworks / "Glow.dylib",
+              ):
+                  if forbidden.exists():
+                      raise SystemExit(
+                          f"❌ zx-compat: Glow antigo ainda presente: {forbidden}"
+                      )
+
+          output = Path("Layout_Output.ipa")
+          if output.exists():
+              output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
+
+          if not output.is_file():
+              raise SystemExit(
+                  "❌ zx-compat: Layout_Output.ipa não foi criado"
+              )
+
+          print("✅ zx-compat: LC_RPATH preservado")
+          print(
+              f"✅ zx-compat: {len(final_extensions)} extensão(ões) "
+              "originais preservadas"
+          )
+          print("✅ zx-compat: Layout_Output.ipa criado sem Cyan/IPAPatch")
+          PY
+
       - name: Progresso da injeção - 40%
         if: ${{ steps.private_input.outputs.processing_route == 'standard' }}
         continue-on-error: true
@@ -3845,7 +4258,7 @@ jobs:
       # =========================================================
 
       - name: Reproduce functional dylib layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.zx_compat != 'true' }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
@@ -7720,6 +8133,385 @@ jobs:
       # 12. VALIDAÇÃO
       # =========================================================
 
+
+      - name: Validate zx-compat final layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import importlib.util
+          import os
+          import plistlib
+          import shutil
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          BUNDLE_ID = os.environ["BUNDLE_ID"]
+
+          EXPECTED_ZX_SHA256 = (
+              "a9ea3a54abe37ce45f456db5b071ffe8"
+              "f9e882360086847c8f042c057cf807ab"
+          )
+          EXPECTED_SUBSTRATE_SHA256 = (
+              "7d8d26bb357a1d8b5e43ff6f9898ea0"
+              "df04f7c32d82396162c8ac669caa4cf2a"
+          )
+
+          PROFILES = {
+              "com.facebook.Facebook": {
+                  "framework_files": {
+                      "iQFace.dylib",
+                      "iQFaceEnhancer.dylib",
+                      "zxPluginsInject.dylib",
+                  },
+                  "root_files": {
+                      "iQFace.bundle",
+                  },
+                  "main_loads": {
+                      "@rpath/iQFace.dylib",
+                      "@rpath/iQFaceEnhancer.dylib",
+                      "@rpath/zxPluginsInject.dylib",
+                  },
+                  "extension_forbidden": {
+                      "iQFace.dylib",
+                      "iQFaceEnhancer.dylib",
+                  },
+                  "forbidden_main": {
+                      "@executable_path/iQFace.dylib",
+                      "@executable_path/iQFaceEnhancer.dylib",
+                      "@executable_path/Glow.dylib",
+                      "@rpath/Glow.dylib",
+                  },
+              },
+              "com.facebook.Messenger": {
+                  "framework_files": {
+                      "MSGPlusX.dylib",
+                      "Sideload Keychain Fix.dylib",
+                      "MessengerEnhancements.dylib",
+                      "zxPluginsInject.dylib",
+                  },
+                  "root_files": set(),
+                  "main_loads": {
+                      "@executable_path/Frameworks/MSGPlusX.dylib",
+                      (
+                          "@executable_path/Frameworks/"
+                          "Sideload Keychain Fix.dylib"
+                      ),
+                      (
+                          "@executable_path/Frameworks/"
+                          "MessengerEnhancements.dylib"
+                      ),
+                      "@rpath/zxPluginsInject.dylib",
+                  },
+                  "extension_forbidden": {
+                      "MSGPlusX.dylib",
+                      "Sideload Keychain Fix.dylib",
+                      "MessengerEnhancements.dylib",
+                  },
+                  "forbidden_main": {
+                      "@rpath/MSGPlusX.dylib",
+                      "@rpath/Sideload Keychain Fix.dylib",
+                      "@rpath/MessengerEnhancements.dylib",
+                  },
+              },
+              "ph.telegra.Telegraph": {
+                  "framework_files": {
+                      "Mx.dylib",
+                      "zxPluginsInject.dylib",
+                  },
+                  "root_files": {
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                      "Mx.bundle",
+                  },
+                  "main_loads": {
+                      "@executable_path/TelegramScreenshotBypass.dylib",
+                      "@executable_path/sideloadFixerLol.dylib",
+                      "@executable_path/TelegramNotificationFix.dylib",
+                      "@executable_path/TelegramChatFixer.dylib",
+                      "@rpath/zxPluginsInject.dylib",
+                      "@rpath/Mx.dylib",
+                  },
+                  "extension_forbidden": {
+                      "Mx.dylib",
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                  },
+                  "forbidden_main": {
+                      "@executable_path/Mx.dylib",
+                      "@rpath/sideloadFixerLol.dylib",
+                      "@rpath/TelegramChatFixer.dylib",
+                      "@rpath/TelegramNotificationFix.dylib",
+                      "@rpath/TelegramScreenshotBypass.dylib",
+                  },
+              },
+          }
+
+          profile = PROFILES.get(BUNDLE_ID)
+          if profile is None:
+              raise SystemExit(
+                  f"❌ Validação zx-compat acionada para app inválido: {BUNDLE_ID}"
+              )
+
+          work = Path("zx_compat_final_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ zx-compat final: app principal não identificado"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ zx-compat final: Bundle ID inesperado"
+              )
+
+          def executable_from_bundle(bundle: Path) -> Path:
+              with (bundle / "Info.plist").open("rb") as f:
+                  bundle_info = plistlib.load(f)
+              name = bundle_info.get("CFBundleExecutable")
+              if not name:
+                  raise SystemExit(
+                      f"❌ CFBundleExecutable ausente em {bundle}"
+                  )
+              executable = bundle / name
+              if not executable.is_file():
+                  raise SystemExit(
+                      f"❌ Executável ausente: {executable}"
+                  )
+              return executable
+
+          patcher_path = Path(
+              "private-core/scripts/zx_compat_patch.py"
+          )
+          spec = importlib.util.spec_from_file_location(
+              "zx_compat_patch",
+              patcher_path,
+          )
+          if spec is None or spec.loader is None:
+              raise SystemExit(
+                  "❌ Não foi possível carregar zx_compat_patch.py"
+              )
+          zxpatch = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = zxpatch
+          spec.loader.exec_module(zxpatch)
+
+          def dylib_commands(executable: Path) -> dict[str, int]:
+              data = executable.read_bytes()
+              combined = {}
+              for slice_off, slice_size in zxpatch._fat_slices(data):
+                  parsed = zxpatch._parse_slice(
+                      data,
+                      slice_off,
+                      slice_size,
+                  )
+                  for name, cmd in parsed["dylibs"].items():
+                      previous = combined.get(name)
+                      if previous is not None and previous != cmd:
+                          raise SystemExit(
+                              "❌ Load command diverge entre slices: "
+                              f"{executable.name} -> {name}"
+                          )
+                      combined[name] = cmd
+              return combined
+
+          frameworks = app / "Frameworks"
+          for name in profile["framework_files"]:
+              required = frameworks / name
+              if not required.is_file():
+                  raise SystemExit(
+                      f"❌ zx-compat final: Frameworks/{name} ausente"
+                  )
+
+          for name in profile["root_files"]:
+              required = app / name
+              if not required.exists():
+                  raise SystemExit(
+                      f"❌ zx-compat final: raiz/{name} ausente"
+                  )
+
+          substrate = (
+              frameworks
+              / "CydiaSubstrate.framework"
+              / "CydiaSubstrate"
+          )
+          if not substrate.is_file():
+              raise SystemExit(
+                  "❌ zx-compat final: CydiaSubstrate.framework ausente"
+              )
+
+          zx = frameworks / "zxPluginsInject.dylib"
+          zx_hash = hashlib.sha256(zx.read_bytes()).hexdigest()
+          substrate_hash = hashlib.sha256(
+              substrate.read_bytes()
+          ).hexdigest()
+
+          if zx_hash != EXPECTED_ZX_SHA256:
+              raise SystemExit(
+                  "❌ zx-compat final: zxPluginsInject divergiu do "
+                  f"arquivo de referência: {zx_hash}"
+              )
+          if substrate_hash != EXPECTED_SUBSTRATE_SHA256:
+              raise SystemExit(
+                  "❌ zx-compat final: CydiaSubstrate divergiu do "
+                  f"arquivo de referência: {substrate_hash}"
+              )
+
+          main = executable_from_bundle(app)
+          main_commands = dylib_commands(main)
+
+          missing_main = sorted(
+              profile["main_loads"] - set(main_commands)
+          )
+          if missing_main:
+              raise SystemExit(
+                  "❌ zx-compat final: load(s) principal(is) ausente(s): "
+                  + ", ".join(missing_main)
+              )
+
+          for dependency in profile["main_loads"]:
+              if (
+                  main_commands[dependency]
+                  != zxpatch.LC_LOAD_WEAK_DYLIB
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: load principal não é weak: "
+                      f"{dependency}"
+                  )
+
+          forbidden = sorted(
+              profile["forbidden_main"] & set(main_commands)
+          )
+          if forbidden:
+              raise SystemExit(
+                  "❌ zx-compat final: load(s) antigo(s)/incorreto(s): "
+                  + ", ".join(forbidden)
+              )
+
+          extensions = []
+          for directory_name in ("PlugIns", "Extensions"):
+              directory = app / directory_name
+              if directory.is_dir():
+                  extensions.extend(
+                      sorted(directory.glob("*.appex"))
+                  )
+
+          required_zx = "@rpath/zxPluginsInject.dylib"
+
+          for extension in extensions:
+              executable = executable_from_bundle(extension)
+              commands = dylib_commands(executable)
+
+              if required_zx not in commands:
+                  raise SystemExit(
+                      "❌ zx-compat final: zxPluginsInject ausente em "
+                      f"{extension.name}"
+                  )
+
+              if (
+                  commands[required_zx]
+                  != zxpatch.LC_LOAD_WEAK_DYLIB
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: zxPluginsInject não é weak em "
+                      f"{extension.name}"
+                  )
+
+              bad = sorted(
+                  dependency
+                  for dependency in commands
+                  if any(
+                      token in dependency
+                      for token in profile["extension_forbidden"]
+                  )
+              )
+              if bad:
+                  raise SystemExit(
+                      "❌ zx-compat final: tweak principal atingiu "
+                      f"{extension.name}: {bad}"
+                  )
+
+          if BUNDLE_ID == "com.facebook.Facebook":
+              iqface = frameworks / "iQFace.dylib"
+              enhancer = frameworks / "iQFaceEnhancer.dylib"
+
+              if hashlib.sha256(iqface.read_bytes()).hexdigest() != (
+                  "a3b8905f846c688c1e0886a50015563"
+                  "e3b4e6318bbc8cd4dc5bbbca72c538e4c"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: iQFace.dylib divergiu da referência"
+                  )
+
+              if hashlib.sha256(enhancer.read_bytes()).hexdigest() != (
+                  "36f89a561c9b672ff5ca2500c4c10d81"
+                  "46a9e58bb57aa4b4fb40bf96fe14e3b0"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: iQFaceEnhancer.dylib inesperado"
+                  )
+
+              if (app / "Glow.dylib").exists() or (
+                  frameworks / "Glow.dylib"
+              ).exists():
+                  raise SystemExit(
+                      "❌ zx-compat final: Glow antigo ainda está no Facebook"
+                  )
+
+          if BUNDLE_ID == "com.facebook.Messenger":
+              msg = frameworks / "MSGPlusX.dylib"
+              keychain = frameworks / "Sideload Keychain Fix.dylib"
+
+              if hashlib.sha256(msg.read_bytes()).hexdigest() != (
+                  "7db44a8a811e4827304820a16265322b"
+                  "ee9cfb940cb0bd82d124ec27942d7a55"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: MSGPlusX.dylib divergiu da referência"
+                  )
+
+              if hashlib.sha256(keychain.read_bytes()).hexdigest() != (
+                  "bb8f23103bafe15a516487a18bb89fbe"
+                  "0c1d434e81f6ddcb412551ca0f6b11fd"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: Keychain Fix divergiu da referência"
+                  )
+
+          print(
+              f"✅ zx-compat final validado: {BUNDLE_ID}"
+          )
+          print(
+              "✅ zxPluginsInject e CydiaSubstrate correspondem "
+              "aos arquivos de referência"
+          )
+          print(
+              "✅ Todos os loads especiais estão como LC_LOAD_WEAK_DYLIB"
+          )
+          print(
+              f"✅ {len(extensions)} extensão(ões) somente com o shim zx"
+          )
+
+          shutil.rmtree(work)
+          PY
+
       - name: Validate Messenger MSGPlusX native locale layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Messenger' }}
         env:
@@ -10701,6 +11493,9 @@ jobs:
           echo ""
           echo "🩹 Modo IPA Patch:"
           echo "${{ steps.prepare.outputs.ipapatch_mode }}"
+          echo ""
+          echo "🧬 zx-compat:"
+          echo "${{ steps.prepare.outputs.zx_compat }}"
           echo ""
 
           ls -lh Final.ipa
