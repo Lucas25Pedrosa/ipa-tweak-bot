@@ -2163,12 +2163,27 @@ jobs:
 
       - name: Inject with Cyan
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
 
+          # Discord distribui as traduções oficiais em assets/.cache/intl.
+          # O empacotador padrão do Cyan exclui caminhos ocultos ao gerar .ipa.
+          # Para o Discord, fazemos o Cyan gerar .app e reempacotamos sem excluir
+          # .cache, preservando os idiomas exatamente como vieram no input.ipa.
+          if [ "$BUNDLE_ID" = "com.hammerandchisel.discord" ]; then
+            CYAN_OUTPUT="Discord_Cyan.app"
+            rm -rf "$CYAN_OUTPUT" discord_cyan_package
+            rm -f Cyan_Output.ipa
+            echo "🌐 Discord: rota Cyan especial para preservar assets/.cache/intl"
+          else
+            CYAN_OUTPUT="Cyan_Output.ipa"
+          fi
+
           CYAN_ARGS=(
             -i input.ipa
-            -o Cyan_Output.ipa
+            -o "$CYAN_OUTPUT"
             -u
             -w
           )
@@ -2209,9 +2224,187 @@ jobs:
           echo "💉 Executando Cyan..."
           cyan "${CYAN_ARGS[@]}"
 
-          if [ ! -f Cyan_Output.ipa ]; then
-            echo "❌ Cyan não gerou Cyan_Output.ipa"
-            exit 1
+          if [ "$BUNDLE_ID" = "com.hammerandchisel.discord" ]; then
+            if [ ! -d "$CYAN_OUTPUT" ]; then
+              echo "❌ Cyan não gerou $CYAN_OUTPUT"
+              exit 1
+            fi
+
+            python <<'PY'
+          import hashlib
+          import plistlib
+          import shutil
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          BUNDLE_ID = "com.hammerandchisel.discord"
+          source_ipa = Path("input.ipa")
+          cyan_app = Path("Discord_Cyan.app")
+          package_root = Path("discord_cyan_package")
+          output_ipa = Path.cwd() / "Cyan_Output.ipa"
+
+          if not source_ipa.is_file():
+              raise SystemExit("❌ Discord: input.ipa ausente")
+
+          if not cyan_app.is_dir():
+              raise SystemExit("❌ Discord: Discord_Cyan.app ausente")
+
+          info_path = cyan_app / "Info.plist"
+          if not info_path.is_file():
+              raise SystemExit("❌ Discord: Info.plist ausente após Cyan")
+
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ Discord: bundle ID inesperado após Cyan: "
+                  f"{info.get('CFBundleIdentifier')}"
+              )
+
+          with zipfile.ZipFile(source_ipa, "r") as z:
+              app_roots = sorted(
+                  {
+                      name.split("/", 2)[1]
+                      for name in z.namelist()
+                      if name.startswith("Payload/")
+                      and len(name.split("/", 2)) >= 3
+                      and name.split("/", 2)[1].endswith(".app")
+                  }
+              )
+
+              if len(app_roots) != 1:
+                  raise SystemExit(
+                      "❌ Discord: não foi possível identificar "
+                      "o .app original no input.ipa"
+                  )
+
+              original_app_name = app_roots[0]
+              intl_prefix = (
+                  f"Payload/{original_app_name}/assets/.cache/intl/"
+              )
+
+              input_intl = {
+                  name[len(intl_prefix):]:
+                  hashlib.sha256(z.read(name)).hexdigest()
+                  for name in z.namelist()
+                  if name.startswith(intl_prefix)
+                  and not name.endswith("/")
+              }
+
+          if not input_intl:
+              raise SystemExit(
+                  "❌ Discord: input.ipa não contém assets/.cache/intl"
+              )
+
+          intl_dir = cyan_app / "assets" / ".cache" / "intl"
+          if not intl_dir.is_dir():
+              raise SystemExit(
+                  "❌ Discord: Cyan removeu assets/.cache/intl "
+                  "mesmo na saída .app"
+              )
+
+          cyan_intl = {
+              str(file.relative_to(intl_dir)):
+              hashlib.sha256(file.read_bytes()).hexdigest()
+              for file in intl_dir.rglob("*")
+              if file.is_file()
+          }
+
+          if cyan_intl != input_intl:
+              missing = sorted(set(input_intl) - set(cyan_intl))
+              extra = sorted(set(cyan_intl) - set(input_intl))
+              changed = sorted(
+                  name
+                  for name in set(input_intl) & set(cyan_intl)
+                  if input_intl[name] != cyan_intl[name]
+              )
+              raise SystemExit(
+                  "❌ Discord: assets/.cache/intl divergiu do IPA original. "
+                  f"ausentes={len(missing)}, extras={len(extra)}, "
+                  f"alterados={len(changed)}"
+              )
+
+          pt_br = [
+              name
+              for name in input_intl
+              if Path(name).name.startswith("pt-BR.")
+              or "/pt-BR." in name
+          ]
+
+          if not pt_br:
+              raise SystemExit(
+                  "❌ Discord: nenhum recurso pt-BR encontrado em "
+                  "assets/.cache/intl"
+              )
+
+          if package_root.exists():
+              shutil.rmtree(package_root)
+
+          payload = package_root / "Payload"
+          payload.mkdir(parents=True)
+
+          destination = payload / original_app_name
+          shutil.copytree(
+              cyan_app,
+              destination,
+              symlinks=True,
+          )
+
+          if output_ipa.exists():
+              output_ipa.unlink()
+
+          subprocess.run(
+              [
+                  "zip",
+                  "-qry",
+                  str(output_ipa),
+                  "Payload",
+              ],
+              cwd=package_root,
+              check=True,
+          )
+
+          if not output_ipa.is_file():
+              raise SystemExit(
+                  "❌ Discord: falha ao recriar Cyan_Output.ipa"
+              )
+
+          with zipfile.ZipFile(output_ipa, "r") as z:
+              final_prefix = (
+                  f"Payload/{original_app_name}/assets/.cache/intl/"
+              )
+              final_intl = {
+                  name[len(final_prefix):]:
+                  hashlib.sha256(z.read(name)).hexdigest()
+                  for name in z.namelist()
+                  if name.startswith(final_prefix)
+                  and not name.endswith("/")
+              }
+
+          if final_intl != input_intl:
+              raise SystemExit(
+                  "❌ Discord: traduções divergiram após "
+                  "reempacotar Cyan_Output.ipa"
+              )
+
+          print(
+              "✅ Discord: traduções oficiais preservadas 1:1 "
+              f"({len(final_intl)} arquivos; pt-BR={len(pt_br)})"
+          )
+          print(
+              "✅ Discord: Cyan_Output.ipa recriado sem excluir .cache"
+          )
+
+          shutil.rmtree(package_root)
+          shutil.rmtree(cyan_app)
+          PY
+          else
+            if [ ! -f Cyan_Output.ipa ]; then
+              echo "❌ Cyan não gerou Cyan_Output.ipa"
+              exit 1
+            fi
           fi
 
           echo "✅ Cyan concluído"
