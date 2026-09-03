@@ -8321,7 +8321,10 @@ jobs:
               )
 
           app = apps[0]
-          with (app / "Info.plist").open("rb") as f:
+          info_path = app / "Info.plist"
+          info_bytes = info_path.read_bytes()
+
+          with info_path.open("rb") as f:
               info = plistlib.load(f)
 
           if info.get("CFBundleIdentifier") != BUNDLE_ID:
