@@ -2664,7 +2664,10 @@ jobs:
               raise SystemExit("❌ iLovePDF: .app principal não identificado")
 
           app = apps[0]
-          with (app / "Info.plist").open("rb") as f:
+          info_path = app / "Info.plist"
+          info_bytes = info_path.read_bytes()
+
+          with info_path.open("rb") as f:
               info = plistlib.load(f)
 
           if info.get("CFBundleIdentifier") != BUNDLE_ID:
@@ -8051,6 +8054,19 @@ jobs:
                   f"✅ {key}: {old} -> {value}"
               )
 
+          # O IPA Vault serializa o Info.plist principal do Facebook em XML.
+          # Mantemos o comportamento antigo para todos os outros apps.
+          bundle_id = plist.get("CFBundleIdentifier")
+          is_facebook_zx = (
+              bundle_id == "com.facebook.Facebook"
+              and bool(addon.get("zx_compat", False))
+          )
+          plist_format = (
+              plistlib.FMT_XML
+              if is_facebook_zx
+              else plistlib.FMT_BINARY
+          )
+
           with open(
               plist_path,
               "wb",
@@ -8058,7 +8074,13 @@ jobs:
               plistlib.dump(
                   plist,
                   f,
-                  fmt=plistlib.FMT_BINARY,
+                  fmt=plist_format,
+              )
+
+          if is_facebook_zx:
+              print(
+                  "✅ Facebook zx-compat: Info.plist serializado em XML "
+                  "como no IPA Vault"
               )
 
           output = Path(
@@ -8305,6 +8327,15 @@ jobs:
           if info.get("CFBundleIdentifier") != BUNDLE_ID:
               raise SystemExit(
                   "❌ zx-compat final: Bundle ID inesperado"
+              )
+
+          if BUNDLE_ID == "com.facebook.Facebook":
+              if not info_bytes.startswith(b"<?xml"):
+                  raise SystemExit(
+                      "❌ zx-compat final: Info.plist do Facebook não está em XML"
+                  )
+              print(
+                  "✅ zx-compat final: Info.plist do Facebook em XML"
               )
 
           def executable_from_bundle(bundle: Path) -> Path:
