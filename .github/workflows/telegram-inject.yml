@@ -7973,9 +7973,12 @@ jobs:
 
       - name: Apply Info.plist changes
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
         run: |
           python <<'PY'
           import json
+          import os
           import plistlib
           import shutil
           import zipfile
@@ -7993,7 +7996,19 @@ jobs:
               {},
           )
 
-          if not changes:
+          bundle_id = os.environ.get("BUNDLE_ID", "").strip()
+          zx_compat = bool(addon.get("zx_compat", False))
+          zx_xml_apps = {
+              "com.facebook.Facebook",
+              "com.facebook.Messenger",
+              "ph.telegra.Telegraph",
+          }
+          force_xml = (
+              zx_compat
+              and bundle_id in zx_xml_apps
+          )
+
+          if not changes and not force_xml:
               shutil.copy2(
                   "Package_Output.ipa",
                   "Final.ipa",
@@ -8054,16 +8069,21 @@ jobs:
                   f"✅ {key}: {old} -> {value}"
               )
 
-          # O IPA Vault serializa o Info.plist principal do Facebook em XML.
-          # Mantemos o comportamento antigo para todos os outros apps.
-          bundle_id = plist.get("CFBundleIdentifier")
-          is_facebook_zx = (
-              bundle_id == "com.facebook.Facebook"
-              and bool(addon.get("zx_compat", False))
+          # Os perfis zx-compat reproduzem o layout do IPA Vault.
+          # Facebook e Messenger já foram confirmados em XML; Telegram
+          # segue o mesmo perfil especial para manter o empacotamento uniforme.
+          actual_bundle_id = plist.get("CFBundleIdentifier")
+          is_special_zx = (
+              bool(addon.get("zx_compat", False))
+              and actual_bundle_id in {
+                  "com.facebook.Facebook",
+                  "com.facebook.Messenger",
+                  "ph.telegra.Telegraph",
+              }
           )
           plist_format = (
               plistlib.FMT_XML
-              if is_facebook_zx
+              if is_special_zx
               else plistlib.FMT_BINARY
           )
 
@@ -8077,10 +8097,10 @@ jobs:
                   fmt=plist_format,
               )
 
-          if is_facebook_zx:
+          if is_special_zx:
               print(
-                  "✅ Facebook zx-compat: Info.plist serializado em XML "
-                  "como no IPA Vault"
+                  "✅ zx-compat: Info.plist serializado em XML "
+                  f"({actual_bundle_id})"
               )
 
           output = Path(
@@ -8151,9 +8171,13 @@ jobs:
               plistlib.dump(
                   info,
                   f,
-                  fmt=plistlib.FMT_BINARY,
+                  fmt=plistlib.FMT_XML,
                   sort_keys=False,
               )
+
+          print(
+              "✅ Messenger zx-compat: Info.plist preservado em XML"
+          )
 
           output = Path("Final.ipa")
           output.unlink()
@@ -8332,13 +8356,18 @@ jobs:
                   "❌ zx-compat final: Bundle ID inesperado"
               )
 
-          if BUNDLE_ID == "com.facebook.Facebook":
+          if BUNDLE_ID in {
+              "com.facebook.Facebook",
+              "com.facebook.Messenger",
+              "ph.telegra.Telegraph",
+          }:
               if not info_bytes.startswith(b"<?xml"):
                   raise SystemExit(
-                      "❌ zx-compat final: Info.plist do Facebook não está em XML"
+                      "❌ zx-compat final: Info.plist do app especial não está em XML"
                   )
               print(
-                  "✅ zx-compat final: Info.plist do Facebook em XML"
+                  "✅ zx-compat final: Info.plist em XML "
+                  f"({BUNDLE_ID})"
               )
 
           def executable_from_bundle(bundle: Path) -> Path:
