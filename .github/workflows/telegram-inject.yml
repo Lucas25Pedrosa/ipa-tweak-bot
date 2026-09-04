@@ -3892,6 +3892,7 @@ jobs:
                   "frameworks": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "iQFaceIcons.dylib",
                       "FBOLED.dylib",
                   },
                   "root": set(),
@@ -8269,6 +8270,7 @@ jobs:
                   "framework_files": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "iQFaceIcons.dylib",
                       "FBOLED.dylib",
                       "zxPluginsInject.dylib",
                   },
@@ -8278,17 +8280,20 @@ jobs:
                   "main_loads": {
                       "@rpath/iQFace.dylib",
                       "@rpath/iQFaceEnhancer.dylib",
+                      "@rpath/iQFaceIcons.dylib",
                       "@rpath/FBOLED.dylib",
                       "@rpath/zxPluginsInject.dylib",
                   },
                   "extension_forbidden": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
+                      "iQFaceIcons.dylib",
                       "FBOLED.dylib",
                   },
                   "forbidden_main": {
                       "@executable_path/iQFace.dylib",
                       "@executable_path/iQFaceEnhancer.dylib",
+                      "@executable_path/iQFaceIcons.dylib",
                       "@executable_path/FBOLED.dylib",
                       "@executable_path/Glow.dylib",
                       "@rpath/Glow.dylib",
