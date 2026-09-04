@@ -8699,6 +8699,7 @@ jobs:
           if BUNDLE_ID == "com.facebook.Facebook":
               iqface = frameworks / "iQFace.dylib"
               enhancer = frameworks / "iQFaceEnhancer.dylib"
+              icons = frameworks / "iQFaceIcons.dylib"
               fboled = frameworks / "FBOLED.dylib"
 
               if hashlib.sha256(iqface.read_bytes()).hexdigest() != (
@@ -8710,11 +8711,19 @@ jobs:
                   )
 
               if hashlib.sha256(enhancer.read_bytes()).hexdigest() != (
-                  "36f89a561c9b672ff5ca2500c4c10d81"
-                  "46a9e58bb57aa4b4fb40bf96fe14e3b0"
+                  "0219e3acc2edc5f0c03fc402a2beebb9"
+                  "2dcbf3647b12a5bd9e644d952bbc0545"
               ):
                   raise SystemExit(
                       "❌ zx-compat final: iQFaceEnhancer.dylib inesperado"
+                  )
+
+              if hashlib.sha256(icons.read_bytes()).hexdigest() != (
+                  "cd6dd87d894968445fc19fbc7d6aa3cd"
+                  "98b930908c30bd5e68ad62b2cb08164a"
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: iQFaceIcons.dylib inesperado"
                   )
 
               if hashlib.sha256(fboled.read_bytes()).hexdigest() != (
