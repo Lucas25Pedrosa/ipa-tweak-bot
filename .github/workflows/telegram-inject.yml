@@ -3847,13 +3847,14 @@ jobs:
 
 
       # =========================================================
-      # 7A. ZX-COMPAT - FACEBOOK / MESSENGER / MXGRAM
+      # 7A. ZX-COMPAT - FACEBOOK / MESSENGER / TELEGRAM
       # =========================================================
 
       - name: Build zx-compat layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
         run: |
           python <<'PY'
           import hashlib
@@ -3869,6 +3870,7 @@ jobs:
           from cyan.tbhtypes.executable import Executable
 
           BUNDLE_ID = os.environ["BUNDLE_ID"]
+          ADDON_NAME = os.environ.get("ADDON_NAME", "").strip()
 
           SPECIAL_APPS = {
               "com.facebook.Facebook",
@@ -3902,7 +3904,10 @@ jobs:
                   },
                   "root": set(),
               },
-              "ph.telegra.Telegraph": {
+          }
+
+          TELEGRAM_PROFILE_FILES = {
+              "MxGram": {
                   "frameworks": {
                       "Mx.dylib",
                   },
@@ -3912,6 +3917,17 @@ jobs:
                       "TelegramNotificationFix.dylib",
                       "TelegramScreenshotBypass.dylib",
                   },
+              },
+              "iQTele": {
+                  "frameworks": {
+                      "iQTele.dylib",
+                      "iQTeleEnhancer.dylib",
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                  },
+                  "root": set(),
               },
           }
 
@@ -4027,7 +4043,16 @@ jobs:
                   )
               inject_by_name[path.name] = path
 
-          profile = PROFILE_FILES[BUNDLE_ID]
+          if BUNDLE_ID == "ph.telegra.Telegraph":
+              profile = TELEGRAM_PROFILE_FILES.get(ADDON_NAME)
+              if profile is None:
+                  raise SystemExit(
+                      "❌ zx-compat: addon Telegram não suportado nesta rota: "
+                      f"{ADDON_NAME!r}"
+                  )
+          else:
+              profile = PROFILE_FILES[BUNDLE_ID]
+
           expected_names = profile["frameworks"] | profile["root"]
           actual_names = set(inject_by_name)
 
@@ -4149,16 +4174,27 @@ jobs:
                   f"❌ zx-compat: patcher ausente: {patcher}"
               )
 
+          patch_args = [
+              sys.executable,
+              str(patcher),
+              "--app",
+              str(app),
+              "--bundle-id",
+              BUNDLE_ID,
+          ]
+
+          if BUNDLE_ID == "ph.telegra.Telegraph":
+              patch_args.extend(
+                  [
+                      "--telegram-addon",
+                      ADDON_NAME,
+                  ]
+              )
+
+          patch_args.append("--json")
+
           patch_proc = subprocess.run(
-              [
-                  sys.executable,
-                  str(patcher),
-                  "--app",
-                  str(app),
-                  "--bundle-id",
-                  BUNDLE_ID,
-                  "--json",
-              ],
+              patch_args,
               capture_output=True,
               text=True,
           )
@@ -8204,6 +8240,7 @@ jobs:
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
         run: |
           python <<'PY'
           import hashlib
@@ -8216,6 +8253,7 @@ jobs:
           from pathlib import Path
 
           BUNDLE_ID = os.environ["BUNDLE_ID"]
+          ADDON_NAME = os.environ.get("ADDON_NAME", "").strip()
 
           EXPECTED_ZX_SHA256 = (
               "a9ea3a54abe37ce45f456db5b071ffe8"
@@ -8287,7 +8325,10 @@ jobs:
                       "@rpath/MessengerEnhancements.dylib",
                   },
               },
-              "ph.telegra.Telegraph": {
+          }
+
+          TELEGRAM_PROFILES = {
+              "MxGram": {
                   "framework_files": {
                       "Mx.dylib",
                       "zxPluginsInject.dylib",
@@ -8322,13 +8363,67 @@ jobs:
                       "@rpath/TelegramScreenshotBypass.dylib",
                   },
               },
+              "iQTele": {
+                  "framework_files": {
+                      "iQTele.dylib",
+                      "iQTeleEnhancer.dylib",
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                      "zxPluginsInject.dylib",
+                  },
+                  "root_files": set(),
+                  "main_loads": {
+                      "@rpath/TelegramChatFixer.dylib",
+                      "@rpath/TelegramNotificationFix.dylib",
+                      "@rpath/TelegramScreenshotBypass.dylib",
+                      "@rpath/sideloadFixerLol.dylib",
+                      "@rpath/zxPluginsInject.dylib",
+                      "@rpath/iQTele.dylib",
+                      "@rpath/iQTeleEnhancer.dylib",
+                  },
+                  "extension_forbidden": {
+                      "iQTeleEnhancer.dylib",
+                      "sideloadFixerLol.dylib",
+                      "TelegramChatFixer.dylib",
+                      "TelegramNotificationFix.dylib",
+                      "TelegramScreenshotBypass.dylib",
+                  },
+                  "extension_required": {
+                      "NotificationServiceExtensionv1": {
+                          "@rpath/iQTele.dylib",
+                      },
+                  },
+                  "extension_exclusive": {
+                      "iQTele.dylib",
+                  },
+                  "forbidden_main": {
+                      "@executable_path/iQTele.dylib",
+                      "@executable_path/iQTeleEnhancer.dylib",
+                      "@executable_path/sideloadFixerLol.dylib",
+                      "@executable_path/TelegramChatFixer.dylib",
+                      "@executable_path/TelegramNotificationFix.dylib",
+                      "@executable_path/TelegramScreenshotBypass.dylib",
+                      "@rpath/Mx.dylib",
+                  },
+              },
           }
 
-          profile = PROFILES.get(BUNDLE_ID)
-          if profile is None:
-              raise SystemExit(
-                  f"❌ Validação zx-compat acionada para app inválido: {BUNDLE_ID}"
-              )
+          if BUNDLE_ID == "ph.telegra.Telegraph":
+              profile = TELEGRAM_PROFILES.get(ADDON_NAME)
+              if profile is None:
+                  raise SystemExit(
+                      "❌ Validação zx-compat: addon Telegram não suportado: "
+                      f"{ADDON_NAME!r}"
+                  )
+          else:
+              profile = PROFILES.get(BUNDLE_ID)
+              if profile is None:
+                  raise SystemExit(
+                      "❌ Validação zx-compat acionada para app inválido: "
+                      f"{BUNDLE_ID}"
+                  )
 
           work = Path("zx_compat_final_validate")
           if work.exists():
@@ -8546,6 +8641,56 @@ jobs:
                       f"{extension.name}: {bad}"
                   )
 
+              required_extra = set(
+                  profile.get(
+                      "extension_required",
+                      {},
+                  ).get(
+                      extension.stem,
+                      set(),
+                  )
+              )
+
+              missing_extra = sorted(
+                  required_extra - set(commands)
+              )
+              if missing_extra:
+                  raise SystemExit(
+                      "❌ zx-compat final: load(s) extra(s) ausente(s) em "
+                      f"{extension.name}: {missing_extra}"
+                  )
+
+              for dependency in required_extra:
+                  if (
+                      commands[dependency]
+                      != zxpatch.LC_LOAD_WEAK_DYLIB
+                  ):
+                      raise SystemExit(
+                          "❌ zx-compat final: load extra não é weak em "
+                          f"{extension.name}: {dependency}"
+                      )
+
+              exclusive_tokens = set(
+                  profile.get(
+                      "extension_exclusive",
+                      set(),
+                  )
+              )
+              exclusive_bad = sorted(
+                  dependency
+                  for dependency in commands
+                  if any(
+                      token in dependency
+                      for token in exclusive_tokens
+                  )
+                  and dependency not in required_extra
+              )
+              if exclusive_bad:
+                  raise SystemExit(
+                      "❌ zx-compat final: load exclusivo atingiu extensão "
+                      f"incorreta {extension.name}: {exclusive_bad}"
+                  )
+
           if BUNDLE_ID == "com.facebook.Facebook":
               iqface = frameworks / "iQFace.dylib"
               enhancer = frameworks / "iQFaceEnhancer.dylib"
@@ -8602,6 +8747,51 @@ jobs:
                       "❌ zx-compat final: Keychain Fix divergiu da referência"
                   )
 
+          if (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          ):
+              expected_iqtele_hashes = {
+                  "iQTele.dylib": (
+                      "48d81cc5bd80b05cb2289cf9373254e0"
+                      "226b12a3a51fd91f54172b72e3db8296"
+                  ),
+                  "iQTeleEnhancer.dylib": (
+                      "2d890950ea35ef2a08dbcc5d396250d8"
+                      "fd4a48d0a13658d4f246804faec82b97"
+                  ),
+                  "TelegramChatFixer.dylib": (
+                      "75a239e5111cb625e82ba01ba31f8c72"
+                      "2738c4aa1ec07bce2641d8db57c7d508"
+                  ),
+                  "TelegramNotificationFix.dylib": (
+                      "97fc8f0ddf1bfe9b31f40cf78b8ce631"
+                      "528e0feb5e31507ef075b86307f644d7"
+                  ),
+                  "TelegramScreenshotBypass.dylib": (
+                      "5e20f477f33d64b4a6bfd190e8a5e9a0"
+                      "cabd1b334d699fa2b13bc4baa87290d9"
+                  ),
+                  "sideloadFixerLol.dylib": (
+                      "1643fa12e891c5edc0de4e4fed71165a0"
+                      "afba9296fc5fa593666258645b3bab8"
+                  ),
+              }
+
+              for name, expected_hash in expected_iqtele_hashes.items():
+                  actual_hash = hashlib.sha256(
+                      (frameworks / name).read_bytes()
+                  ).hexdigest()
+                  if actual_hash != expected_hash:
+                      raise SystemExit(
+                          "❌ zx-compat final: arquivo iQTele divergiu: "
+                          f"{name} -> {actual_hash}"
+                      )
+
+              print(
+                  "✅ iQTele 1.2 + Enhancer validados pelos hashes"
+              )
+
           print(
               f"✅ zx-compat final validado: {BUNDLE_ID}"
           )
@@ -8612,9 +8802,18 @@ jobs:
           print(
               "✅ Todos os loads especiais estão como LC_LOAD_WEAK_DYLIB"
           )
-          print(
-              f"✅ {len(extensions)} extensão(ões) somente com o shim zx"
-          )
+          if (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          ):
+              print(
+                  f"✅ {len(extensions)} extensão(ões) com zx; "
+                  "NotificationServiceExtensionv1 também com iQTele"
+              )
+          else:
+              print(
+                  f"✅ {len(extensions)} extensão(ões) somente com o shim zx"
+              )
 
           shutil.rmtree(work)
           PY
