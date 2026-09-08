@@ -26,18 +26,34 @@ jobs:
           path = Path('.github/workflows/telegram-inject.yml')
           lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
+          section_marker = '      # 7A. ZX-COMPAT - FACEBOOK / MESSENGER / TELEGRAM'
           start_marker = '          apps = list((work / "Payload").glob("*.app"))'
           end_marker = '          def bundle_executable(bundle: Path) -> Path:'
 
-          starts = [i for i, line in enumerate(lines) if line.rstrip('\n') == start_marker]
-          ends = [i for i, line in enumerate(lines) if line.rstrip('\n') == end_marker]
+          sections = [
+              i for i, line in enumerate(lines)
+              if line.rstrip('\n') == section_marker
+          ]
+          if len(sections) != 1:
+              raise SystemExit(
+                  f'Esperava 1 seção zx-compat especial; encontrei {len(sections)}'
+              )
 
-          if len(starts) != 1:
-              raise SystemExit(f'Esperava 1 início do bloco zx-compat; encontrei {len(starts)}')
-          if len(ends) != 1 or ends[0] <= starts[0]:
-              raise SystemExit('Fim do bloco zx-compat não localizado de forma segura')
-
+          section = sections[0]
+          starts = [
+              i for i in range(section, len(lines))
+              if lines[i].rstrip('\n') == start_marker
+          ]
+          if not starts:
+              raise SystemExit('Início da seleção .app não localizado na seção zx-compat')
           start = starts[0]
+
+          ends = [
+              i for i in range(start + 1, len(lines))
+              if lines[i].rstrip('\n') == end_marker
+          ]
+          if not ends:
+              raise SystemExit('Fim da seleção .app não localizado na seção zx-compat')
           end = ends[0]
 
           new_block = [
@@ -80,6 +96,7 @@ jobs:
           PY
 
           git diff --check
+          grep -F 'app_candidates = sorted((work / "Payload").glob("*.app"))' .github/workflows/telegram-inject.yml
           grep -F 'matching_apps = []' .github/workflows/telegram-inject.yml
           grep -F '"com.facebook.Facebook"' .github/workflows/telegram-inject.yml
           grep -F '"com.facebook.Messenger"' .github/workflows/telegram-inject.yml
