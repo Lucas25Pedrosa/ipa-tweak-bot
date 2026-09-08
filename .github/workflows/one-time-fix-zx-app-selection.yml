@@ -48,10 +48,10 @@ jobs:
               )
               return start, end
 
-          def find_in_step(name, exact, after=0):
+          def find_in_step(name, exact):
               start, end = step_bounds(name)
               hits = [
-                  i for i in range(start + after, end)
+                  i for i in range(start, end)
                   if lines[i].rstrip('\n') == exact
               ]
               if len(hits) != 1:
@@ -63,7 +63,7 @@ jobs:
 
           def resolver_block(bundle_expr, label):
               return [
-                  f'          app_candidates = sorted((work / "Payload").glob("*.app"))\n',
+                  '          app_candidates = sorted((work / "Payload").glob("*.app"))\n',
                   '          matching_apps = []\n',
                   '\n',
                   '          for candidate in app_candidates:\n',
@@ -89,28 +89,19 @@ jobs:
                   '\n',
               ]
 
-          # 10. Empacotamento: esta etapa também roda para Facebook/Messenger/Telegram.
           step = 'Add root files, frameworks, bundles and extra extensions'
           start, end = step_bounds(step)
-
-          if not any(
-              line.rstrip('\n') == '        env:'
-              for line in lines[start:end]
-          ):
-              if_index = next(
-                  i for i in range(start, end)
-                  if lines[i].startswith('        if: ')
-              )
-              env_lines = [
+          if not any(line.rstrip('\n') == '        env:' for line in lines[start:end]):
+              if_index = next(i for i in range(start, end) if lines[i].startswith('        if: '))
+              lines[if_index + 1:if_index + 1] = [
                   '        env:\n',
                   '          BUNDLE_ID: $' + '{{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}\n',
               ]
-              lines[if_index + 1:if_index + 1] = env_lines
 
           start, end = step_bounds(step)
           import_json = find_in_step(step, '          import json')
-          additions = []
           block_text = ''.join(lines[start:end])
+          additions = []
           if '          import os\n' not in block_text:
               additions.append('          import os\n')
           if '          import plistlib\n' not in block_text:
@@ -118,34 +109,22 @@ jobs:
           if additions:
               lines[import_json + 1:import_json + 1] = additions
 
-          start, end = step_bounds(step)
           select_start = find_in_step(step, '          apps = list(')
           select_end = find_in_step(step, '          root_source = Path(')
-          prefix = [
+          lines[select_start:select_end] = [
               '          bundle_id = os.environ.get("BUNDLE_ID", "").strip()\n',
               '\n',
-          ]
-          lines[select_start:select_end] = (
-              prefix + resolver_block('bundle_id', 'Empacotamento')
-          )
+          ] + resolver_block('bundle_id', 'Empacotamento')
 
-          # 11. Info.plist: BUNDLE_ID e imports já existem nesta etapa.
           step = 'Apply Info.plist changes'
           select_start = find_in_step(step, '          apps = list(')
           select_end = find_in_step(step, '          plist_path = app / "Info.plist"')
-          lines[select_start:select_end] = resolver_block(
-              'bundle_id',
-              'Info.plist',
-          )
+          lines[select_start:select_end] = resolver_block('bundle_id', 'Info.plist')
 
-          # 12. Validação final da rota especial.
           step = 'Validate zx-compat final layout'
           select_start = find_in_step(step, '          apps = list((work / "Payload").glob("*.app"))')
           select_end = find_in_step(step, '          info_path = app / "Info.plist"')
-          lines[select_start:select_end] = resolver_block(
-              'BUNDLE_ID',
-              'zx-compat final',
-          )
+          lines[select_start:select_end] = resolver_block('BUNDLE_ID', 'zx-compat final')
 
           path.write_text(''.join(lines), encoding='utf-8')
           PY
@@ -154,9 +133,6 @@ jobs:
           grep -F '❌ Empacotamento: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
           grep -F '❌ Info.plist: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
           grep -F '❌ zx-compat final: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
-          grep -F '"com.facebook.Facebook"' .github/workflows/telegram-inject.yml
-          grep -F '"com.facebook.Messenger"' .github/workflows/telegram-inject.yml
-          grep -F '"ph.telegra.Telegraph"' .github/workflows/telegram-inject.yml
 
       - name: Commit fix
         run: |
@@ -169,4 +145,5 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/telegram-inject.yml
           git commit -m "Handle auxiliary top-level apps in zx route"
+          echo "GENERATED_COMMIT=$(git rev-parse HEAD)"
           git push
