@@ -3893,7 +3893,8 @@ jobs:
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
                       "iQFaceIcons.dylib",
-                      "FBOLED.dylib",
+                      "iQFaceCache.dylib",
+                      "iQFaceOLED.dylib",
                   },
                   "root": set(),
               },
@@ -8271,7 +8272,8 @@ jobs:
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
                       "iQFaceIcons.dylib",
-                      "FBOLED.dylib",
+                      "iQFaceCache.dylib",
+                      "iQFaceOLED.dylib",
                       "zxPluginsInject.dylib",
                   },
                   "root_files": {
@@ -8281,20 +8283,26 @@ jobs:
                       "@rpath/iQFace.dylib",
                       "@rpath/iQFaceEnhancer.dylib",
                       "@rpath/iQFaceIcons.dylib",
-                      "@rpath/FBOLED.dylib",
+                      "@rpath/iQFaceCache.dylib",
+                      "@rpath/iQFaceOLED.dylib",
                       "@rpath/zxPluginsInject.dylib",
                   },
                   "extension_forbidden": {
                       "iQFace.dylib",
                       "iQFaceEnhancer.dylib",
                       "iQFaceIcons.dylib",
+                      "iQFaceCache.dylib",
+                      "iQFaceOLED.dylib",
                       "FBOLED.dylib",
                   },
                   "forbidden_main": {
                       "@executable_path/iQFace.dylib",
                       "@executable_path/iQFaceEnhancer.dylib",
                       "@executable_path/iQFaceIcons.dylib",
+                      "@executable_path/iQFaceCache.dylib",
+                      "@executable_path/iQFaceOLED.dylib",
                       "@executable_path/FBOLED.dylib",
+                      "@rpath/FBOLED.dylib",
                       "@executable_path/Glow.dylib",
                       "@rpath/Glow.dylib",
                   },
@@ -8700,7 +8708,8 @@ jobs:
               iqface = frameworks / "iQFace.dylib"
               enhancer = frameworks / "iQFaceEnhancer.dylib"
               icons = frameworks / "iQFaceIcons.dylib"
-              fboled = frameworks / "FBOLED.dylib"
+              cache = frameworks / "iQFaceCache.dylib"
+              oled = frameworks / "iQFaceOLED.dylib"
 
               if hashlib.sha256(iqface.read_bytes()).hexdigest() != (
                   "a3b8905f846c688c1e0886a50015563"
@@ -8726,20 +8735,33 @@ jobs:
                       "❌ zx-compat final: iQFaceIcons.dylib inesperado"
                   )
 
-              if hashlib.sha256(fboled.read_bytes()).hexdigest() != (
-                  "a4899c05aabef9126331ef8836351357d"
-                  "cc37268089366c8887ee190545bc111"
+              if hashlib.sha256(cache.read_bytes()).hexdigest() != (
+                  "99b1baa9e693078f1a3a7c283a14f071"
+                  "1e5433aa7566f7ffb369ea3f1649a7f4"
               ):
                   raise SystemExit(
-                      "❌ zx-compat final: FBOLED.dylib inesperado"
+                      "❌ zx-compat final: iQFaceCache.dylib inesperado"
                   )
 
-              if (app / "Glow.dylib").exists() or (
-                  frameworks / "Glow.dylib"
-              ).exists():
+              if hashlib.sha256(oled.read_bytes()).hexdigest() != (
+                  "682f59022c83d6cfe046e39bbf879c80"
+                  "4b8d2aab70d2c479d0eddddf87566d7c"
+              ):
                   raise SystemExit(
-                      "❌ zx-compat final: Glow antigo ainda está no Facebook"
+                      "❌ zx-compat final: iQFaceOLED.dylib inesperado"
                   )
+
+              for legacy in (
+                  app / "FBOLED.dylib",
+                  frameworks / "FBOLED.dylib",
+                  app / "Glow.dylib",
+                  frameworks / "Glow.dylib",
+              ):
+                  if legacy.exists():
+                      raise SystemExit(
+                          "❌ zx-compat final: componente antigo ainda está "
+                          f"no Facebook: {legacy}"
+                      )
 
           if BUNDLE_ID == "com.facebook.Messenger":
               msg = frameworks / "MSGPlusX.dylib"
