@@ -20,7 +20,7 @@ jobs:
         with:
           token: ${{ secrets.CORE_REPO_TOKEN }}
 
-      - name: Patch zx-compat main app selection
+      - name: Patch downstream main app selection
         run: |
           python <<'PY'
           from pathlib import Path
@@ -28,78 +28,132 @@ jobs:
           path = Path('.github/workflows/telegram-inject.yml')
           lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
-          section_marker = '      # 7A. ZX-COMPAT - FACEBOOK / MESSENGER / TELEGRAM'
-          start_marker = '          apps = list((work / "Payload").glob("*.app"))'
-          end_marker = '          def bundle_executable(bundle: Path) -> Path:'
-
-          sections = [
-              i for i, line in enumerate(lines)
-              if line.rstrip('\n') == section_marker
-          ]
-          if len(sections) != 1:
-              raise SystemExit(
-                  f'Esperava 1 seção zx-compat especial; encontrei {len(sections)}'
+          def step_bounds(name):
+              marker = f'      - name: {name}'
+              starts = [
+                  i for i, line in enumerate(lines)
+                  if line.rstrip('\n') == marker
+              ]
+              if len(starts) != 1:
+                  raise SystemExit(
+                      f'Esperava 1 etapa {name!r}; encontrei {len(starts)}'
+                  )
+              start = starts[0]
+              end = next(
+                  (
+                      i for i in range(start + 1, len(lines))
+                      if lines[i].startswith('      - name: ')
+                  ),
+                  len(lines),
               )
+              return start, end
 
-          section = sections[0]
-          starts = [
-              i for i in range(section, len(lines))
-              if lines[i].rstrip('\n') == start_marker
+          def find_in_step(name, exact, after=0):
+              start, end = step_bounds(name)
+              hits = [
+                  i for i in range(start + after, end)
+                  if lines[i].rstrip('\n') == exact
+              ]
+              if len(hits) != 1:
+                  raise SystemExit(
+                      f'Esperava 1 ocorrência em {name!r}: {exact!r}; '
+                      f'encontrei {len(hits)}'
+                  )
+              return hits[0]
+
+          def resolver_block(bundle_expr, label):
+              return [
+                  f'          app_candidates = sorted((work / "Payload").glob("*.app"))\n',
+                  '          matching_apps = []\n',
+                  '\n',
+                  '          for candidate in app_candidates:\n',
+                  '              candidate_info_path = candidate / "Info.plist"\n',
+                  '              if not candidate_info_path.is_file():\n',
+                  '                  continue\n',
+                  '              try:\n',
+                  '                  with candidate_info_path.open("rb") as f:\n',
+                  '                      candidate_info = plistlib.load(f)\n',
+                  '              except Exception:\n',
+                  '                  continue\n',
+                  f'              if candidate_info.get("CFBundleIdentifier") == {bundle_expr}:\n',
+                  '                  matching_apps.append(candidate)\n',
+                  '\n',
+                  '          if len(matching_apps) != 1:\n',
+                  '              raise SystemExit(\n',
+                  f'                  "❌ {label}: esperava 1 .app correspondente ao Bundle ID "\n',
+                  f'                  f"{{{bundle_expr}}}; encontrei {{len(matching_apps)}} entre "\n',
+                  '                  f"{len(app_candidates)} candidato(s)"\n',
+                  '              )\n',
+                  '\n',
+                  '          app = matching_apps[0]\n',
+                  '\n',
+              ]
+
+          # 10. Empacotamento: esta etapa também roda para Facebook/Messenger/Telegram.
+          step = 'Add root files, frameworks, bundles and extra extensions'
+          start, end = step_bounds(step)
+
+          if not any(
+              line.rstrip('\n') == '        env:'
+              for line in lines[start:end]
+          ):
+              if_index = next(
+                  i for i in range(start, end)
+                  if lines[i].startswith('        if: ')
+              )
+              env_lines = [
+                  '        env:\n',
+                  '          BUNDLE_ID: $' + '{{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}\n',
+              ]
+              lines[if_index + 1:if_index + 1] = env_lines
+
+          start, end = step_bounds(step)
+          import_json = find_in_step(step, '          import json')
+          additions = []
+          block_text = ''.join(lines[start:end])
+          if '          import os\n' not in block_text:
+              additions.append('          import os\n')
+          if '          import plistlib\n' not in block_text:
+              additions.append('          import plistlib\n')
+          if additions:
+              lines[import_json + 1:import_json + 1] = additions
+
+          start, end = step_bounds(step)
+          select_start = find_in_step(step, '          apps = list(')
+          select_end = find_in_step(step, '          root_source = Path(')
+          prefix = [
+              '          bundle_id = os.environ.get("BUNDLE_ID", "").strip()\n',
+              '\n',
           ]
-          if not starts:
-              raise SystemExit('Início da seleção .app não localizado na seção zx-compat')
-          start = starts[0]
+          lines[select_start:select_end] = (
+              prefix + resolver_block('bundle_id', 'Empacotamento')
+          )
 
-          ends = [
-              i for i in range(start + 1, len(lines))
-              if lines[i].rstrip('\n') == end_marker
-          ]
-          if not ends:
-              raise SystemExit('Fim da seleção .app não localizado na seção zx-compat')
-          end = ends[0]
+          # 11. Info.plist: BUNDLE_ID e imports já existem nesta etapa.
+          step = 'Apply Info.plist changes'
+          select_start = find_in_step(step, '          apps = list(')
+          select_end = find_in_step(step, '          plist_path = app / "Info.plist"')
+          lines[select_start:select_end] = resolver_block(
+              'bundle_id',
+              'Info.plist',
+          )
 
-          new_block = [
-              '          app_candidates = sorted((work / "Payload").glob("*.app"))\n',
-              '          matching_apps = []\n',
-              '\n',
-              '          for candidate in app_candidates:\n',
-              '              candidate_info_path = candidate / "Info.plist"\n',
-              '              if not candidate_info_path.is_file():\n',
-              '                  continue\n',
-              '              try:\n',
-              '                  with candidate_info_path.open("rb") as f:\n',
-              '                      candidate_info = plistlib.load(f)\n',
-              '              except Exception:\n',
-              '                  continue\n',
-              '              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:\n',
-              '                  matching_apps.append((candidate, candidate_info))\n',
-              '\n',
-              '          if len(matching_apps) != 1:\n',
-              '              raise SystemExit(\n',
-              '                  "❌ zx-compat: esperava 1 .app correspondente ao Bundle ID "\n',
-              '                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "\n',
-              '                  f"{len(app_candidates)} candidato(s)"\n',
-              '              )\n',
-              '\n',
-              '          app, info = matching_apps[0]\n',
-              '          info_path = app / "Info.plist"\n',
-              '\n',
-              '          actual_bundle_id = info.get("CFBundleIdentifier")\n',
-              '          if actual_bundle_id != BUNDLE_ID:\n',
-              '              raise SystemExit(\n',
-              '                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "\n',
-              '                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"\n',
-              '              )\n',
-              '\n',
-          ]
+          # 12. Validação final da rota especial.
+          step = 'Validate zx-compat final layout'
+          select_start = find_in_step(step, '          apps = list((work / "Payload").glob("*.app"))')
+          select_end = find_in_step(step, '          info_path = app / "Info.plist"')
+          lines[select_start:select_end] = resolver_block(
+              'BUNDLE_ID',
+              'zx-compat final',
+          )
 
-          lines[start:end] = new_block
           path.write_text(''.join(lines), encoding='utf-8')
           PY
 
           git diff --check
-          grep -F 'app_candidates = sorted((work / "Payload").glob("*.app"))' .github/workflows/telegram-inject.yml
-          grep -F 'matching_apps = []' .github/workflows/telegram-inject.yml
+          grep -F '❌ Empacotamento: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
+          grep -F '❌ Info.plist: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
+          grep -F '❌ zx-compat final: esperava 1 .app correspondente ao Bundle ID' .github/workflows/telegram-inject.yml
           grep -F '"com.facebook.Facebook"' .github/workflows/telegram-inject.yml
           grep -F '"com.facebook.Messenger"' .github/workflows/telegram-inject.yml
           grep -F '"ph.telegra.Telegraph"' .github/workflows/telegram-inject.yml
@@ -114,5 +168,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/telegram-inject.yml
-          git commit -m "Fix zx-compat main app selection"
+          git commit -m "Handle auxiliary top-level apps in zx route"
           git push
