@@ -7757,9 +7757,13 @@ jobs:
 
       - name: Add root files, frameworks, bundles and extra extensions
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
           python <<'PY'
           import json
+          import os
+          import plistlib
           import shutil
           import zipfile
           from pathlib import Path
@@ -7786,16 +7790,31 @@ jobs:
           ) as z:
               z.extractall(work)
 
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
+          bundle_id = os.environ.get("BUNDLE_ID", "").strip()
 
-          if len(apps) != 1:
+          app_candidates = sorted((work / "Payload").glob("*.app"))
+          matching_apps = []
+
+          for candidate in app_candidates:
+              candidate_info_path = candidate / "Info.plist"
+              if not candidate_info_path.is_file():
+                  continue
+              try:
+                  with candidate_info_path.open("rb") as f:
+                      candidate_info = plistlib.load(f)
+              except Exception:
+                  continue
+              if candidate_info.get("CFBundleIdentifier") == bundle_id:
+                  matching_apps.append(candidate)
+
+          if len(matching_apps) != 1:
               raise SystemExit(
-                  "❌ App principal não encontrado"
+                  "❌ Empacotamento: esperava 1 .app correspondente ao Bundle ID "
+                  f"{bundle_id}; encontrei {len(matching_apps)} entre "
+                  f"{len(app_candidates)} candidato(s)"
               )
 
-          app = apps[0]
+          app = matching_apps[0]
 
           root_source = Path(
               "prepared/root"
@@ -8086,16 +8105,30 @@ jobs:
           ) as z:
               z.extractall(work)
 
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
+          app_candidates = sorted((work / "Payload").glob("*.app"))
+          matching_apps = []
 
-          if len(apps) != 1:
+          for candidate in app_candidates:
+              candidate_info_path = candidate / "Info.plist"
+              if not candidate_info_path.is_file():
+                  continue
+              try:
+                  with candidate_info_path.open("rb") as f:
+                      candidate_info = plistlib.load(f)
+              except Exception:
+                  continue
+              if candidate_info.get("CFBundleIdentifier") == bundle_id:
+                  matching_apps.append(candidate)
+
+          if len(matching_apps) != 1:
               raise SystemExit(
-                  "❌ App principal não encontrado"
+                  "❌ Info.plist: esperava 1 .app correspondente ao Bundle ID "
+                  f"{bundle_id}; encontrei {len(matching_apps)} entre "
+                  f"{len(app_candidates)} candidato(s)"
               )
 
-          app = apps[0]
+          app = matching_apps[0]
+
           plist_path = app / "Info.plist"
 
           with open(
@@ -8459,13 +8492,30 @@ jobs:
           with zipfile.ZipFile("Final.ipa", "r") as z:
               z.extractall(work)
 
-          apps = list((work / "Payload").glob("*.app"))
-          if len(apps) != 1:
+          app_candidates = sorted((work / "Payload").glob("*.app"))
+          matching_apps = []
+
+          for candidate in app_candidates:
+              candidate_info_path = candidate / "Info.plist"
+              if not candidate_info_path.is_file():
+                  continue
+              try:
+                  with candidate_info_path.open("rb") as f:
+                      candidate_info = plistlib.load(f)
+              except Exception:
+                  continue
+              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:
+                  matching_apps.append(candidate)
+
+          if len(matching_apps) != 1:
               raise SystemExit(
-                  "❌ zx-compat final: app principal não identificado"
+                  "❌ zx-compat final: esperava 1 .app correspondente ao Bundle ID "
+                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "
+                  f"{len(app_candidates)} candidato(s)"
               )
 
-          app = apps[0]
+          app = matching_apps[0]
+
           info_path = app / "Info.plist"
           info_bytes = info_path.read_bytes()
 
