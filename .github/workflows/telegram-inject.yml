@@ -8744,8 +8744,8 @@ jobs:
                   )
 
               if hashlib.sha256(oled.read_bytes()).hexdigest() != (
-                  "682f59022c83d6cfe046e39bbf879c80"
-                  "4b8d2aab70d2c479d0eddddf87566d7c"
+                  "1c2b97a86dfc224f55ecd21312b7af78"
+                  "9363bf95871ee4267bdf84ae1f636997"
               ):
                   raise SystemExit(
                       "❌ zx-compat final: iQFaceOLED.dylib inesperado"
