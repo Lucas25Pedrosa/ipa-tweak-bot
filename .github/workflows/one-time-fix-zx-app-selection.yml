@@ -1,0 +1,106 @@
+name: One-time fix zx app selection
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/one-time-fix-zx-app-selection.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Patch zx-compat main app selection
+        run: |
+          python <<'PY'
+          from pathlib import Path
+
+          path = Path('.github/workflows/telegram-inject.yml')
+          text = path.read_text(encoding='utf-8')
+
+          old = '''          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ zx-compat: esperava 1 .app principal; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          info_path = app / "Info.plist"
+
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          actual_bundle_id = info.get("CFBundleIdentifier")
+          if actual_bundle_id != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "
+                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"
+              )
+'''
+
+          new = '''          app_candidates = sorted((work / "Payload").glob("*.app"))
+          matching_apps = []
+
+          for candidate in app_candidates:
+              candidate_info_path = candidate / "Info.plist"
+              if not candidate_info_path.is_file():
+                  continue
+              try:
+                  with candidate_info_path.open("rb") as f:
+                      candidate_info = plistlib.load(f)
+              except Exception:
+                  continue
+              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:
+                  matching_apps.append((candidate, candidate_info))
+
+          if len(matching_apps) != 1:
+              raise SystemExit(
+                  "❌ zx-compat: esperava 1 .app correspondente ao Bundle ID "
+                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "
+                  f"{len(app_candidates)} candidato(s)"
+              )
+
+          app, info = matching_apps[0]
+          info_path = app / "Info.plist"
+
+          actual_bundle_id = info.get("CFBundleIdentifier")
+          if actual_bundle_id != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "
+                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"
+              )
+'''
+
+          count = text.count(old)
+          if count != 1:
+              raise SystemExit(f'Esperava exatamente 1 bloco antigo; encontrei {count}')
+
+          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          PY
+
+          git diff --check
+          grep -F 'matching_apps = []' .github/workflows/telegram-inject.yml
+          grep -F '"com.facebook.Facebook"' .github/workflows/telegram-inject.yml
+          grep -F '"com.facebook.Messenger"' .github/workflows/telegram-inject.yml
+          grep -F '"ph.telegra.Telegraph"' .github/workflows/telegram-inject.yml
+
+      - name: Commit fix
+        run: |
+          if git diff --quiet -- .github/workflows/telegram-inject.yml; then
+            echo "No change needed"
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/telegram-inject.yml
+          git commit -m "Fix zx-compat main app selection"
+          git push
