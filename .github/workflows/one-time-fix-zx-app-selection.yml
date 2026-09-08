@@ -24,66 +24,59 @@ jobs:
           from pathlib import Path
 
           path = Path('.github/workflows/telegram-inject.yml')
-          text = path.read_text(encoding='utf-8')
+          lines = path.read_text(encoding='utf-8').splitlines(keepends=True)
 
-          old = '''          apps = list((work / "Payload").glob("*.app"))
-          if len(apps) != 1:
-              raise SystemExit(
-                  f"❌ zx-compat: esperava 1 .app principal; encontrei {len(apps)}"
-              )
+          start_marker = '          apps = list((work / "Payload").glob("*.app"))'
+          end_marker = '          def bundle_executable(bundle: Path) -> Path:'
 
-          app = apps[0]
-          info_path = app / "Info.plist"
+          starts = [i for i, line in enumerate(lines) if line.rstrip('\n') == start_marker]
+          ends = [i for i, line in enumerate(lines) if line.rstrip('\n') == end_marker]
 
-          with info_path.open("rb") as f:
-              info = plistlib.load(f)
+          if len(starts) != 1:
+              raise SystemExit(f'Esperava 1 início do bloco zx-compat; encontrei {len(starts)}')
+          if len(ends) != 1 or ends[0] <= starts[0]:
+              raise SystemExit('Fim do bloco zx-compat não localizado de forma segura')
 
-          actual_bundle_id = info.get("CFBundleIdentifier")
-          if actual_bundle_id != BUNDLE_ID:
-              raise SystemExit(
-                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "
-                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"
-              )
-'''
+          start = starts[0]
+          end = ends[0]
 
-          new = '''          app_candidates = sorted((work / "Payload").glob("*.app"))
-          matching_apps = []
+          new_block = [
+              '          app_candidates = sorted((work / "Payload").glob("*.app"))\n',
+              '          matching_apps = []\n',
+              '\n',
+              '          for candidate in app_candidates:\n',
+              '              candidate_info_path = candidate / "Info.plist"\n',
+              '              if not candidate_info_path.is_file():\n',
+              '                  continue\n',
+              '              try:\n',
+              '                  with candidate_info_path.open("rb") as f:\n',
+              '                      candidate_info = plistlib.load(f)\n',
+              '              except Exception:\n',
+              '                  continue\n',
+              '              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:\n',
+              '                  matching_apps.append((candidate, candidate_info))\n',
+              '\n',
+              '          if len(matching_apps) != 1:\n',
+              '              raise SystemExit(\n',
+              '                  "❌ zx-compat: esperava 1 .app correspondente ao Bundle ID "\n',
+              '                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "\n',
+              '                  f"{len(app_candidates)} candidato(s)"\n',
+              '              )\n',
+              '\n',
+              '          app, info = matching_apps[0]\n',
+              '          info_path = app / "Info.plist"\n',
+              '\n',
+              '          actual_bundle_id = info.get("CFBundleIdentifier")\n',
+              '          if actual_bundle_id != BUNDLE_ID:\n',
+              '              raise SystemExit(\n',
+              '                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "\n',
+              '                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"\n',
+              '              )\n',
+              '\n',
+          ]
 
-          for candidate in app_candidates:
-              candidate_info_path = candidate / "Info.plist"
-              if not candidate_info_path.is_file():
-                  continue
-              try:
-                  with candidate_info_path.open("rb") as f:
-                      candidate_info = plistlib.load(f)
-              except Exception:
-                  continue
-              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:
-                  matching_apps.append((candidate, candidate_info))
-
-          if len(matching_apps) != 1:
-              raise SystemExit(
-                  "❌ zx-compat: esperava 1 .app correspondente ao Bundle ID "
-                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "
-                  f"{len(app_candidates)} candidato(s)"
-              )
-
-          app, info = matching_apps[0]
-          info_path = app / "Info.plist"
-
-          actual_bundle_id = info.get("CFBundleIdentifier")
-          if actual_bundle_id != BUNDLE_ID:
-              raise SystemExit(
-                  "❌ zx-compat: Bundle ID do IPA diverge do selecionado: "
-                  f"{actual_bundle_id!r} != {BUNDLE_ID!r}"
-              )
-'''
-
-          count = text.count(old)
-          if count != 1:
-              raise SystemExit(f'Esperava exatamente 1 bloco antigo; encontrei {count}')
-
-          path.write_text(text.replace(old, new, 1), encoding='utf-8')
+          lines[start:end] = new_block
+          path.write_text(''.join(lines), encoding='utf-8')
           PY
 
           git diff --check
