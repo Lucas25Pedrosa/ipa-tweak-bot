@@ -3949,17 +3949,30 @@ jobs:
           with zipfile.ZipFile("input.ipa", "r") as z:
               z.extractall(work)
 
-          apps = list((work / "Payload").glob("*.app"))
-          if len(apps) != 1:
+          app_candidates = sorted((work / "Payload").glob("*.app"))
+          matching_apps = []
+
+          for candidate in app_candidates:
+              candidate_info_path = candidate / "Info.plist"
+              if not candidate_info_path.is_file():
+                  continue
+              try:
+                  with candidate_info_path.open("rb") as f:
+                      candidate_info = plistlib.load(f)
+              except Exception:
+                  continue
+              if candidate_info.get("CFBundleIdentifier") == BUNDLE_ID:
+                  matching_apps.append((candidate, candidate_info))
+
+          if len(matching_apps) != 1:
               raise SystemExit(
-                  f"❌ zx-compat: esperava 1 .app principal; encontrei {len(apps)}"
+                  "❌ zx-compat: esperava 1 .app correspondente ao Bundle ID "
+                  f"{BUNDLE_ID}; encontrei {len(matching_apps)} entre "
+                  f"{len(app_candidates)} candidato(s)"
               )
 
-          app = apps[0]
+          app, info = matching_apps[0]
           info_path = app / "Info.plist"
-
-          with info_path.open("rb") as f:
-              info = plistlib.load(f)
 
           actual_bundle_id = info.get("CFBundleIdentifier")
           if actual_bundle_id != BUNDLE_ID:
