@@ -17,8 +17,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
-        with:
-          token: ${{ secrets.CORE_REPO_TOKEN }}
 
       - name: Patch downstream main app selection
         run: |
@@ -30,35 +28,18 @@ jobs:
 
           def step_bounds(name):
               marker = f'      - name: {name}'
-              starts = [
-                  i for i, line in enumerate(lines)
-                  if line.rstrip('\n') == marker
-              ]
+              starts = [i for i, line in enumerate(lines) if line.rstrip('\n') == marker]
               if len(starts) != 1:
-                  raise SystemExit(
-                      f'Esperava 1 etapa {name!r}; encontrei {len(starts)}'
-                  )
+                  raise SystemExit(f'Esperava 1 etapa {name!r}; encontrei {len(starts)}')
               start = starts[0]
-              end = next(
-                  (
-                      i for i in range(start + 1, len(lines))
-                      if lines[i].startswith('      - name: ')
-                  ),
-                  len(lines),
-              )
+              end = next((i for i in range(start + 1, len(lines)) if lines[i].startswith('      - name: ')), len(lines))
               return start, end
 
           def find_in_step(name, exact):
               start, end = step_bounds(name)
-              hits = [
-                  i for i in range(start, end)
-                  if lines[i].rstrip('\n') == exact
-              ]
+              hits = [i for i in range(start, end) if lines[i].rstrip('\n') == exact]
               if len(hits) != 1:
-                  raise SystemExit(
-                      f'Esperava 1 ocorrência em {name!r}: {exact!r}; '
-                      f'encontrei {len(hits)}'
-                  )
+                  raise SystemExit(f'Esperava 1 ocorrência em {name!r}: {exact!r}; encontrei {len(hits)}')
               return hits[0]
 
           def resolver_block(bundle_expr, label):
@@ -140,7 +121,6 @@ jobs:
             echo "No change needed"
             exit 0
           fi
-
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add .github/workflows/telegram-inject.yml
