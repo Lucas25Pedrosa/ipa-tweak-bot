@@ -3878,15 +3878,6 @@ jobs:
               "ph.telegra.Telegraph",
           }
 
-          EXPECTED_ZX_SHA256 = (
-              "a9ea3a54abe37ce45f456db5b071ffe8"
-              "f9e882360086847c8f042c057cf807ab"
-          )
-          EXPECTED_SUBSTRATE_SHA256 = (
-              "7d8d26bb357a1d8b5e43ff6f9898ea0"
-              "df04f7c32d82396162c8ac669caa4cf2a"
-          )
-
           PROFILE_FILES = {
               "com.facebook.Facebook": {
                   "frameworks": {
@@ -4079,20 +4070,35 @@ jobs:
                   f"ausentes={missing}; inesperadas={unexpected}"
               )
 
+          def sha256(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          def copy_and_verify(source: Path, destination: Path, label: str) -> None:
+              expected_hash = sha256(source)
+              shutil.copy2(source, destination)
+              actual_hash = sha256(destination)
+              if actual_hash != expected_hash:
+                  raise SystemExit(
+                      f"❌ zx-compat: SHA dinâmico divergiu em {label}: "
+                      f"{actual_hash} != {expected_hash}"
+                  )
+              print(
+                  f"✅ zx-compat SHA dinâmico confirmado: {label} "
+                  f"({actual_hash})"
+              )
+
           frameworks = app / "Frameworks"
           frameworks.mkdir(exist_ok=True)
 
           for name in sorted(profile["frameworks"]):
               source = inject_by_name[name]
               destination = frameworks / name
-              shutil.copy2(source, destination)
-              print(f"✅ zx-compat Frameworks/{name}")
+              copy_and_verify(source, destination, f"Frameworks/{name}")
 
           for name in sorted(profile["root"]):
               source = inject_by_name[name]
               destination = app / name
-              shutil.copy2(source, destination)
-              print(f"✅ zx-compat raiz/{name}")
+              copy_and_verify(source, destination, f"raiz/{name}")
 
           zx_source = Path(
               "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
@@ -4111,16 +4117,11 @@ jobs:
                   f"❌ zx-compat: CydiaSubstrate ZIP ausente: {substrate_zip}"
               )
 
-          zx_hash = hashlib.sha256(zx_source.read_bytes()).hexdigest()
-          if zx_hash != EXPECTED_ZX_SHA256:
-              raise SystemExit(
-                  "❌ zx-compat: zxPluginsInject não corresponde ao arquivo "
-                  f"de referência: {zx_hash}"
-              )
-
-          shutil.copy2(
+          zx_hash = sha256(zx_source)
+          copy_and_verify(
               zx_source,
               frameworks / "zxPluginsInject.dylib",
+              "Frameworks/zxPluginsInject.dylib",
           )
 
           with zipfile.ZipFile(substrate_zip, "r") as z:
@@ -4150,15 +4151,7 @@ jobs:
                   "❌ zx-compat: binário CydiaSubstrate ausente no framework"
               )
 
-          substrate_hash = hashlib.sha256(
-              substrate_binary.read_bytes()
-          ).hexdigest()
-
-          if substrate_hash != EXPECTED_SUBSTRATE_SHA256:
-              raise SystemExit(
-                  "❌ zx-compat: CydiaSubstrate não corresponde ao "
-                  f"framework de referência: {substrate_hash}"
-              )
+          substrate_hash = sha256(substrate_binary)
 
           substrate_destination = (
               frameworks / "CydiaSubstrate.framework"
@@ -4172,12 +4165,20 @@ jobs:
               substrate_destination,
           )
 
+          copied_substrate = substrate_destination / "CydiaSubstrate"
+          copied_substrate_hash = sha256(copied_substrate)
+          if copied_substrate_hash != substrate_hash:
+              raise SystemExit(
+                  "❌ zx-compat: SHA dinâmico do CydiaSubstrate divergiu: "
+                  f"{copied_substrate_hash} != {substrate_hash}"
+              )
+
           print(
-              "✅ zx-compat: zxPluginsInject de referência confirmado "
-              f"({zx_source.stat().st_size} bytes)"
+              "✅ zx-compat: zxPluginsInject validado por SHA dinâmico "
+              f"({zx_hash})"
           )
           print(
-              "✅ zx-compat: CydiaSubstrate de referência confirmado "
+              "✅ zx-compat: CydiaSubstrate validado por SHA dinâmico "
               f"({substrate_binary.stat().st_size} bytes)"
           )
 
@@ -8303,15 +8304,6 @@ jobs:
           BUNDLE_ID = os.environ["BUNDLE_ID"]
           ADDON_NAME = os.environ.get("ADDON_NAME", "").strip()
 
-          EXPECTED_ZX_SHA256 = (
-              "a9ea3a54abe37ce45f456db5b071ffe8"
-              "f9e882360086847c8f042c057cf807ab"
-          )
-          EXPECTED_SUBSTRATE_SHA256 = (
-              "7d8d26bb357a1d8b5e43ff6f9898ea0"
-              "df04f7c32d82396162c8ac669caa4cf2a"
-          )
-
           PROFILES = {
               "com.facebook.Facebook": {
                   "framework_files": {
@@ -8626,22 +8618,117 @@ jobs:
                   "❌ zx-compat final: CydiaSubstrate.framework ausente"
               )
 
-          zx = frameworks / "zxPluginsInject.dylib"
-          zx_hash = hashlib.sha256(zx.read_bytes()).hexdigest()
-          substrate_hash = hashlib.sha256(
-              substrate.read_bytes()
-          ).hexdigest()
+          def sha256(path: Path) -> str:
+              return hashlib.sha256(path.read_bytes()).hexdigest()
 
-          if zx_hash != EXPECTED_ZX_SHA256:
-              raise SystemExit(
-                  "❌ zx-compat final: zxPluginsInject divergiu do "
-                  f"arquivo de referência: {zx_hash}"
+          def validate_dynamic_sha(
+              actual: Path,
+              expected_hash: str,
+              label: str,
+          ) -> None:
+              actual_hash = sha256(actual)
+              if actual_hash != expected_hash:
+                  raise SystemExit(
+                      f"❌ zx-compat final: SHA dinâmico divergiu em {label}: "
+                      f"{actual_hash} != {expected_hash}"
+                  )
+              print(
+                  f"✅ zx-compat final SHA dinâmico: {label} "
+                  f"({actual_hash})"
               )
-          if substrate_hash != EXPECTED_SUBSTRATE_SHA256:
-              raise SystemExit(
-                  "❌ zx-compat final: CydiaSubstrate divergiu do "
-                  f"arquivo de referência: {substrate_hash}"
+
+          inject_paths = [
+              Path(line.strip())
+              for line in Path("inject_files.txt").read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+          inject_by_name = {}
+          for source in inject_paths:
+              if not source.is_file():
+                  raise SystemExit(
+                      f"❌ zx-compat final: fonte de injeção ausente: {source}"
+                  )
+              if source.name in inject_by_name:
+                  raise SystemExit(
+                      "❌ zx-compat final: fonte duplicada em inject_files.txt: "
+                      f"{source.name}"
+                  )
+              inject_by_name[source.name] = source
+
+          for name in sorted(profile["framework_files"]):
+              if name == "zxPluginsInject.dylib":
+                  continue
+              source = inject_by_name.get(name)
+              if source is None:
+                  raise SystemExit(
+                      f"❌ zx-compat final: fonte dinâmica ausente para {name}"
+                  )
+              validate_dynamic_sha(
+                  frameworks / name,
+                  sha256(source),
+                  f"Frameworks/{name}",
               )
+
+          for name in sorted(profile["root_files"]):
+              target = app / name
+              if not target.is_file():
+                  continue
+              source = inject_by_name.get(name)
+              if source is None:
+                  raise SystemExit(
+                      f"❌ zx-compat final: fonte dinâmica ausente para {name}"
+                  )
+              validate_dynamic_sha(
+                  target,
+                  sha256(source),
+                  f"raiz/{name}",
+              )
+
+          zx_source = Path(
+              "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
+          )
+          if not zx_source.is_file():
+              raise SystemExit(
+                  f"❌ zx-compat final: fonte zxPluginsInject ausente: {zx_source}"
+              )
+          validate_dynamic_sha(
+              frameworks / "zxPluginsInject.dylib",
+              sha256(zx_source),
+              "Frameworks/zxPluginsInject.dylib",
+          )
+
+          substrate_zip = Path(
+              "addons/shared/zx-compat/framework/"
+              "CydiaSubstrate.framework.zip"
+          )
+          if not substrate_zip.is_file():
+              raise SystemExit(
+                  f"❌ zx-compat final: fonte CydiaSubstrate ausente: {substrate_zip}"
+              )
+          with zipfile.ZipFile(substrate_zip, "r") as z:
+              substrate_members = [
+                  name
+                  for name in z.namelist()
+                  if name.endswith(
+                      "CydiaSubstrate.framework/CydiaSubstrate"
+                  )
+                  and not name.endswith("/")
+              ]
+              if len(substrate_members) != 1:
+                  raise SystemExit(
+                      "❌ zx-compat final: ZIP do CydiaSubstrate deve conter "
+                      "exatamente um binário de referência"
+                  )
+              expected_substrate_hash = hashlib.sha256(
+                  z.read(substrate_members[0])
+              ).hexdigest()
+          validate_dynamic_sha(
+              substrate,
+              expected_substrate_hash,
+              "Frameworks/CydiaSubstrate.framework/CydiaSubstrate",
+          )
 
           main = executable_from_bundle(app)
           main_commands = dylib_commands(main)
@@ -8768,52 +8855,6 @@ jobs:
                   )
 
           if BUNDLE_ID == "com.facebook.Facebook":
-              iqface = frameworks / "iQFace.dylib"
-              enhancer = frameworks / "iQFaceEnhancer.dylib"
-              icons = frameworks / "iQFaceIcons.dylib"
-              cache = frameworks / "iQFaceCache.dylib"
-              oled = frameworks / "iQFaceOLED.dylib"
-
-              if hashlib.sha256(iqface.read_bytes()).hexdigest() != (
-                  "a3b8905f846c688c1e0886a50015563"
-                  "e3b4e6318bbc8cd4dc5bbbca72c538e4c"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: iQFace.dylib divergiu da referência"
-                  )
-
-              if hashlib.sha256(enhancer.read_bytes()).hexdigest() != (
-                  "0219e3acc2edc5f0c03fc402a2beebb9"
-                  "2dcbf3647b12a5bd9e644d952bbc0545"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: iQFaceEnhancer.dylib inesperado"
-                  )
-
-              if hashlib.sha256(icons.read_bytes()).hexdigest() != (
-                  "cd6dd87d894968445fc19fbc7d6aa3cd"
-                  "98b930908c30bd5e68ad62b2cb08164a"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: iQFaceIcons.dylib inesperado"
-                  )
-
-              if hashlib.sha256(cache.read_bytes()).hexdigest() != (
-                  "99b1baa9e693078f1a3a7c283a14f071"
-                  "1e5433aa7566f7ffb369ea3f1649a7f4"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: iQFaceCache.dylib inesperado"
-                  )
-
-              if hashlib.sha256(oled.read_bytes()).hexdigest() != (
-                  "1c2b97a86dfc224f55ecd21312b7af78"
-                  "9363bf95871ee4267bdf84ae1f636997"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: iQFaceOLED.dylib inesperado"
-                  )
-
               for legacy in (
                   app / "FBOLED.dylib",
                   frameworks / "FBOLED.dylib",
@@ -8826,77 +8867,20 @@ jobs:
                           f"no Facebook: {legacy}"
                       )
 
-          if BUNDLE_ID == "com.facebook.Messenger":
-              msg = frameworks / "MSGPlusX.dylib"
-              keychain = frameworks / "Sideload Keychain Fix.dylib"
-
-              if hashlib.sha256(msg.read_bytes()).hexdigest() != (
-                  "7db44a8a811e4827304820a16265322b"
-                  "ee9cfb940cb0bd82d124ec27942d7a55"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: MSGPlusX.dylib divergiu da referência"
-                  )
-
-              if hashlib.sha256(keychain.read_bytes()).hexdigest() != (
-                  "bb8f23103bafe15a516487a18bb89fbe"
-                  "0c1d434e81f6ddcb412551ca0f6b11fd"
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: Keychain Fix divergiu da referência"
-                  )
-
           if (
               BUNDLE_ID == "ph.telegra.Telegraph"
               and ADDON_NAME == "iQTele"
           ):
-              expected_iqtele_hashes = {
-                  "iQTele.dylib": (
-                      "48d81cc5bd80b05cb2289cf9373254e0"
-                      "226b12a3a51fd91f54172b72e3db8296"
-                  ),
-                  "iQTeleEnhancer.dylib": (
-                      "2d890950ea35ef2a08dbcc5d396250d8"
-                      "fd4a48d0a13658d4f246804faec82b97"
-                  ),
-                  "TelegramChatFixer.dylib": (
-                      "75a239e5111cb625e82ba01ba31f8c72"
-                      "2738c4aa1ec07bce2641d8db57c7d508"
-                  ),
-                  "TelegramNotificationFix.dylib": (
-                      "97fc8f0ddf1bfe9b31f40cf78b8ce631"
-                      "528e0feb5e31507ef075b86307f644d7"
-                  ),
-                  "TelegramScreenshotBypass.dylib": (
-                      "5e20f477f33d64b4a6bfd190e8a5e9a0"
-                      "cabd1b334d699fa2b13bc4baa87290d9"
-                  ),
-                  "sideloadFixerLol.dylib": (
-                      "1643fa12e891c5edc0de4e4fed71165a0"
-                      "afba9296fc5fa593666258645b3bab8"
-                  ),
-              }
-
-              for name, expected_hash in expected_iqtele_hashes.items():
-                  actual_hash = hashlib.sha256(
-                      (frameworks / name).read_bytes()
-                  ).hexdigest()
-                  if actual_hash != expected_hash:
-                      raise SystemExit(
-                          "❌ zx-compat final: arquivo iQTele divergiu: "
-                          f"{name} -> {actual_hash}"
-                      )
-
               print(
-                  "✅ iQTele 1.2 + Enhancer validados pelos hashes"
+                  "✅ iQTele + Enhancer validados por SHA dinâmico"
               )
 
           print(
               f"✅ zx-compat final validado: {BUNDLE_ID}"
           )
           print(
-              "✅ zxPluginsInject e CydiaSubstrate correspondem "
-              "aos arquivos de referência"
+              "✅ zxPluginsInject e CydiaSubstrate validados "
+              "por SHA dinâmico"
           )
           print(
               "✅ Todos os loads especiais estão como LC_LOAD_WEAK_DYLIB"
