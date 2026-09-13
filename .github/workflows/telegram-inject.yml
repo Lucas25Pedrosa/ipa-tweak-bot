@@ -3910,12 +3910,15 @@ jobs:
               },
               "iQTele": {
                   "frameworks": {
-                      "iQTele.dylib",
-                      "iQTeleEnhancer.dylib",
+                      "iqAppGroupCapture.dylib",
+                      "Sideloadbypass1.dylib",
+                      "Sideloadbypass2.dylib",
+                      "iqKeepDeleted.dylib",
+                      "sideloadKeychainFix.dylib",
                       "sideloadFixerLol.dylib",
-                      "TelegramChatFixer.dylib",
-                      "TelegramNotificationFix.dylib",
-                      "TelegramScreenshotBypass.dylib",
+                      "iqAppGroupBridge.dylib",
+                      "iQTele.dylib",
+                      "Prism.dylib",
                   },
                   "root": set(),
               },
@@ -4097,6 +4100,45 @@ jobs:
               destination = app / name
               copy_and_verify(source, destination, f"raiz/{name}")
 
+          is_iqtele_13 = (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          )
+
+          if is_iqtele_13:
+              notification_service = [
+                  extension
+                  for extension in original_extensions
+                  if extension.stem == "NotificationServiceExtensionv1"
+              ]
+
+              if len(notification_service) != 1:
+                  raise SystemExit(
+                      "❌ iQTele 1.3: esperava exatamente uma "
+                      "NotificationServiceExtensionv1.appex"
+                  )
+
+              keep_deleted_source = (
+                  frameworks / "iqKeepDeleted.dylib"
+              )
+              keep_deleted_local = (
+                  notification_service[0] / "iqKeepDeleted.dylib"
+              )
+
+              copy_and_verify(
+                  keep_deleted_source,
+                  keep_deleted_local,
+                  (
+                      "NotificationServiceExtensionv1.appex/"
+                      "iqKeepDeleted.dylib"
+                  ),
+              )
+
+              print(
+                  "✅ iQTele 1.3: cópia local de iqKeepDeleted "
+                  "reproduzida na NotificationServiceExtensionv1"
+              )
+
           zx_source = Path(
               "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
           )
@@ -4105,7 +4147,9 @@ jobs:
               "CydiaSubstrate.framework.zip"
           )
 
-          if not zx_source.is_file():
+          uses_zx_plugins = not is_iqtele_13
+
+          if uses_zx_plugins and not zx_source.is_file():
               raise SystemExit(
                   f"❌ zx-compat: zxPluginsInject ausente: {zx_source}"
               )
@@ -4114,12 +4158,18 @@ jobs:
                   f"❌ zx-compat: CydiaSubstrate ZIP ausente: {substrate_zip}"
               )
 
-          zx_hash = sha256(zx_source)
-          copy_and_verify(
-              zx_source,
-              frameworks / "zxPluginsInject.dylib",
-              "Frameworks/zxPluginsInject.dylib",
-          )
+          zx_hash = None
+          if uses_zx_plugins:
+              zx_hash = sha256(zx_source)
+              copy_and_verify(
+                  zx_source,
+                  frameworks / "zxPluginsInject.dylib",
+                  "Frameworks/zxPluginsInject.dylib",
+              )
+          else:
+              print(
+                  "✅ iQTele 1.3: zxPluginsInject não será adicionado"
+              )
 
           with zipfile.ZipFile(substrate_zip, "r") as z:
               z.extractall(framework_extract)
@@ -4170,10 +4220,11 @@ jobs:
                   f"{copied_substrate_hash} != {substrate_hash}"
               )
 
-          print(
-              "✅ zx-compat: zxPluginsInject validado por SHA dinâmico "
-              f"({zx_hash})"
-          )
+          if uses_zx_plugins:
+              print(
+                  "✅ zx-compat: zxPluginsInject validado por SHA dinâmico "
+                  f"({zx_hash})"
+              )
           print(
               "✅ zx-compat: CydiaSubstrate validado por SHA dinâmico "
               f"({substrate_binary.stat().st_size} bytes)"
@@ -8314,6 +8365,9 @@ jobs:
                       "@rpath/Nexus.dylib",
                       "@rpath/zxPluginsInject.dylib",
                   },
+                  "extension_loads": {
+                      "@rpath/zxPluginsInject.dylib",
+                  },
                   "extension_forbidden": {
                       "iQFace.dylib",
                       "Nexus.dylib",
@@ -8360,6 +8414,9 @@ jobs:
                       ),
                       "@rpath/zxPluginsInject.dylib",
                   },
+                  "extension_loads": {
+                      "@rpath/zxPluginsInject.dylib",
+                  },
                   "extension_forbidden": {
                       "MSGPlusX.dylib",
                       "Sideload Keychain Fix.dylib",
@@ -8394,6 +8451,9 @@ jobs:
                       "@rpath/zxPluginsInject.dylib",
                       "@rpath/Mx.dylib",
                   },
+                  "extension_loads": {
+                      "@rpath/zxPluginsInject.dylib",
+                  },
                   "extension_forbidden": {
                       "Mx.dylib",
                       "sideloadFixerLol.dylib",
@@ -8411,47 +8471,92 @@ jobs:
               },
               "iQTele": {
                   "framework_files": {
-                      "iQTele.dylib",
-                      "iQTeleEnhancer.dylib",
+                      "iqAppGroupCapture.dylib",
+                      "Sideloadbypass1.dylib",
+                      "Sideloadbypass2.dylib",
+                      "iqKeepDeleted.dylib",
+                      "sideloadKeychainFix.dylib",
                       "sideloadFixerLol.dylib",
-                      "TelegramChatFixer.dylib",
-                      "TelegramNotificationFix.dylib",
-                      "TelegramScreenshotBypass.dylib",
-                      "zxPluginsInject.dylib",
+                      "iqAppGroupBridge.dylib",
+                      "iQTele.dylib",
+                      "Prism.dylib",
                   },
                   "root_files": set(),
                   "main_loads": {
-                      "@rpath/TelegramChatFixer.dylib",
-                      "@rpath/TelegramNotificationFix.dylib",
-                      "@rpath/TelegramScreenshotBypass.dylib",
+                      "@rpath/iqAppGroupCapture.dylib",
+                      "@rpath/Sideloadbypass1.dylib",
+                      "@rpath/Sideloadbypass2.dylib",
+                      "@rpath/iqKeepDeleted.dylib",
+                      "@rpath/sideloadKeychainFix.dylib",
                       "@rpath/sideloadFixerLol.dylib",
-                      "@rpath/zxPluginsInject.dylib",
+                      "@rpath/iqAppGroupBridge.dylib",
                       "@rpath/iQTele.dylib",
-                      "@rpath/iQTeleEnhancer.dylib",
+                      "@rpath/Prism.dylib",
+                  },
+                  "extension_loads": {
+                      "@rpath/iqAppGroupCapture.dylib",
+                      "@rpath/Sideloadbypass1.dylib",
+                      "@rpath/Sideloadbypass2.dylib",
+                      "@rpath/sideloadKeychainFix.dylib",
+                      "@rpath/sideloadFixerLol.dylib",
+                      "@rpath/iqAppGroupBridge.dylib",
                   },
                   "extension_forbidden": {
+                      "iQTele.dylib",
+                      "Prism.dylib",
                       "iQTeleEnhancer.dylib",
-                      "sideloadFixerLol.dylib",
+                      "zxPluginsInject.dylib",
                       "TelegramChatFixer.dylib",
                       "TelegramNotificationFix.dylib",
                       "TelegramScreenshotBypass.dylib",
                   },
                   "extension_required": {
+                      "BroadcastUploadExtension": {
+                          "@rpath/iqKeepDeleted.dylib",
+                      },
+                      "IntentsExtension": {
+                          "@rpath/iqKeepDeleted.dylib",
+                      },
+                      "NotificationContentExtension": {
+                          "@rpath/iqKeepDeleted.dylib",
+                      },
                       "NotificationServiceExtensionv1": {
-                          "@rpath/iQTele.dylib",
+                          "@loader_path/iqKeepDeleted.dylib",
+                      },
+                      "ShareExtension": {
+                          "@rpath/iqKeepDeleted.dylib",
+                      },
+                      "WidgetExtension": {
+                          "@rpath/iqKeepDeleted.dylib",
                       },
                   },
                   "extension_exclusive": {
-                      "iQTele.dylib",
+                      "iqKeepDeleted.dylib",
+                  },
+                  "expected_extensions": {
+                      "BroadcastUploadExtension",
+                      "IntentsExtension",
+                      "NotificationContentExtension",
+                      "NotificationServiceExtensionv1",
+                      "ShareExtension",
+                      "WidgetExtension",
                   },
                   "forbidden_main": {
-                      "@executable_path/iQTele.dylib",
-                      "@executable_path/iQTeleEnhancer.dylib",
-                      "@executable_path/sideloadFixerLol.dylib",
-                      "@executable_path/TelegramChatFixer.dylib",
-                      "@executable_path/TelegramNotificationFix.dylib",
-                      "@executable_path/TelegramScreenshotBypass.dylib",
+                      "@rpath/zxPluginsInject.dylib",
+                      "@rpath/iQTeleEnhancer.dylib",
+                      "@rpath/TelegramChatFixer.dylib",
+                      "@rpath/TelegramNotificationFix.dylib",
+                      "@rpath/TelegramScreenshotBypass.dylib",
                       "@rpath/Mx.dylib",
+                      "@executable_path/iQTele.dylib",
+                      "@executable_path/Prism.dylib",
+                      "@executable_path/iqAppGroupCapture.dylib",
+                      "@executable_path/Sideloadbypass1.dylib",
+                      "@executable_path/Sideloadbypass2.dylib",
+                      "@executable_path/iqKeepDeleted.dylib",
+                      "@executable_path/sideloadKeychainFix.dylib",
+                      "@executable_path/sideloadFixerLol.dylib",
+                      "@executable_path/iqAppGroupBridge.dylib",
                   },
               },
           }
@@ -8681,18 +8786,29 @@ jobs:
                   f"raiz/{name}",
               )
 
+          uses_zx_plugins = (
+              "zxPluginsInject.dylib"
+              in profile["framework_files"]
+          )
+
           zx_source = Path(
               "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
           )
-          if not zx_source.is_file():
-              raise SystemExit(
-                  f"❌ zx-compat final: fonte zxPluginsInject ausente: {zx_source}"
+          if uses_zx_plugins:
+              if not zx_source.is_file():
+                  raise SystemExit(
+                      "❌ zx-compat final: fonte zxPluginsInject ausente: "
+                      f"{zx_source}"
+                  )
+              validate_dynamic_sha(
+                  frameworks / "zxPluginsInject.dylib",
+                  sha256(zx_source),
+                  "Frameworks/zxPluginsInject.dylib",
               )
-          validate_dynamic_sha(
-              frameworks / "zxPluginsInject.dylib",
-              sha256(zx_source),
-              "Frameworks/zxPluginsInject.dylib",
-          )
+          elif (frameworks / "zxPluginsInject.dylib").exists():
+              raise SystemExit(
+                  "❌ iQTele 1.3: zxPluginsInject foi adicionado indevidamente"
+              )
 
           substrate_zip = Path(
               "addons/shared/zx-compat/framework/"
@@ -8764,26 +8880,45 @@ jobs:
                       sorted(directory.glob("*.appex"))
                   )
 
-          required_zx = "@rpath/zxPluginsInject.dylib"
+          expected_extensions = profile.get("expected_extensions")
+          if expected_extensions is not None:
+              actual_extensions = {
+                  extension.stem
+                  for extension in extensions
+              }
+              if actual_extensions != expected_extensions:
+                  raise SystemExit(
+                      "❌ zx-compat final: conjunto de extensões divergiu. "
+                      f"esperado={sorted(expected_extensions)}; "
+                      f"encontrado={sorted(actual_extensions)}"
+                  )
+
+          required_extension_loads = set(
+              profile.get("extension_loads", set())
+          )
 
           for extension in extensions:
               executable = executable_from_bundle(extension)
               commands = dylib_commands(executable)
 
-              if required_zx not in commands:
+              missing_common = sorted(
+                  required_extension_loads - set(commands)
+              )
+              if missing_common:
                   raise SystemExit(
-                      "❌ zx-compat final: zxPluginsInject ausente em "
-                      f"{extension.name}"
+                      "❌ zx-compat final: load(s) comum(ns) ausente(s) em "
+                      f"{extension.name}: {missing_common}"
                   )
 
-              if (
-                  commands[required_zx]
-                  != zxpatch.LC_LOAD_WEAK_DYLIB
-              ):
-                  raise SystemExit(
-                      "❌ zx-compat final: zxPluginsInject não é weak em "
-                      f"{extension.name}"
-                  )
+              for dependency in required_extension_loads:
+                  if (
+                      commands[dependency]
+                      != zxpatch.LC_LOAD_WEAK_DYLIB
+                  ):
+                      raise SystemExit(
+                          "❌ zx-compat final: load comum não é weak em "
+                          f"{extension.name}: {dependency}"
+                      )
 
               bad = sorted(
                   dependency
@@ -8849,6 +8984,46 @@ jobs:
                       f"incorreta {extension.name}: {exclusive_bad}"
                   )
 
+          if (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          ):
+              notification_service = [
+                  extension
+                  for extension in extensions
+                  if extension.stem == "NotificationServiceExtensionv1"
+              ]
+              if len(notification_service) != 1:
+                  raise SystemExit(
+                      "❌ iQTele 1.3: NotificationServiceExtensionv1 "
+                      "não foi encontrada exatamente uma vez"
+                  )
+
+              local_keep_deleted = (
+                  notification_service[0]
+                  / "iqKeepDeleted.dylib"
+              )
+              source_keep_deleted = inject_by_name.get(
+                  "iqKeepDeleted.dylib"
+              )
+              if source_keep_deleted is None:
+                  raise SystemExit(
+                      "❌ iQTele 1.3: fonte iqKeepDeleted ausente"
+                  )
+              if not local_keep_deleted.is_file():
+                  raise SystemExit(
+                      "❌ iQTele 1.3: cópia local de iqKeepDeleted ausente "
+                      "na NotificationServiceExtensionv1"
+                  )
+              validate_dynamic_sha(
+                  local_keep_deleted,
+                  sha256(source_keep_deleted),
+                  (
+                      "NotificationServiceExtensionv1.appex/"
+                      "iqKeepDeleted.dylib"
+                  ),
+              )
+
           if BUNDLE_ID == "com.facebook.Facebook":
               for legacy in (
                   app / "iQFaceEnhancer.dylib",
@@ -8876,16 +9051,22 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  "✅ iQTele + Enhancer validados por SHA dinâmico"
+                  "✅ iQTele 1.3 + Prism validados por SHA dinâmico"
               )
 
           print(
               f"✅ zx-compat final validado: {BUNDLE_ID}"
           )
-          print(
-              "✅ zxPluginsInject e CydiaSubstrate validados "
-              "por SHA dinâmico"
-          )
+          if uses_zx_plugins:
+              print(
+                  "✅ zxPluginsInject e CydiaSubstrate validados "
+                  "por SHA dinâmico"
+              )
+          else:
+              print(
+                  "✅ iQTele 1.3 sem zxPluginsInject; "
+                  "CydiaSubstrate validado por SHA dinâmico"
+              )
           print(
               "✅ Todos os loads especiais estão como LC_LOAD_WEAK_DYLIB"
           )
@@ -8894,8 +9075,12 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  f"✅ {len(extensions)} extensão(ões) com zx; "
-                  "NotificationServiceExtensionv1 também com iQTele"
+                  f"✅ {len(extensions)} extensão(ões) com a camada "
+                  "oficial do iQTele 1.3"
+              )
+              print(
+                  "✅ NotificationServiceExtensionv1 -> "
+                  "@loader_path/iqKeepDeleted.dylib"
               )
           else:
               print(
