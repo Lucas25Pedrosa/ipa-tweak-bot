@@ -3882,10 +3882,7 @@ jobs:
               "com.facebook.Facebook": {
                   "frameworks": {
                       "iQFace.dylib",
-                      "iQFaceEnhancer.dylib",
-                      "iQFaceIcons.dylib",
-                      "iQFaceCache.dylib",
-                      "iQFaceOLED.dylib",
+                      "Nexus.dylib",
                   },
                   "root": set(),
               },
@@ -8308,25 +8305,18 @@ jobs:
               "com.facebook.Facebook": {
                   "framework_files": {
                       "iQFace.dylib",
-                      "iQFaceEnhancer.dylib",
-                      "iQFaceIcons.dylib",
-                      "iQFaceCache.dylib",
-                      "iQFaceOLED.dylib",
+                      "Nexus.dylib",
                       "zxPluginsInject.dylib",
                   },
-                  "root_files": {
-                      "iQFace.bundle",
-                  },
+                  "root_files": set(),
                   "main_loads": {
                       "@rpath/iQFace.dylib",
-                      "@rpath/iQFaceEnhancer.dylib",
-                      "@rpath/iQFaceIcons.dylib",
-                      "@rpath/iQFaceCache.dylib",
-                      "@rpath/iQFaceOLED.dylib",
+                      "@rpath/Nexus.dylib",
                       "@rpath/zxPluginsInject.dylib",
                   },
                   "extension_forbidden": {
                       "iQFace.dylib",
+                      "Nexus.dylib",
                       "iQFaceEnhancer.dylib",
                       "iQFaceIcons.dylib",
                       "iQFaceCache.dylib",
@@ -8335,6 +8325,11 @@ jobs:
                   },
                   "forbidden_main": {
                       "@executable_path/iQFace.dylib",
+                      "@executable_path/Nexus.dylib",
+                      "@rpath/iQFaceEnhancer.dylib",
+                      "@rpath/iQFaceIcons.dylib",
+                      "@rpath/iQFaceCache.dylib",
+                      "@rpath/iQFaceOLED.dylib",
                       "@executable_path/iQFaceEnhancer.dylib",
                       "@executable_path/iQFaceIcons.dylib",
                       "@executable_path/iQFaceCache.dylib",
@@ -8856,6 +8851,15 @@ jobs:
 
           if BUNDLE_ID == "com.facebook.Facebook":
               for legacy in (
+                  app / "iQFaceEnhancer.dylib",
+                  frameworks / "iQFaceEnhancer.dylib",
+                  app / "iQFaceIcons.dylib",
+                  frameworks / "iQFaceIcons.dylib",
+                  app / "iQFaceCache.dylib",
+                  frameworks / "iQFaceCache.dylib",
+                  app / "iQFaceOLED.dylib",
+                  frameworks / "iQFaceOLED.dylib",
+                  app / "iQFace.bundle",
                   app / "FBOLED.dylib",
                   frameworks / "FBOLED.dylib",
                   app / "Glow.dylib",
