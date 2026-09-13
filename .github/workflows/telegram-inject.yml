@@ -61,6 +61,7 @@ jobs:
           test -f private-core/scripts/zx_compat_patch.py
           test -f private-core/addons/shared/zx-compat/dylib/zxPluginsInject.dylib
           test -f private-core/addons/shared/zx-compat/framework/CydiaSubstrate.framework.zip
+          test -f private-core/addons/telegram/iqtele/framework/CydiaSubstrate.framework.zip
 
           echo "✅ Bot-Injector-Core acessado com sucesso"
 
@@ -4142,10 +4143,17 @@ jobs:
           zx_source = Path(
               "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
           )
-          substrate_zip = Path(
-              "addons/shared/zx-compat/framework/"
-              "CydiaSubstrate.framework.zip"
-          )
+
+          if is_iqtele_13:
+              substrate_zip = Path(
+                  "addons/telegram/iqtele/framework/"
+                  "CydiaSubstrate.framework.zip"
+              )
+          else:
+              substrate_zip = Path(
+                  "addons/shared/zx-compat/framework/"
+                  "CydiaSubstrate.framework.zip"
+              )
 
           uses_zx_plugins = not is_iqtele_13
 
@@ -4157,7 +4165,6 @@ jobs:
               raise SystemExit(
                   f"❌ zx-compat: CydiaSubstrate ZIP ausente: {substrate_zip}"
               )
-
           zx_hash = None
           if uses_zx_plugins:
               zx_hash = sha256(zx_source)
@@ -4229,6 +4236,43 @@ jobs:
               "✅ zx-compat: CydiaSubstrate validado por SHA dinâmico "
               f"({substrate_binary.stat().st_size} bytes)"
           )
+
+          if is_iqtele_13:
+              # O iQTele 1.3 de referência usa ElleKit 1.1.3 exposto
+              # como CydiaSubstrate.framework. Não usar o framework
+              # compartilhado antigo do zx-compat nesta rota.
+              expected_ellekit_sha = (
+                  "e1155f6043b628ee9b042004194bb3ea3815cf2d6fb9d7604ed4fb8e17c7a281"
+              )
+              if copied_substrate_hash != expected_ellekit_sha:
+                  raise SystemExit(
+                      "❌ iQTele 1.3: CydiaSubstrate.framework não corresponde "
+                      "ao ElleKit 1.1.3 do IPA de referência: "
+                      f"{copied_substrate_hash} != {expected_ellekit_sha}"
+                  )
+
+              substrate_info_path = (
+                  substrate_destination / "Info.plist"
+              )
+              if not substrate_info_path.is_file():
+                  raise SystemExit(
+                      "❌ iQTele 1.3: Info.plist do CydiaSubstrate ausente"
+                  )
+              with substrate_info_path.open("rb") as f:
+                  substrate_info = plistlib.load(f)
+
+              if (
+                  substrate_info.get("CFBundleIdentifier") != "ellekit"
+                  or substrate_info.get("CFBundleShortVersionString") != "1.1.3"
+              ):
+                  raise SystemExit(
+                      "❌ iQTele 1.3: framework de compatibilidade não é "
+                      "ElleKit 1.1.3"
+                  )
+
+              print(
+                  "✅ iQTele 1.3: ElleKit 1.1.3 de referência validado"
+              )
 
           patcher = Path(
               "private-core/scripts/zx_compat_patch.py"
@@ -8810,10 +8854,20 @@ jobs:
                   "❌ iQTele 1.3: zxPluginsInject foi adicionado indevidamente"
               )
 
-          substrate_zip = Path(
-              "addons/shared/zx-compat/framework/"
-              "CydiaSubstrate.framework.zip"
-          )
+          if (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          ):
+              substrate_zip = Path(
+                  "addons/telegram/iqtele/framework/"
+                  "CydiaSubstrate.framework.zip"
+              )
+          else:
+              substrate_zip = Path(
+                  "addons/shared/zx-compat/framework/"
+                  "CydiaSubstrate.framework.zip"
+              )
+
           if not substrate_zip.is_file():
               raise SystemExit(
                   f"❌ zx-compat final: fonte CydiaSubstrate ausente: {substrate_zip}"
@@ -8840,6 +8894,40 @@ jobs:
               expected_substrate_hash,
               "Frameworks/CydiaSubstrate.framework/CydiaSubstrate",
           )
+
+          is_iqtele_13 = (
+              BUNDLE_ID == "ph.telegra.Telegraph"
+              and ADDON_NAME == "iQTele"
+          )
+
+          if is_iqtele_13:
+              expected_ellekit_sha = (
+                  "e1155f6043b628ee9b042004194bb3ea3815cf2d6fb9d7604ed4fb8e17c7a281"
+              )
+              if expected_substrate_hash != expected_ellekit_sha:
+                  raise SystemExit(
+                      "❌ iQTele 1.3: ZIP do framework não contém o "
+                      "ElleKit 1.1.3 de referência"
+                  )
+
+              substrate_info_path = (
+                  frameworks
+                  / "CydiaSubstrate.framework"
+                  / "Info.plist"
+              )
+              with substrate_info_path.open("rb") as f:
+                  substrate_info = plistlib.load(f)
+              if (
+                  substrate_info.get("CFBundleIdentifier") != "ellekit"
+                  or substrate_info.get("CFBundleShortVersionString") != "1.1.3"
+              ):
+                  raise SystemExit(
+                      "❌ iQTele 1.3: identidade do ElleKit divergiu"
+                  )
+
+              print(
+                  "✅ iQTele 1.3: ElleKit 1.1.3 de referência validado"
+              )
 
           main = executable_from_bundle(app)
           main_commands = dylib_commands(main)
