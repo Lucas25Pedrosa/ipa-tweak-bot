@@ -8367,6 +8367,8 @@ jobs:
           import zipfile
           from pathlib import Path
 
+          from cyan.tbhtypes.executable import Executable
+
           BUNDLE_ID = os.environ["BUNDLE_ID"]
           ADDON_NAME = os.environ.get("ADDON_NAME", "").strip()
 
