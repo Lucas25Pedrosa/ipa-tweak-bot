@@ -36,7 +36,7 @@ jobs:
         uses: actions/checkout@v5
         with:
           repository: Lucas25Pedrosa/Bot-Injector-Core
-          ref: iqtele-1.3-custom
+          ref: main
           token: ${{ secrets.CORE_REPO_TOKEN }}
           path: private-core
           persist-credentials: false
@@ -4101,6 +4101,44 @@ jobs:
               BUNDLE_ID == "ph.telegra.Telegraph"
               and ADDON_NAME == "iQTele"
           )
+
+          if is_iqtele_custom:
+              notification_service = next(
+                  (
+                      extension
+                      for extension in original_extensions
+                      if extension.stem == "NotificationServiceExtensionv1"
+                  ),
+                  None,
+              )
+
+              if notification_service is None:
+                  raise SystemExit(
+                      "❌ iQTele 1.3.2: NotificationServiceExtensionv1 ausente"
+                  )
+
+              keep_deleted_source = frameworks / "iqKeepDeleted.dylib"
+              if not keep_deleted_source.is_file():
+                  raise SystemExit(
+                      "❌ iQTele 1.3.2: Frameworks/iqKeepDeleted.dylib ausente"
+                  )
+
+              keep_deleted_local = (
+                  notification_service / "iqKeepDeleted.dylib"
+              )
+              copy_and_verify(
+                  keep_deleted_source,
+                  keep_deleted_local,
+                  (
+                      f"{notification_service.relative_to(app)}/"
+                      "iqKeepDeleted.dylib"
+                  ),
+              )
+
+              print(
+                  "✅ iQTele 1.3.2: iqKeepDeleted duplicado na "
+                  "NotificationServiceExtensionv1"
+              )
 
           zx_source = Path(
               "addons/shared/zx-compat/dylib/zxPluginsInject.dylib"
@@ -8452,7 +8490,6 @@ jobs:
                   },
                   "extension_forbidden": {
                       "Prism.dylib",
-                      "iqKeepDeleted.dylib",
                       "sideloadFixerLol.dylib",
                       "TelegramChatFixer.dylib",
                       "TelegramNotificationFix.dylib",
@@ -8467,10 +8504,12 @@ jobs:
                   "extension_required": {
                       "NotificationServiceExtensionv1": {
                           "@rpath/iQTele.dylib",
+                          "@loader_path/iqKeepDeleted.dylib",
                       },
                   },
                   "extension_exclusive": {
                       "iQTele.dylib",
+                      "iqKeepDeleted.dylib",
                   },
                   "expected_extensions": {
                       "BroadcastUploadExtension",
@@ -8922,6 +8961,35 @@ jobs:
                       f"incorreta {extension.name}: {exclusive_bad}"
                   )
 
+              if (
+                  BUNDLE_ID == "ph.telegra.Telegraph"
+                  and ADDON_NAME == "iQTele"
+              ):
+                  local_keep_deleted = (
+                      extension / "iqKeepDeleted.dylib"
+                  )
+
+                  if extension.stem == "NotificationServiceExtensionv1":
+                      if not local_keep_deleted.is_file():
+                          raise SystemExit(
+                              "❌ iQTele 1.3.2: iqKeepDeleted local ausente em "
+                              "NotificationServiceExtensionv1"
+                          )
+
+                      validate_dynamic_sha(
+                          local_keep_deleted,
+                          sha256(frameworks / "iqKeepDeleted.dylib"),
+                          (
+                              f"{extension.relative_to(app)}/"
+                              "iqKeepDeleted.dylib"
+                          ),
+                      )
+                  elif local_keep_deleted.exists():
+                      raise SystemExit(
+                          "❌ iQTele 1.3.2: iqKeepDeleted local apareceu na "
+                          f"extensão incorreta {extension.name}"
+                      )
+
           if BUNDLE_ID == "com.facebook.Facebook":
               for legacy in (
                   app / "iQFaceEnhancer.dylib",
@@ -8949,7 +9017,7 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  "✅ iQTele 1.3 custom + Prism validados por SHA dinâmico"
+                  "✅ iQTele 1.3.2 custom + Prism validados por SHA dinâmico"
               )
 
           print(
@@ -8957,7 +9025,7 @@ jobs:
           )
           if uses_zx_plugins:
               print(
-                  "✅ zxPluginsInject e CydiaSubstrate do layout 1.2 "
+                  "✅ zxPluginsInject e CydiaSubstrate do layout zx-compat "
                   "validados por SHA dinâmico"
               )
           print(
@@ -8968,14 +9036,14 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  f"✅ {len(extensions)} extensão(ões) no layout custom 1.2"
+                  f"✅ {len(extensions)} extensão(ões) no layout custom 1.3.2"
               )
               print(
                   "✅ Todas as extensões -> @rpath/zxPluginsInject.dylib"
               )
               print(
                   "✅ NotificationServiceExtensionv1 -> "
-                  "@rpath/iQTele.dylib"
+                  "@rpath/iQTele.dylib + @loader_path/iqKeepDeleted.dylib"
               )
           else:
               print(
