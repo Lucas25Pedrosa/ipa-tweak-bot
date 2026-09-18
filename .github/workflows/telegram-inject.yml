@@ -187,7 +187,7 @@ jobs:
           )"
 
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive|com.bing.lyrics)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -4991,10 +4991,11 @@ jobs:
           shutil.rmtree(work)
           PY
 
-      - name: Documents / PDF Expert / Duolingo / InShot / Picsart / Media Converter / Photoleap / iLovePDF / iTranslate / Happy Scale - inject blatantsPatch into extensions
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale') }}
+      - name: Shared blatantsPatch layout - supported apps including Dynamic Lyrics
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale' || steps.prepare.outputs.bundle_id == 'com.bing.lyrics') }}
         run: |
           python <<'PY'
+          import hashlib
           import plistlib
           import shutil
           import struct
@@ -5089,6 +5090,16 @@ jobs:
                       "PlugIns/IntentHandler.appex",
                   ),
               },
+              "com.bing.lyrics": {
+                  "name": "Dynamic Lyrics",
+                  "required_paths": (
+                      "Frameworks/DynamicLyricsPatch.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
+                  "expected_extensions": (
+                      "PlugIns/lyricsWidgetExtension.appex",
+                  ),
+              },
           }
 
           source_ipa = Path("Layout_Output.ipa")
@@ -5134,6 +5145,37 @@ jobs:
               )
 
           app_name = profile["name"]
+
+          if bundle_id == "com.bing.lyrics":
+              blatant_source = Path(
+                  "addons/documents/dylib/blatantsPatch.dylib"
+              )
+              expected_hash = (
+                  "4fb1f1d688a795bd3fb63aec01cf238e"
+                  "d48834fb95733cdaa280ee0618401f5a"
+              )
+
+              if not blatant_source.is_file():
+                  raise SystemExit(
+                      "❌ Dynamic Lyrics: blatantsPatch compartilhado ausente"
+                  )
+
+              actual_hash = hashlib.sha256(
+                  blatant_source.read_bytes()
+              ).hexdigest()
+
+              if actual_hash != expected_hash:
+                  raise SystemExit(
+                      "❌ Dynamic Lyrics: blatantsPatch do Core diverge "
+                      "do IPA 2.0.5 de referência"
+                  )
+
+              frameworks = app / "Frameworks"
+              frameworks.mkdir(exist_ok=True)
+              shutil.copy2(
+                  blatant_source,
+                  frameworks / "blatantsPatch.dylib",
+              )
 
           for relative_path in profile["required_paths"]:
               required = app / relative_path
@@ -5228,7 +5270,7 @@ jobs:
 
               return result
 
-          def has_shared_rpath(executable_path: Path) -> bool:
+          def has_rpath(executable_path: Path, rpath: str) -> bool:
               proc = subprocess.run(
                   [
                       Executable.otool,
@@ -5241,9 +5283,142 @@ jobs:
               )
 
               return (
-                  f"path {shared_rpath} "
+                  f"path {rpath} "
                   in proc.stdout
               )
+
+          def has_shared_rpath(executable_path: Path) -> bool:
+              return has_rpath(
+                  executable_path,
+                  shared_rpath,
+              )
+
+          def force_strong_load(
+              executable_path: Path,
+              dependency: str,
+          ) -> None:
+              raw = bytearray(
+                  executable_path.read_bytes()
+              )
+
+              if struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit(
+                      f"❌ {app_name}: Mach-O inesperado em "
+                      f"{executable_path.name}"
+                  )
+
+              ncmds = struct.unpack_from(
+                  "<I",
+                  raw,
+                  16,
+              )[0]
+              offset = 32
+              matches = 0
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II",
+                      raw,
+                      offset,
+                  )
+
+                  if cmd in {
+                      0x0C,
+                      0x18,
+                      0x80000018,
+                  }:
+                      name_offset = struct.unpack_from(
+                          "<I",
+                          raw,
+                          offset + 8,
+                      )[0]
+                      start = offset + name_offset
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+
+                      name = raw[
+                          start:end
+                      ].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+
+                      if name == dependency:
+                          struct.pack_into(
+                              "<I",
+                              raw,
+                              offset,
+                              0x0C,
+                          )
+                          matches += 1
+
+                  offset += cmdsize
+
+              if matches != 1:
+                  raise SystemExit(
+                      f"❌ {app_name}: esperado 1 load de "
+                      f"{dependency}; encontrado={matches}"
+                  )
+
+              executable_path.write_bytes(
+                  raw
+              )
+
+          if bundle_id == "com.bing.lyrics":
+              main_name = app_plist.get(
+                  "CFBundleExecutable"
+              )
+
+              if not main_name:
+                  raise SystemExit(
+                      "❌ Dynamic Lyrics: executável principal ausente"
+                  )
+
+              main_executable = app / main_name
+              main = MainExecutable(
+                  str(main_executable),
+                  str(app),
+              )
+
+              current_main = dependencies(
+                  main_executable
+              )
+
+              if expected_load not in current_main:
+                  main.remove_signature()
+                  main.inj_func(
+                      expected_load
+                  )
+
+                  if main.inj is not None:
+                      main.inj.write(
+                          str(main_executable)
+                      )
+
+              force_strong_load(
+                  main_executable,
+                  expected_load,
+              )
+
+              main_dependencies = dependencies(
+                  main_executable
+              )
+
+              if (
+                  main_dependencies.count(expected_load) != 1
+                  or main_dependencies.count(
+                      "@rpath/DynamicLyricsPatch.dylib"
+                  ) != 1
+              ):
+                  raise SystemExit(
+                      "❌ Dynamic Lyrics: loads do executável principal "
+                      "não correspondem ao perfil 2.0.5"
+                  )
 
           for appex in appex_dirs:
               plist_path = appex / "Info.plist"
@@ -5308,6 +5483,31 @@ jobs:
                           f"{appex.name}: {result.stderr.strip()}"
                       )
 
+              if (
+                  bundle_id == "com.bing.lyrics"
+                  and not has_rpath(
+                      executable_path,
+                      "@executable_path/../Frameworks",
+                  )
+              ):
+                  result = subprocess.run(
+                      [
+                          Executable.nt,
+                          "-add_rpath",
+                          "@executable_path/../Frameworks",
+                          str(executable_path),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "❌ Dynamic Lyrics: falha ao reproduzir "
+                          "RPATH adicional do widget: "
+                          f"{result.stderr.strip()}"
+                      )
+
               current_dependencies = dependencies(executable_path)
 
               if expected_load not in current_dependencies:
@@ -5325,6 +5525,28 @@ jobs:
                       "❌ Injeção não persistiu em "
                       f"{appex.name}: {expected_load}"
                   )
+
+              if bundle_id == "com.bing.lyrics":
+                  force_strong_load(
+                      executable_path,
+                      expected_load,
+                  )
+
+                  final_dependencies = dependencies(
+                      executable_path
+                  )
+
+                  if final_dependencies.count(expected_load) != 1:
+                      raise SystemExit(
+                          "❌ Dynamic Lyrics: blatant do widget "
+                          "ausente ou duplicado"
+                      )
+
+                  if "@rpath/DynamicLyricsPatch.dylib" in final_dependencies:
+                      raise SystemExit(
+                          "❌ Dynamic Lyrics: Premium apareceu "
+                          "indevidamente no widget"
+                      )
 
               if bundle_id in {
                   "com.ilovepdf.www",
@@ -11058,6 +11280,171 @@ jobs:
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
+
+      - name: Validate Dynamic Lyrics V5 after injection
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.bing.lyrics' }}
+        run: |
+          python <<'PY'
+          import importlib.util
+          import json
+          import plistlib
+          import shutil
+          import struct
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          status = json.loads(
+              Path(".private-status.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+
+          if (
+              status.get("processing_route") != "private"
+              or status.get("addon_name") != "Premium"
+              or str(status.get("addon_version") or "") != "1.0"
+              or status.get("nopopup", {}).get("status")
+              not in {"applied", "already_applied"}
+          ):
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: V5 final inválido: "
+                  + json.dumps(status, ensure_ascii=False)
+              )
+
+          work = Path("dynamiclyrics_v5_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: .app final não identificado"
+              )
+
+          app = apps[0]
+          with (app / "Info.plist").open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != "com.bing.lyrics":
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: Bundle ID final inesperado"
+              )
+
+          main = app / info["CFBundleExecutable"]
+          patch = app / "Frameworks" / "DynamicLyricsPatch.dylib"
+          blatant = app / "Frameworks" / "blatantsPatch.dylib"
+          widget = app / "PlugIns" / "lyricsWidgetExtension.appex"
+
+          with (widget / "Info.plist").open("rb") as f:
+              widget_info = plistlib.load(f)
+          widget_exec = widget / widget_info["CFBundleExecutable"]
+
+          for path in (main, patch, blatant, widget_exec):
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Dynamic Lyrics: arquivo final ausente: {path}"
+                  )
+
+          def load_commands(binary: Path):
+              data = binary.read_bytes()
+              ncmds = struct.unpack_from("<I", data, 16)[0]
+              offset = 32
+              result = []
+
+              for _ in range(ncmds):
+                  cmd, cmdsize = struct.unpack_from(
+                      "<II", data, offset
+                  )
+                  if cmd in {0x0C, 0x18, 0x80000018}:
+                      name_offset = struct.unpack_from(
+                          "<I", data, offset + 8
+                      )[0]
+                      start = offset + name_offset
+                      end = data.find(
+                          b"\0", start, offset + cmdsize
+                      )
+                      if end < 0:
+                          end = offset + cmdsize
+                      result.append(
+                          (
+                              cmd,
+                              data[start:end].decode(
+                                  "utf-8",
+                                  errors="replace",
+                              ),
+                          )
+                      )
+                  offset += cmdsize
+              return result
+
+          main_loads = load_commands(main)
+          widget_loads = load_commands(widget_exec)
+
+          def cmds(loads, name):
+              return [cmd for cmd, dep in loads if dep == name]
+
+          if cmds(
+              main_loads,
+              "@rpath/DynamicLyricsPatch.dylib",
+          ) != [0x80000018]:
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: Premium não está em weak-load"
+              )
+
+          if cmds(
+              main_loads,
+              "@rpath/blatantsPatch.dylib",
+          ) != [0x0C]:
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: blatant principal não está em strong-load"
+              )
+
+          if cmds(
+              widget_loads,
+              "@rpath/blatantsPatch.dylib",
+          ) != [0x0C]:
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: blatant do widget não está em strong-load"
+              )
+
+          if (
+              cmds(widget_loads, "@rpath/DynamicLyricsPatch.dylib")
+              or cmds(main_loads, "@rpath/zxPluginsInject.dylib")
+              or cmds(widget_loads, "@rpath/zxPluginsInject.dylib")
+          ):
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: dependência indevida no layout final"
+              )
+
+          spec = importlib.util.spec_from_file_location(
+              "dynamiclyrics_postprocess",
+              "private-core/scripts/postprocess.py",
+          )
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          candidate = module.find_v5_candidate(
+              patch.read_bytes()
+          )
+
+          if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+              raise SystemExit(
+                  "❌ Dynamic Lyrics: NoPopup V5 não foi aplicado"
+              )
+
+          print("✅ Dynamic Lyrics: Premium 1.0 validado")
+          print("✅ Layout principal + widget corresponde ao IPA 2.0.5")
+          print("✅ V5 aplicado somente no Final.ipa")
+          print("✅ zxPluginsInject ausente")
+
+          shutil.rmtree(work)
+          PY
 
       - name: Validate Aloha V5 after injection
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.alohabrowser.alohabrowser' }}
