@@ -687,6 +687,11 @@ jobs:
           ) as f:
               addon = json.load(f)
 
+          bundle_id = os.environ.get(
+              "BUNDLE_ID",
+              "",
+          ).strip()
+
           prepared = Path("prepared")
 
           if prepared.exists():
@@ -718,6 +723,26 @@ jobs:
               print(f"📦 {path.name} -> {action}")
 
               if action == "inject":
+                  if (
+                      bundle_id == "com.innersloth.amongus"
+                      and path.name == "libAmongUS.dylib"
+                  ):
+                      destination = (
+                          frameworks
+                          / path.name
+                      )
+
+                      shutil.copy2(
+                          path,
+                          destination,
+                      )
+
+                      print(
+                          "   ↳ Among Us: libAmongUS.dylib "
+                          "reservada para Frameworks/"
+                      )
+                      continue
+
                   if path.suffix.lower() == ".zip":
                       target = inject / path.stem
                       target.mkdir(parents=True, exist_ok=True)
@@ -2174,7 +2199,7 @@ jobs:
           PY
 
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.zx_compat != 'true' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.bundle_id != 'com.innersloth.amongus' && steps.prepare.outputs.zx_compat != 'true' }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
@@ -2421,6 +2446,18 @@ jobs:
           fi
 
           echo "✅ Cyan concluído"
+
+      - name: Prepare Among Us base without Cyan
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.innersloth.amongus' }}
+        run: |
+          cp input.ipa Cyan_Output.ipa
+
+          if [ ! -f Cyan_Output.ipa ]; then
+            echo "❌ Among Us: não foi possível preparar Cyan_Output.ipa"
+            exit 1
+          fi
+
+          echo "✅ Among Us: IPA original preservado para a etapa estrutural"
 
       - name: Facetune - apply structural second-stage patch
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
@@ -8032,8 +8069,11 @@ jobs:
           import os
           import plistlib
           import shutil
+          import subprocess
           import zipfile
           from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
 
           with open(
               "selected_addon.json",
@@ -8164,6 +8204,220 @@ jobs:
                   print(
                       f"🧱 Framework: {item.name}"
                   )
+
+          if bundle_id == "com.innersloth.amongus":
+              info_path = (
+                  app
+                  / "Info.plist"
+              )
+
+              with info_path.open("rb") as f:
+                  amongus_info = plistlib.load(f)
+
+              executable_name = amongus_info.get(
+                  "CFBundleExecutable"
+              )
+
+              if not executable_name:
+                  raise SystemExit(
+                      "❌ Among Us: CFBundleExecutable ausente"
+                  )
+
+              main_executable = (
+                  app
+                  / executable_name
+              )
+              unity_executable = (
+                  app
+                  / "Frameworks"
+                  / "UnityFramework.framework"
+                  / "UnityFramework"
+              )
+              amongus_dylib = (
+                  app
+                  / "Frameworks"
+                  / "libAmongUS.dylib"
+              )
+              igamegod_binary = (
+                  app
+                  / "Frameworks"
+                  / "iGameGod.framework"
+                  / "iGameGod"
+              )
+
+              required_files = {
+                  "executável principal": main_executable,
+                  "UnityFramework": unity_executable,
+                  "libAmongUS.dylib": amongus_dylib,
+                  "iGameGod.framework/iGameGod": igamegod_binary,
+              }
+
+              for label, required_path in required_files.items():
+                  if not required_path.is_file():
+                      raise SystemExit(
+                          "❌ Among Us: componente ausente: "
+                          f"{label} -> {required_path}"
+                      )
+
+              def strong_inject(
+                  binary: Path,
+                  dependency: str,
+              ) -> None:
+                  executable = Executable(
+                      str(binary)
+                  )
+
+                  current_dependencies = (
+                      executable.get_dependencies()
+                  )
+
+                  if dependency in current_dependencies:
+                      print(
+                          "ℹ️ Among Us: dependência já presente: "
+                          f"{binary.name} -> {dependency}"
+                      )
+                      return
+
+                  if not Path(
+                      executable.idylib
+                  ).is_file():
+                      raise SystemExit(
+                          "❌ Among Us: insert_dylib do Cyan "
+                          "não encontrado"
+                      )
+
+                  entitlements = (
+                      binary.parent
+                      / f".{binary.name}.amongus.entitlements"
+                  )
+
+                  ent_proc = subprocess.run(
+                      [
+                          executable.ldid,
+                          "-e",
+                          str(binary),
+                      ],
+                      capture_output=True,
+                  )
+
+                  entitlements.write_bytes(
+                      ent_proc.stdout
+                  )
+
+                  executable.remove_signature()
+
+                  result = subprocess.run(
+                      [
+                          executable.idylib,
+                          "--inplace",
+                          "--all-yes",
+                          dependency,
+                          str(binary),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "❌ Among Us: falha ao adicionar "
+                          f"LC_LOAD_DYLIB em {binary}:\n"
+                          f"{result.stderr}"
+                      )
+
+                  if entitlements.stat().st_size > 0:
+                      zero_requirements = (
+                          Path(
+                              executable.install_dir
+                          )
+                          / "extras"
+                          / "zero.requirements"
+                      )
+
+                      sign_result = subprocess.run(
+                          [
+                              executable.ldid,
+                              f"-S{entitlements}",
+                              "-M",
+                              "-Cadhoc",
+                              f"-Q{zero_requirements}",
+                              str(binary),
+                          ],
+                          capture_output=True,
+                          text=True,
+                      )
+
+                      if sign_result.returncode != 0:
+                          raise SystemExit(
+                              "❌ Among Us: falha ao restaurar "
+                              f"entitlements em {binary}:\n"
+                              f"{sign_result.stderr}"
+                          )
+                  else:
+                      if not executable.fakesign():
+                          raise SystemExit(
+                              "❌ Among Us: falha no fakesign de "
+                              f"{binary}"
+                          )
+
+                  entitlements.unlink(
+                      missing_ok=True
+                  )
+
+                  verified = Executable(
+                      str(binary)
+                  ).get_dependencies()
+
+                  if dependency not in verified:
+                      raise SystemExit(
+                          "❌ Among Us: dependência não persistiu: "
+                          f"{dependency}"
+                      )
+
+                  print(
+                      "✅ Among Us: LC_LOAD_DYLIB forte: "
+                      f"{binary.name} -> {dependency}"
+                  )
+
+              strong_inject(
+                  main_executable,
+                  "@rpath/iGameGod.framework/iGameGod",
+              )
+
+              strong_inject(
+                  unity_executable,
+                  "@executable_path/Frameworks/libAmongUS.dylib",
+              )
+
+              main_dependencies = Executable(
+                  str(main_executable)
+              ).get_dependencies()
+              unity_dependencies = Executable(
+                  str(unity_executable)
+              ).get_dependencies()
+
+              if (
+                  "@rpath/iGameGod.framework/iGameGod"
+                  not in main_dependencies
+              ):
+                  raise SystemExit(
+                      "❌ Among Us: iGameGod não ficou ligado "
+                      "ao executável principal"
+                  )
+
+              if (
+                  "@executable_path/Frameworks/libAmongUS.dylib"
+                  not in unity_dependencies
+              ):
+                  raise SystemExit(
+                      "❌ Among Us: libAmongUS não ficou ligada "
+                      "ao UnityFramework"
+                  )
+
+              print(
+                  "✅ Among Us: layout KamoHacks reproduzido "
+                  "e validado"
+              )
 
           bundle_source = Path(
               "prepared/bundles"
