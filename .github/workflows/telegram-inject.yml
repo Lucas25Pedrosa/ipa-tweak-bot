@@ -3949,9 +3949,8 @@ jobs:
               "iQTele": {
                   "frameworks": {
                       "iQTele.dylib",
-                      "Prism.dylib",
+                      "iQTeleEnhancer.dylib",
                       "sideloadFixerLol.dylib",
-                      "TelegramChatFixer.dylib",
                       "iqKeepDeleted.dylib",
                   },
                   "root": set(),
@@ -4151,13 +4150,13 @@ jobs:
 
               if notification_service is None:
                   raise SystemExit(
-                      "❌ iQTele 1.3.2: NotificationServiceExtensionv1 ausente"
+                      "❌ iQTele 1.4: NotificationServiceExtensionv1 ausente"
                   )
 
               keep_deleted_source = frameworks / "iqKeepDeleted.dylib"
               if not keep_deleted_source.is_file():
                   raise SystemExit(
-                      "❌ iQTele 1.3.2: Frameworks/iqKeepDeleted.dylib ausente"
+                      "❌ iQTele 1.4: Frameworks/iqKeepDeleted.dylib ausente"
                   )
 
               keep_deleted_local = (
@@ -4173,7 +4172,7 @@ jobs:
               )
 
               print(
-                  "✅ iQTele 1.3.2: iqKeepDeleted duplicado na "
+                  "✅ iQTele 1.4: iqKeepDeleted duplicado na "
                   "NotificationServiceExtensionv1"
               )
 
@@ -8946,31 +8945,30 @@ jobs:
               "iQTele": {
                   "framework_files": {
                       "iQTele.dylib",
-                      "Prism.dylib",
+                      "iQTeleEnhancer.dylib",
                       "sideloadFixerLol.dylib",
-                      "TelegramChatFixer.dylib",
                       "iqKeepDeleted.dylib",
                       "zxPluginsInject.dylib",
                   },
                   "root_files": set(),
                   "main_loads": {
                       "@rpath/sideloadFixerLol.dylib",
-                      "@rpath/TelegramChatFixer.dylib",
                       "@rpath/iqKeepDeleted.dylib",
                       "@rpath/zxPluginsInject.dylib",
                       "@rpath/iQTele.dylib",
-                      "@rpath/Prism.dylib",
+                      "@rpath/iQTeleEnhancer.dylib",
                   },
                   "extension_loads": {
                       "@rpath/zxPluginsInject.dylib",
                   },
                   "extension_forbidden": {
+                      "iQTele.dylib",
+                      "iQTeleEnhancer.dylib",
                       "Prism.dylib",
                       "sideloadFixerLol.dylib",
                       "TelegramChatFixer.dylib",
                       "TelegramNotificationFix.dylib",
                       "TelegramScreenshotBypass.dylib",
-                      "iQTeleEnhancer.dylib",
                       "iqAppGroupCapture.dylib",
                       "Sideloadbypass1.dylib",
                       "Sideloadbypass2.dylib",
@@ -8979,12 +8977,10 @@ jobs:
                   },
                   "extension_required": {
                       "NotificationServiceExtensionv1": {
-                          "@rpath/iQTele.dylib",
                           "@loader_path/iqKeepDeleted.dylib",
                       },
                   },
                   "extension_exclusive": {
-                      "iQTele.dylib",
                       "iqKeepDeleted.dylib",
                   },
                   "expected_extensions": {
@@ -8996,7 +8992,8 @@ jobs:
                       "WidgetExtension",
                   },
                   "forbidden_main": {
-                      "@rpath/iQTeleEnhancer.dylib",
+                      "@rpath/Prism.dylib",
+                      "@rpath/TelegramChatFixer.dylib",
                       "@rpath/TelegramNotificationFix.dylib",
                       "@rpath/TelegramScreenshotBypass.dylib",
                       "@rpath/iqAppGroupCapture.dylib",
@@ -9006,6 +9003,7 @@ jobs:
                       "@rpath/iqAppGroupBridge.dylib",
                       "@rpath/Mx.dylib",
                       "@executable_path/iQTele.dylib",
+                      "@executable_path/iQTeleEnhancer.dylib",
                       "@executable_path/Prism.dylib",
                       "@executable_path/iqKeepDeleted.dylib",
                       "@executable_path/sideloadFixerLol.dylib",
@@ -9448,7 +9446,7 @@ jobs:
                   if extension.stem == "NotificationServiceExtensionv1":
                       if not local_keep_deleted.is_file():
                           raise SystemExit(
-                              "❌ iQTele 1.3.2: iqKeepDeleted local ausente em "
+                              "❌ iQTele 1.4: iqKeepDeleted local ausente em "
                               "NotificationServiceExtensionv1"
                           )
 
@@ -9462,7 +9460,7 @@ jobs:
                       )
                   elif local_keep_deleted.exists():
                       raise SystemExit(
-                          "❌ iQTele 1.3.2: iqKeepDeleted local apareceu na "
+                          "❌ iQTele 1.4: iqKeepDeleted local apareceu na "
                           f"extensão incorreta {extension.name}"
                       )
 
@@ -9493,7 +9491,7 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  "✅ iQTele 1.3.2 custom + Prism validados por SHA dinâmico"
+                  "✅ iQTele 1.4 custom + iQTeleEnhancer validados por SHA dinâmico"
               )
 
           print(
@@ -9512,14 +9510,14 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  f"✅ {len(extensions)} extensão(ões) no layout custom 1.3.2"
+                  f"✅ {len(extensions)} extensão(ões) no layout custom 1.4"
               )
               print(
                   "✅ Todas as extensões -> @rpath/zxPluginsInject.dylib"
               )
               print(
                   "✅ NotificationServiceExtensionv1 -> "
-                  "@rpath/iQTele.dylib + @loader_path/iqKeepDeleted.dylib"
+                  "@loader_path/iqKeepDeleted.dylib"
               )
           else:
               print(
