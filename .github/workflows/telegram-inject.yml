@@ -8841,6 +8841,9 @@ jobs:
                   "extension_loads": {
                       "@rpath/zxPluginsInject.dylib",
                   },
+                  "extension_load_overrides": {
+                      "OpenInFacebookSafariExtension": set(),
+                  },
                   "extension_forbidden": {
                       "iQFace.dylib",
                       "Nexus.dylib",
@@ -8849,6 +8852,11 @@ jobs:
                       "iQFaceCache.dylib",
                       "iQFaceOLED.dylib",
                       "FBOLED.dylib",
+                  },
+                  "extension_forbidden_extra": {
+                      "OpenInFacebookSafariExtension": {
+                          "zxPluginsInject.dylib",
+                      },
                   },
                   "forbidden_main": {
                       "@executable_path/iQFace.dylib",
@@ -9352,8 +9360,18 @@ jobs:
               executable = executable_from_bundle(extension)
               commands = dylib_commands(executable)
 
+              effective_extension_loads = set(
+                  profile.get(
+                      "extension_load_overrides",
+                      {},
+                  ).get(
+                      extension.stem,
+                      required_extension_loads,
+                  )
+              )
+
               missing_common = sorted(
-                  required_extension_loads - set(commands)
+                  effective_extension_loads - set(commands)
               )
               if missing_common:
                   raise SystemExit(
@@ -9361,7 +9379,7 @@ jobs:
                       f"{extension.name}: {missing_common}"
                   )
 
-              for dependency in required_extension_loads:
+              for dependency in effective_extension_loads:
                   if (
                       commands[dependency]
                       != zxpatch.LC_LOAD_WEAK_DYLIB
@@ -9371,12 +9389,25 @@ jobs:
                           f"{extension.name}: {dependency}"
                       )
 
+              forbidden_tokens = set(
+                  profile["extension_forbidden"]
+              )
+              forbidden_tokens.update(
+                  profile.get(
+                      "extension_forbidden_extra",
+                      {},
+                  ).get(
+                      extension.stem,
+                      set(),
+                  )
+              )
+
               bad = sorted(
                   dependency
                   for dependency in commands
                   if any(
                       token in dependency
-                      for token in profile["extension_forbidden"]
+                      for token in forbidden_tokens
                   )
               )
               if bad:
@@ -9465,6 +9496,37 @@ jobs:
                       )
 
           if BUNDLE_ID == "com.facebook.Facebook":
+              safari_extension = (
+                  app
+                  / "PlugIns"
+                  / "OpenInFacebookSafariExtension.appex"
+              )
+              if not safari_extension.is_dir():
+                  raise SystemExit(
+                      "❌ zx-compat final: "
+                      "OpenInFacebookSafariExtension.appex ausente"
+                  )
+
+              safari_executable = executable_from_bundle(
+                  safari_extension
+              )
+              safari_commands = dylib_commands(
+                  safari_executable
+              )
+              if any(
+                  "zxPluginsInject.dylib" in dependency
+                  for dependency in safari_commands
+              ):
+                  raise SystemExit(
+                      "❌ zx-compat final: Safari Extension do Facebook "
+                      "recebeu zxPluginsInject indevidamente"
+                  )
+
+              print(
+                  "✅ OpenInFacebookSafariExtension preservada sem "
+                  "zxPluginsInject"
+              )
+
               for legacy in (
                   app / "iQFaceEnhancer.dylib",
                   frameworks / "iQFaceEnhancer.dylib",
