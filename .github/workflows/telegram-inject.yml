@@ -2459,6 +2459,386 @@ jobs:
 
           echo "✅ Among Us: IPA original preservado para a etapa estrutural"
 
+      - name: Mimo - normalize main load commands
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.getmimo.mimo' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          BUNDLE_ID = "com.getmimo.mimo"
+          EXPECTED = [
+              ("@rpath/sideloadKeychainfix.dylib", 0),
+              ("@rpath/Mimo.dylib", 0),
+              ("@rpath/blatantsPatch.dylib", 2),
+          ]
+
+          work = Path("mimo_second_stage")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Cyan_Output.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = list((work / "Payload").glob("*.app"))
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Mimo: .app principal não identificado"
+              )
+
+          app = apps[0]
+          info_path = app / "Info.plist"
+          if not info_path.is_file():
+              raise SystemExit(
+                  "❌ Mimo: Info.plist ausente"
+              )
+
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != BUNDLE_ID:
+              raise SystemExit(
+                  "❌ Mimo: bundle ID inesperado"
+              )
+
+          executable_name = info.get(
+              "CFBundleExecutable"
+          )
+          if not executable_name:
+              raise SystemExit(
+                  "❌ Mimo: CFBundleExecutable ausente"
+              )
+
+          executable_path = (
+              app / executable_name
+          )
+          frameworks = (
+              app / "Frameworks"
+          )
+          entitlements = (
+              app / "cyan.entitlements"
+          )
+
+          if not executable_path.is_file():
+              raise SystemExit(
+                  "❌ Mimo: executável principal ausente"
+              )
+
+          for name in (
+              "sideloadKeychainfix.dylib",
+              "Mimo.dylib",
+              "blatantsPatch.dylib",
+          ):
+              path = frameworks / name
+              if not path.is_file():
+                  raise SystemExit(
+                      f"❌ Mimo: Frameworks/{name} ausente"
+                  )
+
+          if not entitlements.is_file():
+              raise SystemExit(
+                  "❌ Mimo: cyan.entitlements ausente"
+              )
+
+          def dylib_dependencies(path: Path) -> list[str]:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-L",
+                      str(path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              result = []
+
+              for raw_line in proc.stdout.splitlines()[1:]:
+                  line = raw_line.strip()
+
+                  if not line:
+                      continue
+
+                  marker = " (compatibility version "
+
+                  if marker in line:
+                      line = line.split(
+                          marker,
+                          1,
+                      )[0]
+
+                  if line.startswith(
+                      (
+                          "/",
+                          "@",
+                      )
+                  ):
+                      result.append(line)
+
+              return result
+
+          before_dependencies = (
+              dylib_dependencies(
+                  executable_path
+              )
+          )
+
+          expected_names = [
+              item[0]
+              for item in EXPECTED
+          ]
+
+          positions = []
+
+          for dependency in expected_names:
+              if (
+                  before_dependencies.count(
+                      dependency
+                  )
+                  != 1
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: load ausente ou duplicado "
+                      f"após Cyan: {dependency}"
+                  )
+
+              positions.append(
+                  before_dependencies.index(
+                      dependency
+                  )
+              )
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Mimo: ordem após Cyan inválida "
+                  "(esperado: sideloadKeychainfix → Mimo → blatantsPatch)"
+              )
+
+          Executable(
+              str(executable_path)
+          ).remove_signature()
+
+          raw = bytearray(
+              executable_path.read_bytes()
+          )
+
+          if (
+              len(raw) < 32
+              or struct.unpack_from(
+                  "<I",
+                  raw,
+                  0,
+              )[0]
+              != 0xFEEDFACF
+          ):
+              raise SystemExit(
+                  "❌ Mimo: Mach-O principal inesperado"
+              )
+
+          ncmds = struct.unpack_from(
+              "<I",
+              raw,
+              16,
+          )[0]
+          offset = 32
+
+          expected_timestamps = dict(
+              EXPECTED
+          )
+          found = {
+              name: 0
+              for name in expected_timestamps
+          }
+
+          for _ in range(ncmds):
+              if offset + 8 > len(raw):
+                  raise SystemExit(
+                      "❌ Mimo: tabela de load commands truncada"
+                  )
+
+              cmd, cmdsize = struct.unpack_from(
+                  "<II",
+                  raw,
+                  offset,
+              )
+
+              if (
+                  cmdsize < 8
+                  or offset + cmdsize > len(raw)
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: load command inválido"
+                  )
+
+              if cmd in {
+                  0x0C,
+                  0x18,
+                  0x80000018,
+              }:
+                  name_offset = struct.unpack_from(
+                      "<I",
+                      raw,
+                      offset + 8,
+                  )[0]
+                  start = (
+                      offset + name_offset
+                  )
+                  end = raw.find(
+                      b"\0",
+                      start,
+                      offset + cmdsize,
+                  )
+
+                  if end < 0:
+                      end = (
+                          offset + cmdsize
+                      )
+
+                  name = raw[
+                      start:end
+                  ].decode(
+                      "utf-8",
+                      errors="replace",
+                  )
+
+                  if name in expected_timestamps:
+                      # O layout do Mimo usa LC_LOAD_WEAK_DYLIB para
+                      # os três dylibs. Keychain/Mimo timestamp 0;
+                      # blatantsPatch timestamp 2.
+                      struct.pack_into(
+                          "<I",
+                          raw,
+                          offset,
+                          0x80000018,
+                      )
+                      struct.pack_into(
+                          "<I",
+                          raw,
+                          offset + 12,
+                          expected_timestamps[
+                              name
+                          ],
+                      )
+                      found[name] += 1
+
+              offset += cmdsize
+
+          for name, count in found.items():
+              if count != 1:
+                  raise SystemExit(
+                      "❌ Mimo: esperado exatamente 1 load command "
+                      f"para {name}; encontrado={count}"
+                  )
+
+          executable_path.write_bytes(
+              raw
+          )
+
+          zero_requirements = (
+              Path(
+                  Executable.install_dir
+              )
+              / "extras"
+              / "zero.requirements"
+          )
+
+          sign_args = [
+              Executable.ldid,
+              f"-S{entitlements}",
+              "-M",
+              "-Cadhoc",
+          ]
+
+          if zero_requirements.is_file():
+              sign_args.append(
+                  f"-Q{zero_requirements}"
+              )
+
+          sign_args.append(
+              str(executable_path)
+          )
+
+          subprocess.run(
+              sign_args,
+              check=True,
+          )
+
+          after_dependencies = (
+              dylib_dependencies(
+                  executable_path
+              )
+          )
+
+          positions = []
+
+          for dependency in expected_names:
+              if (
+                  after_dependencies.count(
+                      dependency
+                  )
+                  != 1
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: load não persistiu após normalização: "
+                      f"{dependency}"
+                  )
+
+              positions.append(
+                  after_dependencies.index(
+                      dependency
+                  )
+              )
+
+          if positions != sorted(positions):
+              raise SystemExit(
+                  "❌ Mimo: ordem final dos dylibs incorreta"
+              )
+
+          output = Path(
+              "Cyan_Output.ipa"
+          )
+          output.unlink()
+
+          with zipfile.ZipFile(
+              output,
+              "w",
+              compression=zipfile.ZIP_DEFLATED,
+          ) as z:
+              for file in work.rglob("*"):
+                  if file.is_file():
+                      z.write(
+                          file,
+                          file.relative_to(work),
+                      )
+
+          print(
+              "✅ Mimo: principal normalizado "
+              "sideloadKeychainfix → Mimo → blatantsPatch"
+          )
+          print(
+              "✅ Mimo: três LC_LOAD_WEAK_DYLIB reproduzidos"
+          )
+          print(
+              "✅ Mimo: timestamps 0 → 0 → 2 reproduzidos"
+          )
+          print(
+              "ℹ️ Mimo: blatantsPatch das duas extensões "
+              "será aplicado após Layout_Output"
+          )
+
+          shutil.rmtree(
+              work
+          )
+          PY
+
       - name: Facetune - apply structural second-stage patch
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.lightricks.Facetune2' }}
         run: |
@@ -3016,7 +3396,7 @@ jobs:
                   + (proc.stderr or proc.stdout or "sem diagnóstico")
               )
 
-          # A referência funcional usa timestamp 2 no blatant.
+          # O layout funcional usa timestamp 2 no blatantsPatch.
           raw = bytearray(exe.read_bytes())
           if struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
               raise SystemExit("❌ iTranslate: Mach-O principal inesperado")
@@ -5027,8 +5407,8 @@ jobs:
           shutil.rmtree(work)
           PY
 
-      - name: Shared blatantsPatch layout - supported apps including Dynamic Lyrics
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale' || steps.prepare.outputs.bundle_id == 'com.bing.lyrics') }}
+      - name: Shared blatantsPatch layout - supported apps including Dynamic Lyrics and Mimo
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale' || steps.prepare.outputs.bundle_id == 'com.bing.lyrics' || steps.prepare.outputs.bundle_id == 'com.getmimo.mimo') }}
         run: |
           python <<'PY'
           import hashlib
@@ -5096,6 +5476,18 @@ jobs:
                       "Frameworks/sideloadKeychainfix.dylib",
                       "Frameworks/Photoleap.dylib",
                       "Frameworks/blatantsPatch.dylib",
+                  ),
+              },
+              "com.getmimo.mimo": {
+                  "name": "Mimo",
+                  "required_paths": (
+                      "Frameworks/sideloadKeychainfix.dylib",
+                      "Frameworks/Mimo.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
+                  "target_extensions": (
+                      "PlugIns/MimoNotificationServiceExtension.appex",
+                      "PlugIns/MimoWidgetExtension.appex",
                   ),
               },
               "com.ilovepdf.www": {
@@ -5241,8 +5633,31 @@ jobs:
                   f"❌ Nenhuma extensão .appex encontrada no {app_name}"
               )
 
+          target_extensions = profile.get("target_extensions")
           expected_extensions = profile.get("expected_extensions")
-          if expected_extensions is not None:
+
+          if target_extensions is not None:
+              actual_extension_set = {
+                  str(path.relative_to(app))
+                  for path in appex_dirs
+              }
+              target_extension_set = set(target_extensions)
+              missing = sorted(
+                  target_extension_set - actual_extension_set
+              )
+
+              if missing:
+                  raise SystemExit(
+                      f"❌ Extensão(ões) necessária(s) do {app_name} "
+                      f"ausente(s): {missing}"
+                  )
+
+              appex_dirs = [
+                  app / relative
+                  for relative in target_extensions
+              ]
+
+          elif expected_extensions is not None:
               expected_extension_set = set(expected_extensions)
               actual_extension_set = {
                   str(path.relative_to(app))
@@ -5588,6 +6003,7 @@ jobs:
                   "com.ilovepdf.www",
                   "com.outerspaceapps.itranslate",
                   "com.frontpocketsoftware.happyscale",
+                  "com.getmimo.mimo",
               }:
                   raw_binary = bytearray(executable_path.read_bytes())
                   if struct.unpack_from("<I", raw_binary, 0)[0] != 0xFEEDFACF:
@@ -5687,6 +6103,586 @@ jobs:
           )
           print(
               f"ℹ️ Já configuradas: {already_patched}"
+          )
+          PY
+
+      - name: Validate Mimo Max 1:1 layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.getmimo.mimo' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import struct
+          import subprocess
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path(
+              "mimo_validate"
+          )
+
+          if work.exists():
+              shutil.rmtree(
+                  work
+              )
+
+          work.mkdir()
+
+          with zipfile.ZipFile(
+              "Layout_Output.ipa",
+              "r",
+          ) as z:
+              z.extractall(
+                  work
+              )
+
+          apps = list(
+              (work / "Payload").glob(
+                  "*.app"
+              )
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Mimo: .app principal não identificado"
+              )
+
+          app = apps[0]
+
+          with (
+              app / "Info.plist"
+          ).open(
+              "rb"
+          ) as f:
+              info = plistlib.load(
+                  f
+              )
+
+          if (
+              info.get(
+                  "CFBundleIdentifier"
+              )
+              != "com.getmimo.mimo"
+          ):
+              raise SystemExit(
+                  "❌ Mimo: bundle ID final inesperado"
+              )
+
+          executable_name = (
+              info.get(
+                  "CFBundleExecutable"
+              )
+          )
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ Mimo: CFBundleExecutable ausente"
+              )
+
+          main = (
+              app / executable_name
+          )
+          frameworks = (
+              app / "Frameworks"
+          )
+
+          if not main.is_file():
+              raise SystemExit(
+                  "❌ Mimo: executável principal ausente"
+              )
+
+          for name in (
+              "sideloadKeychainfix.dylib",
+              "Mimo.dylib",
+              "blatantsPatch.dylib",
+          ):
+              if not (
+                  frameworks / name
+              ).is_file():
+                  raise SystemExit(
+                      f"❌ Mimo: Frameworks/{name} ausente"
+                  )
+
+          if not (
+              app / "cyan.entitlements"
+          ).is_file():
+              raise SystemExit(
+                  "❌ Mimo: cyan.entitlements ausente"
+              )
+
+          def dependencies(
+              path: Path,
+          ) -> list[str]:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-L",
+                      str(path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              result = []
+
+              for raw_line in (
+                  proc.stdout.splitlines()[1:]
+              ):
+                  line = (
+                      raw_line.strip()
+                  )
+
+                  if not line:
+                      continue
+
+                  marker = (
+                      " (compatibility version "
+                  )
+
+                  if marker in line:
+                      line = (
+                          line.split(
+                              marker,
+                              1,
+                          )[0]
+                      )
+
+                  if line.startswith(
+                      (
+                          "/",
+                          "@",
+                      )
+                  ):
+                      result.append(
+                          line
+                      )
+
+              return result
+
+          def load_metadata(
+              path: Path,
+          ) -> list[tuple[str, int, int]]:
+              raw = path.read_bytes()
+
+              if (
+                  len(raw) < 32
+                  or struct.unpack_from(
+                      "<I",
+                      raw,
+                      0,
+                  )[0]
+                  != 0xFEEDFACF
+              ):
+                  raise SystemExit(
+                      f"❌ Mimo: Mach-O inesperado em {path.name}"
+                  )
+
+              ncmds = (
+                  struct.unpack_from(
+                      "<I",
+                      raw,
+                      16,
+                  )[0]
+              )
+              offset = 32
+              result = []
+
+              for _ in range(
+                  ncmds
+              ):
+                  if (
+                      offset + 8
+                      > len(raw)
+                  ):
+                      raise SystemExit(
+                          "❌ Mimo: tabela de load commands truncada"
+                      )
+
+                  cmd, cmdsize = (
+                      struct.unpack_from(
+                          "<II",
+                          raw,
+                          offset,
+                      )
+                  )
+
+                  if (
+                      cmdsize < 8
+                      or offset + cmdsize
+                      > len(raw)
+                  ):
+                      raise SystemExit(
+                          "❌ Mimo: load command inválido"
+                      )
+
+                  if cmd in {
+                      0x0C,
+                      0x18,
+                      0x80000018,
+                  }:
+                      name_offset = (
+                          struct.unpack_from(
+                              "<I",
+                              raw,
+                              offset + 8,
+                          )[0]
+                      )
+                      start = (
+                          offset
+                          + name_offset
+                      )
+                      end = raw.find(
+                          b"\0",
+                          start,
+                          offset + cmdsize,
+                      )
+
+                      if end < 0:
+                          end = (
+                              offset
+                              + cmdsize
+                          )
+
+                      name = raw[
+                          start:end
+                      ].decode(
+                          "utf-8",
+                          errors="replace",
+                      )
+
+                      timestamp = (
+                          struct.unpack_from(
+                              "<I",
+                              raw,
+                              offset + 12,
+                          )[0]
+                      )
+
+                      result.append(
+                          (
+                              name,
+                              cmd,
+                              timestamp,
+                          )
+                      )
+
+                  offset += (
+                      cmdsize
+                  )
+
+              return result
+
+          def rpaths(
+              path: Path,
+          ) -> list[str]:
+              proc = subprocess.run(
+                  [
+                      Executable.otool,
+                      "-l",
+                      str(path),
+                  ],
+                  capture_output=True,
+                  text=True,
+                  check=True,
+              )
+
+              return [
+                  line.strip()
+                  .split(
+                      "path ",
+                      1,
+                  )[1]
+                  .split(
+                      " (offset",
+                      1,
+                  )[0]
+                  for line in (
+                      proc.stdout.splitlines()
+                  )
+                  if line.strip().startswith(
+                      "path "
+                  )
+              ]
+
+          expected_main = [
+              (
+                  "@rpath/sideloadKeychainfix.dylib",
+                  0,
+              ),
+              (
+                  "@rpath/Mimo.dylib",
+                  0,
+              ),
+              (
+                  "@rpath/blatantsPatch.dylib",
+                  2,
+              ),
+          ]
+
+          main_dependencies = (
+              dependencies(
+                  main
+              )
+          )
+          positions = []
+
+          for dependency, _ in (
+              expected_main
+          ):
+              if (
+                  main_dependencies.count(
+                      dependency
+                  )
+                  != 1
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: load principal ausente ou duplicado: "
+                      f"{dependency}"
+                  )
+
+              positions.append(
+                  main_dependencies.index(
+                      dependency
+                  )
+              )
+
+          if positions != sorted(
+              positions
+          ):
+              raise SystemExit(
+                  "❌ Mimo: ordem principal divergente "
+                  "(sideloadKeychainfix → Mimo → blatantsPatch)"
+              )
+
+          main_metadata = (
+              load_metadata(
+                  main
+              )
+          )
+
+          for dependency, timestamp in (
+              expected_main
+          ):
+              matches = [
+                  (
+                      cmd,
+                      ts,
+                  )
+                  for name, cmd, ts
+                  in main_metadata
+                  if name == dependency
+              ]
+
+              if (
+                  matches
+                  != [
+                      (
+                          0x80000018,
+                          timestamp,
+                      )
+                  ]
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: metadata principal divergente para "
+                      f"{dependency}; encontrado={matches}; "
+                      f"esperado=weak({timestamp})"
+                  )
+
+          main_rpaths = set(
+              rpaths(
+                  main
+              )
+          )
+
+          for required_rpath in (
+              "/usr/lib/swift",
+              "@executable_path/Frameworks",
+          ):
+              if (
+                  required_rpath
+                  not in main_rpaths
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: RPATH principal ausente: "
+                      f"{required_rpath}"
+                  )
+
+          plugins = app / "PlugIns"
+          required_extension_names = (
+              "MimoNotificationServiceExtension.appex",
+              "MimoWidgetExtension.appex",
+          )
+          extensions = [
+              plugins / name
+              for name in required_extension_names
+          ]
+
+          missing_extensions = [
+              extension.name
+              for extension in extensions
+              if not extension.is_dir()
+          ]
+
+          if missing_extensions:
+              raise SystemExit(
+                  "❌ Mimo: extensão(ões) necessária(s) ausente(s): "
+                  f"{missing_extensions}"
+              )
+
+          for extension in extensions:
+              plist_path = (
+                  extension
+                  / "Info.plist"
+              )
+
+              if not plist_path.is_file():
+                  raise SystemExit(
+                      "❌ Mimo: Info.plist ausente em "
+                      f"{extension.name}"
+                  )
+
+              with plist_path.open(
+                  "rb"
+              ) as f:
+                  ext_info = (
+                      plistlib.load(
+                          f
+                      )
+                  )
+
+              ext_name = (
+                  ext_info.get(
+                      "CFBundleExecutable"
+                  )
+              )
+
+              if not ext_name:
+                  raise SystemExit(
+                      "❌ Mimo: CFBundleExecutable ausente em "
+                      f"{extension.name}"
+                  )
+
+              ext_exec = (
+                  extension
+                  / ext_name
+              )
+
+              if not ext_exec.is_file():
+                  raise SystemExit(
+                      "❌ Mimo: executável ausente em "
+                      f"{extension.name}"
+                  )
+
+              ext_dependencies = (
+                  dependencies(
+                      ext_exec
+                  )
+              )
+
+              required = (
+                  "@rpath/blatantsPatch.dylib"
+              )
+
+              if (
+                  ext_dependencies.count(
+                      required
+                  )
+                  != 1
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: blatantsPatch ausente/duplicado em "
+                      f"{extension.name}"
+                  )
+
+              for forbidden in (
+                  "@rpath/sideloadKeychainfix.dylib",
+                  "@rpath/Mimo.dylib",
+              ):
+                  if (
+                      forbidden
+                      in ext_dependencies
+                  ):
+                      raise SystemExit(
+                          "❌ Mimo: load indevido em "
+                          f"{extension.name}: {forbidden}"
+                      )
+
+              metadata = (
+                  load_metadata(
+                      ext_exec
+                  )
+              )
+
+              matches = [
+                  (
+                      cmd,
+                      timestamp,
+                  )
+                  for name, cmd, timestamp
+                  in metadata
+                  if name == required
+              ]
+
+              if (
+                  matches
+                  != [
+                      (
+                          0x80000018,
+                          2,
+                      )
+                  ]
+              ):
+                  raise SystemExit(
+                      "❌ Mimo: blatant da extensão não corresponde "
+                      f"a weak(2) em {extension.name}: {matches}"
+                  )
+
+              extension_rpaths = set(
+                  rpaths(
+                      ext_exec
+                  )
+              )
+
+              for required_rpath in (
+                  "/usr/lib/swift",
+                  "@executable_path/Frameworks",
+                  "@executable_path/../../Frameworks",
+              ):
+                  if (
+                      required_rpath
+                      not in extension_rpaths
+                  ):
+                      raise SystemExit(
+                          "❌ Mimo: RPATH ausente em "
+                          f"{extension.name}: {required_rpath}"
+                      )
+
+          print(
+              "✅ Mimo: estrutura validada"
+          )
+          print(
+              "✅ Principal: Keychain weak(0) → Mimo weak(0) → "
+              "blatantsPatch weak(2)"
+          )
+          print(
+              "✅ MimoNotificationServiceExtension: "
+              "blatantsPatch weak(2)"
+          )
+          print(
+              "✅ MimoWidgetExtension: blatantsPatch weak(2)"
+          )
+          print(
+              "✅ Extensões-alvo preservadas e sem Mimo/Keychain indevidos"
+          )
+          print(
+              "✅ Layout funcional do Mimo Max validado"
+          )
+
+          shutil.rmtree(
+              work
           )
           PY
 
