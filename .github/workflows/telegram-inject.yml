@@ -4443,6 +4443,9 @@ jobs:
                   "TelegramNotificationFix.dylib",
                   "TelegramScreenshotBypass.dylib",
               ],
+              "app.swiftgram.ios": [
+                  "SwiftgramCrack.dylib",
+              ],
               "com.dr1ven.eraser": [
                   "link_file_0.dylib",
               ],
