@@ -8705,7 +8705,7 @@ jobs:
               required_main = {
                   "@executable_path/SwiftgramCrack.dylib",
                   "@rpath/iQTele.dylib",
-                  "@rpath/iQTeleEnhancer.dylib",
+                  "@rpath/iQSwiftEnhancer.dylib",
                   "@rpath/sideloadFixerLol.dylib",
                   "@rpath/iqKeepDeleted.dylib",
                   "@rpath/zxPluginsInject.dylib",
