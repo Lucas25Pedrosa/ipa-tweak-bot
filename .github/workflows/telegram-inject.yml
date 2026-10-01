@@ -8421,6 +8421,332 @@ jobs:
                   "e validado"
               )
 
+          # -----------------------------------------------------
+          # SWIFTGRAM / iQTele - iqKeepDeleted local na NSE
+          # -----------------------------------------------------
+
+          if bundle_id == "app.swiftgram.ios":
+              import hashlib
+
+              frameworks = app / "Frameworks"
+              keep_deleted_source = (
+                  frameworks / "iqKeepDeleted.dylib"
+              )
+
+              if not keep_deleted_source.is_file():
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: "
+                      "Frameworks/iqKeepDeleted.dylib ausente"
+                  )
+
+              extensions = []
+              for directory_name in (
+                  "PlugIns",
+                  "Extensions",
+              ):
+                  directory = app / directory_name
+                  if directory.is_dir():
+                      extensions.extend(
+                          sorted(
+                              directory.glob("*.appex")
+                          )
+                      )
+
+              notification_services = [
+                  extension
+                  for extension in extensions
+                  if extension.stem
+                  == "NotificationServiceExtensionv1"
+              ]
+
+              if len(notification_services) != 1:
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: esperava exatamente "
+                      "1 NotificationServiceExtensionv1.appex; "
+                      f"encontrei {len(notification_services)}"
+                  )
+
+              notification_service = (
+                  notification_services[0]
+              )
+
+              notification_info = (
+                  notification_service
+                  / "Info.plist"
+              )
+
+              with notification_info.open("rb") as f:
+                  notification_plist = (
+                      plistlib.load(f)
+                  )
+
+              notification_executable_name = (
+                  notification_plist.get(
+                      "CFBundleExecutable"
+                  )
+              )
+
+              if not notification_executable_name:
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: "
+                      "CFBundleExecutable ausente na NSE"
+                  )
+
+              notification_executable = (
+                  notification_service
+                  / notification_executable_name
+              )
+
+              if not notification_executable.is_file():
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: executável "
+                      "da NSE ausente"
+                  )
+
+              keep_deleted_local = (
+                  notification_service
+                  / "iqKeepDeleted.dylib"
+              )
+
+              shutil.copy2(
+                  keep_deleted_source,
+                  keep_deleted_local,
+              )
+
+              def sha256(path: Path) -> str:
+                  digest = hashlib.sha256()
+                  with path.open("rb") as f:
+                      for chunk in iter(
+                          lambda: f.read(1024 * 1024),
+                          b"",
+                      ):
+                          digest.update(chunk)
+                  return digest.hexdigest()
+
+              if (
+                  sha256(keep_deleted_source)
+                  != sha256(keep_deleted_local)
+              ):
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: cópia local de "
+                      "iqKeepDeleted não é idêntica ao Frameworks"
+                  )
+
+              dependency = (
+                  "@loader_path/iqKeepDeleted.dylib"
+              )
+
+              executable = Executable(
+                  str(notification_executable)
+              )
+
+              current_dependencies = (
+                  executable.get_dependencies()
+              )
+
+              if dependency not in current_dependencies:
+                  if not Path(
+                      executable.idylib
+                  ).is_file():
+                      raise SystemExit(
+                          "❌ Swiftgram iQTele: insert_dylib "
+                          "do Cyan não encontrado"
+                      )
+
+                  entitlements = (
+                      notification_executable.parent
+                      / (
+                          "."
+                          + notification_executable.name
+                          + ".swiftgram.entitlements"
+                      )
+                  )
+
+                  ent_proc = subprocess.run(
+                      [
+                          executable.ldid,
+                          "-e",
+                          str(notification_executable),
+                      ],
+                      capture_output=True,
+                  )
+
+                  entitlements.write_bytes(
+                      ent_proc.stdout
+                  )
+
+                  executable.remove_signature()
+
+                  result = subprocess.run(
+                      [
+                          executable.idylib,
+                          "--inplace",
+                          "--all-yes",
+                          dependency,
+                          str(notification_executable),
+                      ],
+                      capture_output=True,
+                      text=True,
+                  )
+
+                  if result.returncode != 0:
+                      raise SystemExit(
+                          "❌ Swiftgram iQTele: falha ao adicionar "
+                          "@loader_path/iqKeepDeleted.dylib na NSE:\n"
+                          f"{result.stderr}"
+                      )
+
+                  if entitlements.stat().st_size > 0:
+                      zero_requirements = (
+                          Path(
+                              executable.install_dir
+                          )
+                          / "extras"
+                          / "zero.requirements"
+                      )
+
+                      sign_result = subprocess.run(
+                          [
+                              executable.ldid,
+                              f"-S{entitlements}",
+                              "-M",
+                              "-Cadhoc",
+                              f"-Q{zero_requirements}",
+                              str(notification_executable),
+                          ],
+                          capture_output=True,
+                          text=True,
+                      )
+
+                      if sign_result.returncode != 0:
+                          raise SystemExit(
+                              "❌ Swiftgram iQTele: falha ao "
+                              "restaurar entitlements da NSE:\n"
+                              f"{sign_result.stderr}"
+                          )
+                  else:
+                      if not executable.fakesign():
+                          raise SystemExit(
+                              "❌ Swiftgram iQTele: falha no "
+                              "fakesign da NSE"
+                          )
+
+                  entitlements.unlink(
+                      missing_ok=True
+                  )
+
+              notification_dependencies = (
+                  Executable(
+                      str(notification_executable)
+                  ).get_dependencies()
+              )
+
+              required_notification = {
+                  "@rpath/zxPluginsInject.dylib",
+                  "@loader_path/iqKeepDeleted.dylib",
+              }
+
+              missing_notification = (
+                  required_notification
+                  - set(notification_dependencies)
+              )
+
+              if missing_notification:
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: dependências "
+                      "ausentes na NSE: "
+                      + ", ".join(
+                          sorted(missing_notification)
+                      )
+                  )
+
+              for extension in extensions:
+                  if extension == notification_service:
+                      continue
+
+                  unexpected_local = (
+                      extension
+                      / "iqKeepDeleted.dylib"
+                  )
+
+                  if unexpected_local.exists():
+                      raise SystemExit(
+                          "❌ Swiftgram iQTele: iqKeepDeleted "
+                          "local apareceu indevidamente em "
+                          f"{extension.name}"
+                      )
+
+              main_info = app / "Info.plist"
+              with main_info.open("rb") as f:
+                  main_plist = plistlib.load(f)
+
+              main_executable_name = (
+                  main_plist.get(
+                      "CFBundleExecutable"
+                  )
+              )
+
+              if not main_executable_name:
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: "
+                      "CFBundleExecutable principal ausente"
+                  )
+
+              main_executable = (
+                  app / main_executable_name
+              )
+
+              main_dependencies = set(
+                  Executable(
+                      str(main_executable)
+                  ).get_dependencies()
+              )
+
+              required_main = {
+                  "@executable_path/SwiftgramCrack.dylib",
+                  "@rpath/iQTele.dylib",
+                  "@rpath/iQTeleEnhancer.dylib",
+                  "@rpath/sideloadFixerLol.dylib",
+                  "@rpath/iqKeepDeleted.dylib",
+                  "@rpath/zxPluginsInject.dylib",
+              }
+
+              missing_main = (
+                  required_main
+                  - main_dependencies
+              )
+
+              if missing_main:
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: dependências "
+                      "ausentes no executável principal: "
+                      + ", ".join(
+                          sorted(missing_main)
+                      )
+                  )
+
+              if not (
+                  app / "SwiftgramCrack.dylib"
+              ).is_file():
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: "
+                      "SwiftgramCrack.dylib não está na raiz"
+                  )
+
+              print(
+                  "✅ Swiftgram iQTele: "
+                  "SwiftgramCrack na raiz validado"
+              )
+              print(
+                  "✅ Swiftgram iQTele: NSE -> "
+                  "@rpath/zxPluginsInject.dylib + "
+                  "@loader_path/iqKeepDeleted.dylib"
+              )
+              print(
+                  "✅ Swiftgram iQTele: receita principal "
+                  "completa validada"
+              )
+
           bundle_source = Path(
               "prepared/bundles"
           )
