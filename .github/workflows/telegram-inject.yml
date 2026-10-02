@@ -60,6 +60,7 @@ jobs:
           test -d private-core/translations
           test -f private-core/scripts/postprocess.py
           test -f private-core/scripts/zx_compat_patch.py
+          test -f private-core/addons/telegram/iqtele/dylib/iQTeleLocation.dylib
           test -f private-core/addons/shared/zx-compat/dylib/zxPluginsInject.dylib
           test -f private-core/addons/shared/zx-compat/framework/CydiaSubstrate.framework.zip
 
@@ -3950,6 +3951,7 @@ jobs:
                   "frameworks": {
                       "iQTele.dylib",
                       "iQTeleEnhancer.dylib",
+                      "iQTeleLocation.dylib",
                       "sideloadFixerLol.dylib",
                       "iqKeepDeleted.dylib",
                   },
@@ -9283,6 +9285,7 @@ jobs:
                   "framework_files": {
                       "iQTele.dylib",
                       "iQTeleEnhancer.dylib",
+                      "iQTeleLocation.dylib",
                       "sideloadFixerLol.dylib",
                       "iqKeepDeleted.dylib",
                       "zxPluginsInject.dylib",
@@ -9294,6 +9297,7 @@ jobs:
                       "@rpath/zxPluginsInject.dylib",
                       "@rpath/iQTele.dylib",
                       "@rpath/iQTeleEnhancer.dylib",
+                      "@rpath/iQTeleLocation.dylib",
                   },
                   "extension_loads": {
                       "@rpath/zxPluginsInject.dylib",
@@ -9301,6 +9305,7 @@ jobs:
                   "extension_forbidden": {
                       "iQTele.dylib",
                       "iQTeleEnhancer.dylib",
+                      "iQTeleLocation.dylib",
                       "Prism.dylib",
                       "sideloadFixerLol.dylib",
                       "TelegramChatFixer.dylib",
@@ -9341,6 +9346,7 @@ jobs:
                       "@rpath/Mx.dylib",
                       "@executable_path/iQTele.dylib",
                       "@executable_path/iQTeleEnhancer.dylib",
+                      "@executable_path/iQTeleLocation.dylib",
                       "@executable_path/Prism.dylib",
                       "@executable_path/iqKeepDeleted.dylib",
                       "@executable_path/sideloadFixerLol.dylib",
@@ -9882,7 +9888,7 @@ jobs:
               and ADDON_NAME == "iQTele"
           ):
               print(
-                  "✅ iQTele 1.4 custom + iQTeleEnhancer validados por SHA dinâmico"
+                  "✅ iQTele 1.4 + iQTeleEnhancer + iQTeleLocation validados por SHA dinâmico"
               )
 
           print(
