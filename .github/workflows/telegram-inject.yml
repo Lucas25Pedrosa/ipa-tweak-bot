@@ -894,27 +894,6 @@ jobs:
                       f"❌ Ação desconhecida: {action}"
                   )
 
-          # TikTok 46.x+: mantém a entrada do RXTikTok no menu
-          # mesmo após o refresh remoto das configurações.
-          if os.environ.get("BUNDLE_ID") == "com.zhiliaoapp.musically":
-              rx_menu_fix = Path(
-                  "addons/tiktok/dylib/RXMenuFix-v1.4.dylib"
-              )
-
-              if not rx_menu_fix.is_file():
-                  raise SystemExit(
-                      "❌ RXMenuFix v1.4 ausente no Core: "
-                      f"{rx_menu_fix}"
-                  )
-
-              rx_menu_fix_str = str(rx_menu_fix)
-
-              if rx_menu_fix_str not in inject_files:
-                  inject_files.append(rx_menu_fix_str)
-                  print(
-                      "✅ RXMenuFix v1.4 adicionado ao TikTok"
-                  )
-
           with open(
               "inject_files.txt",
               "w",
@@ -4434,10 +4413,6 @@ jobs:
           ROOT_DYLIBS = {
               "com.facebook.Facebook": [
                   "Glow.dylib",
-              ],
-              "com.zhiliaoapp.musically": [
-                  "___RXTikTok.dylib",
-                  "RXMenuFix-v1.4.dylib",
               ],
               "ph.telegra.Telegraph": [
                   "sideloadFixerLol.dylib",
