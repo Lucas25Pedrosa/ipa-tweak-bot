@@ -1,0 +1,107 @@
+name: Build SwiftgramPostboxProbe 0.2.1 Safe Attribution
+
+on:
+  push:
+    branches:
+      - build/swiftgram-postbox-probe-0.2.1
+    paths:
+      - tools/SwiftgramPostboxProbe-0.2.1/**
+      - .github/workflows/build-swiftgram-postbox-probe-0.2.1.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile arm64 diagnostic dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build package
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          CLANG="$(xcrun --sdk iphoneos --find clang)"
+
+          "$CLANG" \
+            -arch arm64 \
+            -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -fblocks \
+            -Os \
+            -fvisibility=hidden \
+            -dynamiclib \
+            tools/SwiftgramPostboxProbe-0.2.1/SwiftgramPostboxProbe.m \
+            -framework Foundation \
+            -o build/SwiftgramPostboxProbe.dylib \
+            -Wl,-install_name,@rpath/SwiftgramPostboxProbe.dylib \
+            -Wl,-dead_strip
+
+          codesign --force --sign - build/SwiftgramPostboxProbe.dylib
+
+      - name: Validate Mach-O and safety markers
+        shell: bash
+        run: |
+          set -euo pipefail
+          file build/SwiftgramPostboxProbe.dylib
+          lipo -info build/SwiftgramPostboxProbe.dylib
+          otool -L build/SwiftgramPostboxProbe.dylib
+          if strings build/SwiftgramPostboxProbe.dylib | grep -q 'probe_mprotect'; then
+            echo 'Unexpected mprotect interpose marker present'
+            exit 1
+          fi
+          strings build/SwiftgramPostboxProbe.dylib | grep -E '0.2.1 Safe Attribution|FIRST_MUTATION|DIRECT_BRANCH|IQTELE_DESTINATION_CANDIDATE|no-dyld-interpose'
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/SwiftgramPostboxProbe.dylib package/
+          cp tools/SwiftgramPostboxProbe-0.2.1/SwiftgramPostboxProbe.m package/SwiftgramPostboxProbe.source.m
+          (
+            cd package
+            shasum -a 256 SwiftgramPostboxProbe.dylib > SwiftgramPostboxProbe.SHA256.txt
+          )
+
+          cat > package/README.txt <<'EOF'
+          SwiftgramPostboxProbe 0.2.1 Safe Attribution
+
+          Diagnostic-only probe for Swiftgram 13.0 build 319.
+          Target: TelegramCore+0x908638
+          Expected TelegramCore UUID: d8a0c19b-0918-336a-a542-9e30416542ec
+
+          This build intentionally uses no dyld interposition of mprotect,
+          vm_protect, or instruction-cache routines. It observes the target
+          using polling only, logs the first mutation, and decodes a direct
+          ARM64 branch when present. It also records the historical iQTele
+          destination fingerprint as a candidate, not as definitive proof.
+
+          Logs:
+          Documents/SwiftgramPostboxProbe.log
+          Documents/SwiftgramPostboxProbe.previous.log
+
+          Keep the new Swiftgram .ips crash report after reproducing the issue.
+          EOF
+
+          (
+            cd package
+            zip -9 -q ../SwiftgramPostboxProbe-0.2.1-Safe-Attribution-arm64.zip \
+              SwiftgramPostboxProbe.dylib \
+              SwiftgramPostboxProbe.SHA256.txt \
+              README.txt \
+              SwiftgramPostboxProbe.source.m
+          )
+
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftgramPostboxProbe-0.2.1-Safe-Attribution-arm64
+          path: SwiftgramPostboxProbe-0.2.1-Safe-Attribution-arm64.zip
+          if-no-files-found: error
