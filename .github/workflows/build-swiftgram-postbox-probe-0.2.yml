@@ -21,11 +21,37 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Compile arm64 diagnostic dylib
+      - name: Prepare SDK-compatible source
         shell: bash
         run: |
           set -euo pipefail
           mkdir -p build package
+          python3 - <<'PY'
+          from pathlib import Path
+
+          source = Path('tools/SwiftgramPostboxProbe-0.2/SwiftgramPostboxProbe.m').read_text()
+          source = source.replace('#import <mach/mach_vm.h>\n', '')
+
+          start = source.index('static kern_return_t probe_mach_vm_protect')
+          end = source.index('static void probe_icache', start)
+          source = source[:start] + source[end:]
+
+          source = source.replace(
+              'SPP_INTERPOSE(probe_mach_vm_protect, mach_vm_protect)\n',
+              ''
+          )
+          source = source.replace(
+              'interpose=mprotect,vm_protect,mach_vm_protect,sys_icache_invalidate',
+              'interpose=mprotect,vm_protect,sys_icache_invalidate'
+          )
+
+          Path('build/SwiftgramPostboxProbe.source.m').write_text(source)
+          PY
+
+      - name: Compile arm64 diagnostic dylib
+        shell: bash
+        run: |
+          set -euo pipefail
 
           SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
           CLANG="$(xcrun --sdk iphoneos --find clang)"
@@ -40,7 +66,7 @@ jobs:
             -fvisibility=hidden \
             -Wno-deprecated-declarations \
             -dynamiclib \
-            tools/SwiftgramPostboxProbe-0.2/SwiftgramPostboxProbe.m \
+            build/SwiftgramPostboxProbe.source.m \
             -framework Foundation \
             -o build/SwiftgramPostboxProbe.dylib \
             -Wl,-install_name,@rpath/SwiftgramPostboxProbe.dylib \
@@ -63,6 +89,7 @@ jobs:
         run: |
           set -euo pipefail
           cp build/SwiftgramPostboxProbe.dylib package/
+          cp build/SwiftgramPostboxProbe.source.m package/
           (
             cd package
             shasum -a 256 SwiftgramPostboxProbe.dylib > SwiftgramPostboxProbe.SHA256.txt
@@ -86,7 +113,6 @@ jobs:
           After reproducing the crash, keep the new .ips crash report too.
           EOF
 
-          cp tools/SwiftgramPostboxProbe-0.2/SwiftgramPostboxProbe.m package/SwiftgramPostboxProbe.source.m
           (
             cd package
             zip -9 -q ../SwiftgramPostboxProbe-0.2-Attribution-arm64.zip \
