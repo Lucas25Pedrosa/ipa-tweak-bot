@@ -1,0 +1,104 @@
+name: Build SwiftgramPostboxProbe 0.2 Attribution
+
+on:
+  push:
+    branches:
+      - build/swiftgram-postbox-probe-0.2
+    paths:
+      - tools/SwiftgramPostboxProbe-0.2/**
+      - .github/workflows/build-swiftgram-postbox-probe-0.2.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Compile arm64 diagnostic dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p build package
+
+          SDK_PATH="$(xcrun --sdk iphoneos --show-sdk-path)"
+          CLANG="$(xcrun --sdk iphoneos --find clang)"
+
+          "$CLANG" \
+            -arch arm64 \
+            -isysroot "$SDK_PATH" \
+            -miphoneos-version-min=15.0 \
+            -fobjc-arc \
+            -fblocks \
+            -Os \
+            -fvisibility=hidden \
+            -Wno-deprecated-declarations \
+            -dynamiclib \
+            tools/SwiftgramPostboxProbe-0.2/SwiftgramPostboxProbe.m \
+            -framework Foundation \
+            -o build/SwiftgramPostboxProbe.dylib \
+            -Wl,-install_name,@rpath/SwiftgramPostboxProbe.dylib \
+            -Wl,-dead_strip
+
+          codesign --force --sign - build/SwiftgramPostboxProbe.dylib
+
+      - name: Validate Mach-O
+        shell: bash
+        run: |
+          set -euo pipefail
+          file build/SwiftgramPostboxProbe.dylib
+          lipo -info build/SwiftgramPostboxProbe.dylib
+          otool -L build/SwiftgramPostboxProbe.dylib
+          otool -l build/SwiftgramPostboxProbe.dylib | grep -A8 LC_BUILD_VERSION || true
+          strings build/SwiftgramPostboxProbe.dylib | grep -E 'SwiftgramPostboxProbe 0.2 Attribution|TelegramCore\+0x|MEMORY_EVENT|FIRST_MUTATION'
+
+      - name: Package
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp build/SwiftgramPostboxProbe.dylib package/
+          (
+            cd package
+            shasum -a 256 SwiftgramPostboxProbe.dylib > SwiftgramPostboxProbe.SHA256.txt
+          )
+
+          cat > package/README.txt <<'EOF'
+          SwiftgramPostboxProbe 0.2 Attribution
+
+          Diagnostic-only probe for Swiftgram 13.0 build 319.
+          Target: TelegramCore+0x908638
+          Expected TelegramCore UUID: d8a0c19b-0918-336a-a542-9e30416542ec
+
+          It does not patch TelegramCore. It records the original bytes,
+          watches for the first mutation, and logs relevant memory-protection
+          / instruction-cache events with caller image and backtrace.
+
+          Logs:
+          Documents/SwiftgramPostboxProbe.log
+          Documents/SwiftgramPostboxProbe.previous.log
+
+          After reproducing the crash, keep the new .ips crash report too.
+          EOF
+
+          cp tools/SwiftgramPostboxProbe-0.2/SwiftgramPostboxProbe.m package/SwiftgramPostboxProbe.source.m
+          (
+            cd package
+            zip -9 -q ../SwiftgramPostboxProbe-0.2-Attribution-arm64.zip \
+              SwiftgramPostboxProbe.dylib \
+              SwiftgramPostboxProbe.SHA256.txt \
+              README.txt \
+              SwiftgramPostboxProbe.source.m
+          )
+
+      - name: Upload probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: SwiftgramPostboxProbe-0.2-Attribution-arm64
+          path: SwiftgramPostboxProbe-0.2-Attribution-arm64.zip
+          if-no-files-found: error
