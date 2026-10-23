@@ -12556,21 +12556,38 @@ jobs:
                       f"{name}"
                   )
 
-          for forbidden in (
+          cydia_substrate = (
               frameworks
               / "CydiaSubstrate.framework"
-              / "CydiaSubstrate",
-              frameworks / "zxPluginsInject.dylib",
-          ):
-              if forbidden.exists():
-                  raise SystemExit(
-                      "❌ RustTikTok final: componente proibido presente: "
-                      f"{forbidden.relative_to(app)}"
-                  )
+              / "CydiaSubstrate"
+          )
+          if cydia_substrate.exists():
+              raise SystemExit(
+                  "❌ RustTikTok final: componente proibido presente: "
+                  f"{cydia_substrate.relative_to(app)}"
+              )
+
+          zx_plugins = frameworks / "zxPluginsInject.dylib"
+          if not zx_plugins.is_file():
+              raise SystemExit(
+                  "❌ RustTikTok final: "
+                  "Frameworks/zxPluginsInject.dylib ausente"
+              )
 
           main_dependencies = Executable(
               str(main_executable)
           ).get_dependencies()
+
+          main_zx_loads = [
+              dependency
+              for dependency in main_dependencies
+              if "zxPluginsInject.dylib" in dependency
+          ]
+          if main_zx_loads:
+              raise SystemExit(
+                  "❌ RustTikTok final: executável principal carrega "
+                  f"zxPluginsInject.dylib: {main_zx_loads}"
+              )
 
           positions = []
           for dependency, dylib_name in zip(
@@ -12719,6 +12736,20 @@ jobs:
                   "OpenTikTokSafariExtension.appex ausente"
               )
 
+          original_extensions = [
+              extension
+              for extension in extensions
+              if extension != extra_extension
+          ]
+
+          if not original_extensions:
+              raise SystemExit(
+                  "❌ RustTikTok final: nenhuma extensão original "
+                  "do TikTok encontrada"
+              )
+
+          zx_dependency = "@rpath/zxPluginsInject.dylib"
+
           for extension in extensions:
               extension_binary = bundle_executable(extension)
               dependencies = Executable(
@@ -12738,13 +12769,26 @@ jobs:
                       f"do Rust ({extension.name}): {contaminated}"
                   )
 
+              if extension != extra_extension:
+                  if dependencies.count(zx_dependency) != 1:
+                      raise SystemExit(
+                          "❌ RustTikTok final: extensão original sem "
+                          "@rpath/zxPluginsInject.dylib exatamente 1x "
+                          f"({extension.name})"
+                      )
+
           print(
               "✅ RustTikTok final: bundle ID, raiz, weak loads, "
               "ordem e dependências validados"
           )
           print(
-              "✅ RustTikTok final: sem CydiaSubstrate.framework "
-              "e sem zxPluginsInject.dylib"
+              "✅ RustTikTok final: CydiaSubstrate.framework ausente "
+              "e Frameworks/zxPluginsInject.dylib presente"
+          )
+          print(
+              "✅ RustTikTok final: executável principal sem "
+              "zxPluginsInject e extensões originais com "
+              "@rpath/zxPluginsInject.dylib"
           )
           print(
               "✅ RustTikTok final: extensões sem loads do Rust e "
