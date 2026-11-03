@@ -2381,8 +2381,544 @@ jobs:
           )
           PY
 
+
+      - name: Inject Lead 2.0 using developer layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' && steps.prepare.outputs.addon_name == 'Lead' }}
+        run: |
+          echo "💉 Lead 2.0: aplicando fórmula oficial do desenvolvedor"
+          rm -rf lead_developer_work
+          rm -f Layout_Output.ipa
+          unzip -q input.ipa -d lead_developer_work
+
+          python <<'PY'
+          import hashlib
+          import plistlib
+          import shutil
+          import struct
+          from pathlib import Path
+
+          WORK = Path("lead_developer_work")
+          PAYLOAD = WORK / "Payload"
+          EXPECTED_BUNDLE_ID = "ph.telegra.Telegraph"
+          INTERNAL_DYLIB_NAME = "Lead.dylib"
+
+          inject_paths = [
+              Path(line.strip())
+              for line in Path("inject_files.txt").read_text(
+                  encoding="utf-8"
+              ).splitlines()
+              if line.strip()
+          ]
+
+          lead_sources = [
+              path
+              for path in inject_paths
+              if path.name == "Lead-2.0-PTBR.dylib"
+          ]
+
+          if len(lead_sources) != 1:
+              raise SystemExit(
+                  "❌ Lead 2.0: esperava exatamente "
+                  "addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib"
+              )
+
+          lead_source = lead_sources[0]
+
+          if not lead_source.is_file():
+              raise SystemExit(
+                  f"❌ Lead 2.0: dylib ausente: {lead_source}"
+              )
+
+          source_bytes = lead_source.read_bytes()
+          source_sha256 = hashlib.sha256(source_bytes).hexdigest()
+
+          if b"pt-BR" not in source_bytes:
+              raise SystemExit(
+                  "❌ Lead 2.0: marcador pt-BR ausente no dylib"
+              )
+
+          portuguese_name = "Português (Brasil)"
+          if (
+              portuguese_name.encode("utf-8") not in source_bytes
+              and portuguese_name.encode("utf-16-le") not in source_bytes
+              and portuguese_name.encode("utf-16-be") not in source_bytes
+          ):
+              raise SystemExit(
+                  "❌ Lead 2.0: nome Português (Brasil) ausente no dylib"
+              )
+
+          apps = sorted(PAYLOAD.glob("*.app"))
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  f"❌ Lead 2.0: esperava 1 .app; encontrei {len(apps)}"
+              )
+
+          app = apps[0]
+          info_path = app / "Info.plist"
+
+          with info_path.open("rb") as f:
+              info = plistlib.load(f)
+
+          if info.get("CFBundleIdentifier") != EXPECTED_BUNDLE_ID:
+              raise SystemExit(
+                  "❌ Lead 2.0: Bundle ID inesperado: "
+                  f"{info.get('CFBundleIdentifier')!r}"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ Lead 2.0: CFBundleExecutable principal ausente"
+              )
+
+          main_executable = app / executable_name
+          if not main_executable.is_file():
+              raise SystemExit(
+                  "❌ Lead 2.0: executável principal ausente"
+              )
+
+          frameworks = app / "Frameworks"
+          frameworks.mkdir(exist_ok=True)
+
+          lead_destination = frameworks / INTERNAL_DYLIB_NAME
+          shutil.copy2(
+              lead_source,
+              lead_destination,
+          )
+
+          copied_sha256 = hashlib.sha256(
+              lead_destination.read_bytes()
+          ).hexdigest()
+
+          if copied_sha256 != source_sha256:
+              raise SystemExit(
+                  "❌ Lead 2.0: SHA-256 mudou ao copiar para Frameworks"
+              )
+
+          LC_SEGMENT_64 = 0x19
+          LC_LOAD_DYLIB = 0xC
+          LC_LOAD_WEAK_DYLIB = 0x80000018
+          LC_REEXPORT_DYLIB = 0x8000001F
+          LC_ENCRYPTION_INFO_64 = 0x2C
+          MH_MAGIC_64 = 0xFEEDFACF
+          FAT_MAGIC = 0xCAFEBABE
+          FAT_MAGIC_64 = 0xCAFEBABF
+          DYLIB_COMMANDS = (
+              LC_LOAD_DYLIB,
+              LC_LOAD_WEAK_DYLIB,
+              LC_REEXPORT_DYLIB,
+          )
+
+          class InjectError(Exception):
+              pass
+
+          def slices(data):
+              magic = struct.unpack_from(">I", data, 0)[0]
+
+              if magic in (FAT_MAGIC, FAT_MAGIC_64):
+                  count = struct.unpack_from(">I", data, 4)[0]
+                  result = []
+
+                  for index in range(count):
+                      if magic == FAT_MAGIC:
+                          _, _, offset, size, _ = struct.unpack_from(
+                              ">iiIII",
+                              data,
+                              8 + index * 20,
+                          )
+                      else:
+                          _, _, offset, size, _, _ = struct.unpack_from(
+                              ">iiQQII",
+                              data,
+                              8 + index * 32,
+                          )
+
+                      result.append((offset, size))
+
+                  return result
+
+              return [(0, len(data))]
+
+          def load_commands(data, base):
+              magic, _, _, _, ncmds, sizeofcmds = struct.unpack_from(
+                  "<IiiIII",
+                  data,
+                  base,
+              )
+
+              if magic != MH_MAGIC_64:
+                  raise InjectError(
+                      "not a 64-bit Mach-O slice "
+                      f"(magic {magic:08x})"
+                  )
+
+              offset = base + 32
+              commands = []
+
+              for _ in range(ncmds):
+                  cmd, size = struct.unpack_from(
+                      "<II",
+                      data,
+                      offset,
+                  )
+                  commands.append((cmd, offset, size))
+                  offset += size
+
+              return ncmds, sizeofcmds, commands
+
+          def dylib_name(data, offset):
+              name_offset = struct.unpack_from(
+                  "<I",
+                  data,
+                  offset + 8,
+              )[0]
+
+              raw = data[offset + name_offset:]
+              return raw[:raw.index(b"\0")].decode()
+
+          def linked_dylibs(data):
+              names = []
+
+              for base, _ in slices(data):
+                  _, _, commands = load_commands(
+                      data,
+                      base,
+                  )
+
+                  names.extend(
+                      dylib_name(data, offset)
+                      for cmd, offset, _ in commands
+                      if cmd in DYLIB_COMMANDS
+                  )
+
+              return names
+
+          def check_decrypted(data, path):
+              for base, _ in slices(data):
+                  _, _, commands = load_commands(
+                      data,
+                      base,
+                  )
+
+                  for cmd, offset, _ in commands:
+                      if (
+                          cmd == LC_ENCRYPTION_INFO_64
+                          and struct.unpack_from(
+                              "<I",
+                              data,
+                              offset + 16,
+                          )[0] != 0
+                      ):
+                          raise InjectError(
+                              f"{path} is encrypted. "
+                              "Use a decrypted IPA."
+                          )
+
+          def free_header_space(
+              data,
+              base,
+              sizeofcmds,
+              commands,
+          ):
+              first = None
+
+              for cmd, offset, _ in commands:
+                  if cmd != LC_SEGMENT_64:
+                      continue
+
+                  nsects = struct.unpack_from(
+                      "<I",
+                      data,
+                      offset + 64,
+                  )[0]
+
+                  for index in range(nsects):
+                      section = (
+                          offset
+                          + 72
+                          + index * 80
+                      )
+                      section_offset = struct.unpack_from(
+                          "<I",
+                          data,
+                          section + 48,
+                      )[0]
+
+                      if section_offset:
+                          first = (
+                              section_offset
+                              if first is None
+                              else min(
+                                  first,
+                                  section_offset,
+                              )
+                          )
+
+              if first is None:
+                  raise InjectError(
+                      "no sections found"
+                  )
+
+              return (
+                  first
+                  - (
+                      32
+                      + sizeofcmds
+                  )
+              )
+
+          def add_dylib(data, path):
+              name = path.encode() + b"\0"
+              size = (
+                  24
+                  + len(name)
+                  + 7
+              ) & ~7
+
+              command = struct.pack(
+                  "<IIIIII",
+                  LC_LOAD_WEAK_DYLIB,
+                  size,
+                  24,
+                  2,
+                  0x10000,
+                  0x10000,
+              ) + name
+
+              command += b"\0" * (
+                  size
+                  - len(command)
+              )
+
+              for base, _ in slices(data):
+                  ncmds, sizeofcmds, commands = load_commands(
+                      data,
+                      base,
+                  )
+
+                  if (
+                      free_header_space(
+                          data,
+                          base,
+                          sizeofcmds,
+                          commands,
+                      )
+                      < size
+                  ):
+                      raise InjectError(
+                          "not enough room in the Mach-O "
+                          "header for another load command"
+                      )
+
+                  end = (
+                      base
+                      + 32
+                      + sizeofcmds
+                  )
+
+                  data[end:end + size] = command
+
+                  struct.pack_into(
+                      "<II",
+                      data,
+                      base + 16,
+                      ncmds + 1,
+                      sizeofcmds + size,
+                  )
+
+          def patch_binary(
+              binary,
+              load_path,
+          ):
+              data = bytearray(
+                  binary.read_bytes()
+              )
+
+              check_decrypted(
+                  data,
+                  binary,
+              )
+
+              existing = linked_dylibs(data)
+
+              lead_existing = [
+                  dependency
+                  for dependency in existing
+                  if Path(dependency).name.lower()
+                  == INTERNAL_DYLIB_NAME.lower()
+              ]
+
+              if lead_existing:
+                  if load_path not in lead_existing:
+                      raise InjectError(
+                          "Lead já está ligado por um caminho "
+                          f"diferente: {lead_existing}"
+                      )
+
+                  print(
+                      f"ℹ️ {binary.name}: Lead já ligado corretamente"
+                  )
+                  return
+
+              add_dylib(
+                  data,
+                  load_path,
+              )
+
+              mode = binary.stat().st_mode
+              binary.write_bytes(data)
+              binary.chmod(mode)
+
+              final = linked_dylibs(
+                  bytearray(
+                      binary.read_bytes()
+                  )
+              )
+
+              if load_path not in final:
+                  raise InjectError(
+                      f"load não persistiu em {binary}"
+                  )
+
+              print(
+                  f"✅ {binary.name} -> {load_path}"
+              )
+
+          MAIN_LOAD = (
+              "@executable_path/Frameworks/Lead.dylib"
+          )
+          EXTENSION_LOAD = (
+              "@executable_path/../../Frameworks/Lead.dylib"
+          )
+
+          try:
+              patch_binary(
+                  main_executable,
+                  MAIN_LOAD,
+              )
+          except InjectError as exc:
+              raise SystemExit(
+                  f"❌ Lead 2.0 principal: {exc}"
+              )
+
+          notification_services = []
+
+          for directory_name in (
+              "PlugIns",
+              "Extensions",
+          ):
+              directory = app / directory_name
+
+              if not directory.is_dir():
+                  continue
+
+              for extension in sorted(
+                  directory.glob("*.appex")
+              ):
+                  extension_info_path = (
+                      extension / "Info.plist"
+                  )
+
+                  if not extension_info_path.is_file():
+                      continue
+
+                  with extension_info_path.open(
+                      "rb"
+                  ) as f:
+                      extension_info = plistlib.load(f)
+
+                  extension_point = (
+                      extension_info.get(
+                          "NSExtension",
+                          {},
+                      ).get(
+                          "NSExtensionPointIdentifier",
+                          "",
+                      )
+                  )
+
+                  if (
+                      extension_point
+                      != "com.apple.usernotifications.service"
+                  ):
+                      continue
+
+                  extension_executable_name = (
+                      extension_info.get(
+                          "CFBundleExecutable"
+                      )
+                  )
+
+                  if not extension_executable_name:
+                      raise SystemExit(
+                          "❌ Lead 2.0: CFBundleExecutable "
+                          f"ausente em {extension.name}"
+                      )
+
+                  extension_executable = (
+                      extension
+                      / extension_executable_name
+                  )
+
+                  if not extension_executable.is_file():
+                      raise SystemExit(
+                          "❌ Lead 2.0: executável da extensão "
+                          f"ausente em {extension.name}"
+                      )
+
+                  try:
+                      patch_binary(
+                          extension_executable,
+                          EXTENSION_LOAD,
+                      )
+                  except InjectError as exc:
+                      raise SystemExit(
+                          "❌ Lead 2.0 extensão "
+                          f"{extension.name}: {exc}"
+                      )
+
+                  notification_services.append(
+                      extension
+                  )
+
+          if not notification_services:
+              raise SystemExit(
+                  "❌ Lead 2.0: nenhuma Notification "
+                  "Service Extension encontrada"
+              )
+
+          print(
+              "✅ Lead 2.0 PT-BR copiado como "
+              "Frameworks/Lead.dylib"
+          )
+          print(
+              "✅ Fórmula do desenvolvedor aplicada: "
+              "app principal + Notification Service Extension"
+          )
+          print(
+              "✅ Nenhum ZX/CydiaSubstrate/Lead.bundle "
+              "foi adicionado por esta rota"
+          )
+          print(
+              f"✅ SHA-256 Lead.dylib: {source_sha256}"
+          )
+          PY
+
+          (
+            cd lead_developer_work
+            zip -qry "$GITHUB_WORKSPACE/Layout_Output.ipa" Payload
+          )
+
+          if [ ! -f Layout_Output.ipa ]; then
+            echo "❌ Lead 2.0: Layout_Output.ipa não foi criado"
+            exit 1
+          fi
+
+          echo "✅ Lead 2.0: Layout_Output.ipa pronto"
+
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.bundle_id != 'com.innersloth.amongus' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'com.zhiliaoapp.musically' || steps.prepare.outputs.addon_name != 'RustTikTok') }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.bundle_id != 'com.innersloth.amongus' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'com.zhiliaoapp.musically' || steps.prepare.outputs.addon_name != 'RustTikTok') && (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' || steps.prepare.outputs.addon_name != 'Lead') }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
@@ -4609,7 +5145,7 @@ jobs:
       # =========================================================
 
       - name: Reproduce functional dylib layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.zx_compat != 'true' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' || steps.prepare.outputs.addon_name != 'Lead') }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
           ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
@@ -12446,6 +12982,435 @@ jobs:
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
+
+
+      - name: Validate Lead 2.0 final layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' && steps.prepare.outputs.addon_name == 'Lead' }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import plistlib
+          import shutil
+          import struct
+          import zipfile
+          from pathlib import Path
+
+          FINAL_IPA = Path("Final.ipa")
+          SOURCE_DYLIB = Path(
+              "addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib"
+          )
+          WORK = Path("lead_final_validate")
+
+          if not FINAL_IPA.is_file():
+              raise SystemExit(
+                  "❌ Lead 2.0 final: Final.ipa ausente"
+              )
+
+          if not SOURCE_DYLIB.is_file():
+              raise SystemExit(
+                  "❌ Lead 2.0 final: dylib fonte ausente"
+              )
+
+          if WORK.exists():
+              shutil.rmtree(WORK)
+
+          WORK.mkdir()
+
+          with zipfile.ZipFile(
+              FINAL_IPA,
+              "r",
+          ) as z:
+              z.extractall(WORK)
+
+          apps = sorted(
+              (WORK / "Payload").glob("*.app")
+          )
+
+          if len(apps) != 1:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: app principal "
+                  "não identificado"
+              )
+
+          app = apps[0]
+
+          with (
+              app / "Info.plist"
+          ).open("rb") as f:
+              info = plistlib.load(f)
+
+          if (
+              info.get("CFBundleIdentifier")
+              != "ph.telegra.Telegraph"
+          ):
+              raise SystemExit(
+                  "❌ Lead 2.0 final: Bundle ID inesperado"
+              )
+
+          executable_name = info.get(
+              "CFBundleExecutable"
+          )
+
+          if not executable_name:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: "
+                  "CFBundleExecutable principal ausente"
+              )
+
+          main = app / executable_name
+          lead = app / "Frameworks" / "Lead.dylib"
+
+          if not main.is_file():
+              raise SystemExit(
+                  "❌ Lead 2.0 final: executável principal ausente"
+              )
+
+          if not lead.is_file():
+              raise SystemExit(
+                  "❌ Lead 2.0 final: Frameworks/Lead.dylib ausente"
+              )
+
+          def sha256(path):
+              digest = hashlib.sha256()
+
+              with path.open("rb") as f:
+                  for chunk in iter(
+                      lambda: f.read(1024 * 1024),
+                      b"",
+                  ):
+                      digest.update(chunk)
+
+              return digest.hexdigest()
+
+          expected_sha = sha256(
+              SOURCE_DYLIB
+          )
+          actual_sha = sha256(
+              lead
+          )
+
+          if actual_sha != expected_sha:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: dylib foi alterado: "
+                  f"{actual_sha} != {expected_sha}"
+              )
+
+          lead_bytes = lead.read_bytes()
+
+          if b"pt-BR" not in lead_bytes:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: pt-BR não está no dylib"
+              )
+
+          portuguese_name = "Português (Brasil)"
+          if (
+              portuguese_name.encode("utf-8") not in lead_bytes
+              and portuguese_name.encode("utf-16-le") not in lead_bytes
+              and portuguese_name.encode("utf-16-be") not in lead_bytes
+          ):
+              raise SystemExit(
+                  "❌ Lead 2.0 final: Português (Brasil) "
+                  "não está no dylib"
+              )
+
+          LC_LOAD_DYLIB = 0xC
+          LC_LOAD_WEAK_DYLIB = 0x80000018
+          LC_REEXPORT_DYLIB = 0x8000001F
+          MH_MAGIC_64 = 0xFEEDFACF
+          FAT_MAGIC = 0xCAFEBABE
+          FAT_MAGIC_64 = 0xCAFEBABF
+          DYLIB_COMMANDS = {
+              LC_LOAD_DYLIB,
+              LC_LOAD_WEAK_DYLIB,
+              LC_REEXPORT_DYLIB,
+          }
+
+          def slices(data):
+              magic = struct.unpack_from(
+                  ">I",
+                  data,
+                  0,
+              )[0]
+
+              if magic in (
+                  FAT_MAGIC,
+                  FAT_MAGIC_64,
+              ):
+                  count = struct.unpack_from(
+                      ">I",
+                      data,
+                      4,
+                  )[0]
+
+                  result = []
+
+                  for index in range(count):
+                      if magic == FAT_MAGIC:
+                          _, _, offset, size, _ = struct.unpack_from(
+                              ">iiIII",
+                              data,
+                              8 + index * 20,
+                          )
+                      else:
+                          _, _, offset, size, _, _ = struct.unpack_from(
+                              ">iiQQII",
+                              data,
+                              8 + index * 32,
+                          )
+
+                      result.append(
+                          (offset, size)
+                      )
+
+                  return result
+
+              return [(0, len(data))]
+
+          def loads_by_slice(path):
+              data = path.read_bytes()
+              result = []
+
+              for base, _ in slices(data):
+                  magic, _, _, _, ncmds, _ = struct.unpack_from(
+                      "<IiiIII",
+                      data,
+                      base,
+                  )
+
+                  if magic != MH_MAGIC_64:
+                      raise SystemExit(
+                          "❌ Lead 2.0 final: "
+                          f"Mach-O inválido em {path}"
+                      )
+
+                  offset = base + 32
+                  loads = []
+
+                  for _ in range(ncmds):
+                      cmd, size = struct.unpack_from(
+                          "<II",
+                          data,
+                          offset,
+                      )
+
+                      if cmd in DYLIB_COMMANDS:
+                          name_offset = struct.unpack_from(
+                              "<I",
+                              data,
+                              offset + 8,
+                          )[0]
+
+                          raw = data[
+                              offset + name_offset:
+                              offset + size
+                          ]
+
+                          name = raw.split(
+                              b"\0",
+                              1,
+                          )[0].decode()
+
+                          loads.append(
+                              (cmd, name)
+                          )
+
+                      offset += size
+
+                  result.append(loads)
+
+              return result
+
+          MAIN_LOAD = (
+              "@executable_path/Frameworks/Lead.dylib"
+          )
+          EXTENSION_LOAD = (
+              "@executable_path/../../Frameworks/Lead.dylib"
+          )
+
+          main_slices = loads_by_slice(main)
+
+          for index, loads in enumerate(
+              main_slices
+          ):
+              matches = [
+                  item
+                  for item in loads
+                  if item[1] == MAIN_LOAD
+              ]
+
+              if matches != [
+                  (
+                      LC_LOAD_WEAK_DYLIB,
+                      MAIN_LOAD,
+                  )
+              ]:
+                  raise SystemExit(
+                      "❌ Lead 2.0 final: load principal "
+                      f"incorreto no slice {index}: {matches}"
+                  )
+
+              if any(
+                  "zxPluginsInject.dylib" in name
+                  for _, name in loads
+              ):
+                  raise SystemExit(
+                      "❌ Lead 2.0 final: ZX presente "
+                      "no executável principal"
+                  )
+
+          notification_services = []
+          other_extensions = []
+
+          for directory_name in (
+              "PlugIns",
+              "Extensions",
+          ):
+              directory = app / directory_name
+
+              if not directory.is_dir():
+                  continue
+
+              for extension in sorted(
+                  directory.glob("*.appex")
+              ):
+                  info_path = (
+                      extension / "Info.plist"
+                  )
+
+                  if not info_path.is_file():
+                      continue
+
+                  with info_path.open("rb") as f:
+                      extension_info = plistlib.load(f)
+
+                  executable = extension_info.get(
+                      "CFBundleExecutable"
+                  )
+
+                  if not executable:
+                      continue
+
+                  binary = extension / executable
+
+                  if not binary.is_file():
+                      continue
+
+                  extension_point = (
+                      extension_info.get(
+                          "NSExtension",
+                          {},
+                      ).get(
+                          "NSExtensionPointIdentifier",
+                          "",
+                      )
+                  )
+
+                  if (
+                      extension_point
+                      == "com.apple.usernotifications.service"
+                  ):
+                      notification_services.append(
+                          (extension, binary)
+                      )
+                  else:
+                      other_extensions.append(
+                          (extension, binary)
+                      )
+
+          if not notification_services:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: Notification "
+                  "Service Extension ausente"
+              )
+
+          for extension, binary in notification_services:
+              for index, loads in enumerate(
+                  loads_by_slice(binary)
+              ):
+                  matches = [
+                      item
+                      for item in loads
+                      if item[1] == EXTENSION_LOAD
+                  ]
+
+                  if matches != [
+                      (
+                          LC_LOAD_WEAK_DYLIB,
+                          EXTENSION_LOAD,
+                      )
+                  ]:
+                      raise SystemExit(
+                          "❌ Lead 2.0 final: load da NSE "
+                          f"incorreto em {extension.name} "
+                          f"slice {index}: {matches}"
+                      )
+
+                  if any(
+                      "zxPluginsInject.dylib" in name
+                      for _, name in loads
+                  ):
+                      raise SystemExit(
+                          "❌ Lead 2.0 final: ZX presente "
+                          f"em {extension.name}"
+                      )
+
+          for extension, binary in other_extensions:
+              for loads in loads_by_slice(
+                  binary
+              ):
+                  if any(
+                      Path(name).name.lower()
+                      == "lead.dylib"
+                      for _, name in loads
+                  ):
+                      raise SystemExit(
+                          "❌ Lead 2.0 final: Lead atingiu "
+                          f"extensão indevida {extension.name}"
+                      )
+
+          forbidden_paths = [
+              app / "Lead.bundle",
+              app / "Frameworks" / "zxPluginsInject.dylib",
+              app / "Frameworks" / "CydiaSubstrate.framework",
+          ]
+
+          present_forbidden = [
+              str(path.relative_to(app))
+              for path in forbidden_paths
+              if path.exists()
+          ]
+
+          if present_forbidden:
+              raise SystemExit(
+                  "❌ Lead 2.0 final: componentes extras "
+                  "indevidos: "
+                  + ", ".join(
+                      present_forbidden
+                  )
+              )
+
+          print(
+              "✅ Lead 2.0 PT-BR final validado"
+          )
+          print(
+              f"✅ SHA-256 preservado: {actual_sha}"
+          )
+          print(
+              "✅ Telegram -> LC_LOAD_WEAK_DYLIB "
+              "@executable_path/Frameworks/Lead.dylib"
+          )
+          print(
+              "✅ Notification Service Extension -> "
+              "LC_LOAD_WEAK_DYLIB "
+              "@executable_path/../../Frameworks/Lead.dylib"
+          )
+          print(
+              "✅ Outras extensões sem Lead"
+          )
+          print(
+              "✅ Sem Lead.bundle, ZX ou CydiaSubstrate"
+          )
+          PY
 
       - name: Validate RustTikTok final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.zhiliaoapp.musically' && steps.prepare.outputs.addon_name == 'RustTikTok' }}
