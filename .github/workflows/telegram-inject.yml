@@ -9225,6 +9225,10 @@ jobs:
           ) as f:
               addon = json.load(f)
 
+          addon_name = str(
+              addon.get("name") or ""
+          ).strip()
+
           work = Path(
               "package_work"
           )
