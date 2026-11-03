@@ -2386,7 +2386,9 @@ jobs:
 
 
       - name: Inject Lead 2.0 using developer layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' && steps.prepare.outputs.addon_name == 'Lead' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && (steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' || steps.prepare.outputs.bundle_id == 'app.swiftgram.ios') }}
+        env:
+          BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
         run: |
           echo "💉 Lead 2.0: aplicando fórmula oficial do desenvolvedor"
           rm -rf lead_developer_work
@@ -2395,6 +2397,7 @@ jobs:
 
           python <<'PY'
           import hashlib
+          import os
           import plistlib
           import shutil
           import struct
@@ -2402,8 +2405,18 @@ jobs:
 
           WORK = Path("lead_developer_work")
           PAYLOAD = WORK / "Payload"
-          EXPECTED_BUNDLE_ID = "ph.telegra.Telegraph"
+          EXPECTED_BUNDLE_ID = os.environ.get("BUNDLE_ID", "").strip()
+          SUPPORTED_BUNDLE_IDS = {
+              "ph.telegra.Telegraph",
+              "app.swiftgram.ios",
+          }
           INTERNAL_DYLIB_NAME = "Lead.dylib"
+
+          if EXPECTED_BUNDLE_ID not in SUPPORTED_BUNDLE_IDS:
+              raise SystemExit(
+                  "❌ Lead 2.0: Bundle ID não suportado pela rota oficial: "
+                  f"{EXPECTED_BUNDLE_ID!r}"
+              )
 
           inject_paths = [
               Path(line.strip())
@@ -2733,6 +2746,7 @@ jobs:
           def patch_binary(
               binary,
               load_path,
+              dylib_name=INTERNAL_DYLIB_NAME,
           ):
               data = bytearray(
                   binary.read_bytes()
@@ -2745,22 +2759,22 @@ jobs:
 
               existing = linked_dylibs(data)
 
-              lead_existing = [
+              dylib_existing = [
                   dependency
                   for dependency in existing
                   if Path(dependency).name.lower()
-                  == INTERNAL_DYLIB_NAME.lower()
+                  == dylib_name.lower()
               ]
 
-              if lead_existing:
-                  if load_path not in lead_existing:
+              if dylib_existing:
+                  if load_path not in dylib_existing:
                       raise InjectError(
-                          "Lead já está ligado por um caminho "
-                          f"diferente: {lead_existing}"
+                          f"{dylib_name} já está ligado por um caminho "
+                          f"diferente: {dylib_existing}"
                       )
 
                   print(
-                      f"ℹ️ {binary.name}: Lead já ligado corretamente"
+                      f"ℹ️ {binary.name}: {dylib_name} já ligado corretamente"
                   )
                   return
 
@@ -2803,6 +2817,63 @@ jobs:
           except InjectError as exc:
               raise SystemExit(
                   f"❌ Lead 2.0 principal: {exc}"
+              )
+
+          if EXPECTED_BUNDLE_ID == "app.swiftgram.ios":
+              crack_sources = [
+                  path
+                  for path in inject_paths
+                  if path.name == "SwiftgramCrack.dylib"
+              ]
+
+              if len(crack_sources) != 1:
+                  raise SystemExit(
+                      "❌ Swiftgram + Lead: esperava exatamente "
+                      "1 SwiftgramCrack.dylib"
+                  )
+
+              crack_source = crack_sources[0]
+              crack_destination = app / "SwiftgramCrack.dylib"
+
+              if not crack_source.is_file():
+                  raise SystemExit(
+                      f"❌ Swiftgram + Lead: Crack ausente: {crack_source}"
+                  )
+
+              shutil.copy2(
+                  crack_source,
+                  crack_destination,
+              )
+
+              crack_source_sha = hashlib.sha256(
+                  crack_source.read_bytes()
+              ).hexdigest()
+              crack_destination_sha = hashlib.sha256(
+                  crack_destination.read_bytes()
+              ).hexdigest()
+
+              if crack_destination_sha != crack_source_sha:
+                  raise SystemExit(
+                      "❌ Swiftgram + Lead: SHA-256 do SwiftgramCrack mudou"
+                  )
+
+              try:
+                  patch_binary(
+                      main_executable,
+                      "@executable_path/SwiftgramCrack.dylib",
+                      "SwiftgramCrack.dylib",
+                  )
+              except InjectError as exc:
+                  raise SystemExit(
+                      f"❌ Swiftgram + Lead: SwiftgramCrack: {exc}"
+                  )
+
+              print(
+                  "✅ Swiftgram + Lead: SwiftgramCrack.dylib "
+                  "na raiz e ligado ao executável principal"
+              )
+              print(
+                  f"✅ SHA-256 SwiftgramCrack.dylib: {crack_source_sha}"
               )
 
           notification_services = []
@@ -2921,7 +2992,7 @@ jobs:
           echo "✅ Lead 2.0: Layout_Output.ipa pronto"
 
       - name: Inject with Cyan
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.bundle_id != 'com.innersloth.amongus' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'com.zhiliaoapp.musically' || steps.prepare.outputs.addon_name != 'RustTikTok') && (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' || steps.prepare.outputs.addon_name != 'Lead') }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.bundle_id != 'com.edsonteco.PocketTerco' && steps.prepare.outputs.bundle_id != 'com.innersloth.amongus' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'com.zhiliaoapp.musically' || steps.prepare.outputs.addon_name != 'RustTikTok') && (steps.prepare.outputs.addon_name != 'Lead' || (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' && steps.prepare.outputs.bundle_id != 'app.swiftgram.ios')) }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
         run: |
@@ -5148,7 +5219,7 @@ jobs:
       # =========================================================
 
       - name: Reproduce functional dylib layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' || steps.prepare.outputs.addon_name != 'Lead') }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id != 'com.burbn.instagram' && steps.prepare.outputs.zx_compat != 'true' && (steps.prepare.outputs.addon_name != 'Lead' || (steps.prepare.outputs.bundle_id != 'ph.telegra.Telegraph' && steps.prepare.outputs.bundle_id != 'app.swiftgram.ios')) }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id || steps.private_input.outputs.bundle_id }}
           ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
@@ -9495,7 +9566,7 @@ jobs:
           # SWIFTGRAM / iQTele - iqKeepDeleted local na NSE
           # -----------------------------------------------------
 
-          if bundle_id == "app.swiftgram.ios":
+          if bundle_id == "app.swiftgram.ios" and addon_name == "iQTele":
               import hashlib
 
               frameworks = app / "Frameworks"
@@ -13008,12 +13079,74 @@ jobs:
             --bundle-id "${{ steps.prepare.outputs.bundle_id }}"
 
       - name: Validate Lead 2.0 final layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' && steps.prepare.outputs.addon_name == 'Lead' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && (steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' || steps.prepare.outputs.bundle_id == 'app.swiftgram.ios') }}
         run: |
           python private-core/scripts/validate_lead_layout.py \
             --ipa Final.ipa \
             --source-dylib addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib \
+            --bundle-id "${{ steps.prepare.outputs.bundle_id }}" \
             --selective-metadata .ipapatch_selective_meta.json
+
+      - name: Validate Swiftgram Lead crack
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' && steps.prepare.outputs.addon_name == 'Lead' }}
+        run: |
+          python <<'PY'
+          import plistlib
+          import shutil
+          import zipfile
+          from pathlib import Path
+
+          from cyan.tbhtypes.executable import Executable
+
+          work = Path("swiftgram_lead_crack_validate")
+          if work.exists():
+              shutil.rmtree(work)
+          work.mkdir()
+
+          with zipfile.ZipFile("Final.ipa", "r") as z:
+              z.extractall(work)
+
+          apps = sorted((work / "Payload").glob("*.app"))
+          matches = []
+          for app in apps:
+              with (app / "Info.plist").open("rb") as f:
+                  info = plistlib.load(f)
+              if info.get("CFBundleIdentifier") == "app.swiftgram.ios":
+                  matches.append((app, info))
+
+          if len(matches) != 1:
+              raise SystemExit(
+                  "❌ Swiftgram + Lead final: app alvo não encontrado de forma única"
+              )
+
+          app, info = matches[0]
+          crack = app / "SwiftgramCrack.dylib"
+          if not crack.is_file():
+              raise SystemExit(
+                  "❌ Swiftgram + Lead final: SwiftgramCrack.dylib ausente na raiz"
+              )
+
+          executable_name = info.get("CFBundleExecutable")
+          if not executable_name:
+              raise SystemExit(
+                  "❌ Swiftgram + Lead final: CFBundleExecutable ausente"
+              )
+
+          dependencies = Executable(
+              str(app / executable_name)
+          ).get_dependencies()
+
+          required = "@executable_path/SwiftgramCrack.dylib"
+          if required not in dependencies:
+              raise SystemExit(
+                  "❌ Swiftgram + Lead final: load do SwiftgramCrack ausente"
+              )
+
+          print("✅ Swiftgram + Lead final: SwiftgramCrack.dylib na raiz")
+          print(f"✅ Swiftgram principal -> {required}")
+
+          shutil.rmtree(work)
+          PY
 
       - name: Validate RustTikTok final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.zhiliaoapp.musically' && steps.prepare.outputs.addon_name == 'RustTikTok' }}
