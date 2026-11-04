@@ -190,7 +190,7 @@ jobs:
           )"
 
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive|com.bing.lyrics)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive|com.bing.lyrics|app.swiftgram.ios)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -2985,50 +2985,43 @@ jobs:
 
           echo "✅ Lead 2.0: Layout_Output.ipa pronto"
 
-      - name: Inject SwiftgramCrack with Cyan
+      - name: Inject Swiftgram ModClient Patch with Cyan
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' && steps.prepare.outputs.addon_name == 'Lead' }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
-
-          CRACK_FILES=()
+          PATCH_NAME="SwiftgramTelegramModClientPatch.dylib"
+          PATCH_FILES=()
           for FILE in "${INJECT_FILES[@]}"; do
-            if [ "$(basename "$FILE")" = "SwiftgramCrack.dylib" ]; then
-              CRACK_FILES+=("$FILE")
+            if [ "$(basename "$FILE")" = "$PATCH_NAME" ]; then
+              PATCH_FILES+=("$FILE")
             fi
           done
 
-          if [ "${#CRACK_FILES[@]}" -ne 1 ]; then
-            echo "❌ Swiftgram + Lead: esperava exatamente 1 SwiftgramCrack.dylib; encontrei ${#CRACK_FILES[@]}"
+          if [ "${#PATCH_FILES[@]}" -ne 1 ]; then
+            echo "❌ Swiftgram + Lead: esperava exatamente uma $PATCH_NAME"
             exit 1
           fi
 
-          CRACK_FILE="${CRACK_FILES[0]}"
-
-          if [ ! -f "$CRACK_FILE" ]; then
-            echo "❌ Swiftgram + Lead: SwiftgramCrack.dylib ausente: $CRACK_FILE"
+          PATCH_FILE="${PATCH_FILES[0]}"
+          if [ ! -f "$PATCH_FILE" ] || [ ! -f Layout_Output.ipa ]; then
+            echo "❌ Swiftgram + Lead: patch ou Layout_Output.ipa ausente"
             exit 1
           fi
 
-          if [ ! -f Layout_Output.ipa ]; then
-            echo "❌ Swiftgram + Lead: Layout_Output.ipa do Lead não encontrado"
-            exit 1
-          fi
-
-          rm -f Swiftgram_Crack_Cyan.ipa
-
-          echo "💉 Swiftgram + Lead: Cyan receberá SOMENTE SwiftgramCrack.dylib"
-          echo "ℹ️ Lead.dylib permanece fora do Cyan"
+          rm -f Swiftgram_ModClient_Cyan.ipa
+          echo "💉 Swiftgram + Lead: Cyan recebe apenas o ModClient Patch"
+          echo "ℹ️ Lead.dylib continua com carregamento próprio no executável principal"
 
           cyan \
             -i Layout_Output.ipa \
-            -o Swiftgram_Crack_Cyan.ipa \
+            -o Swiftgram_ModClient_Cyan.ipa \
             -u \
             -w \
-            -f "$CRACK_FILE" \
+            -f "$PATCH_FILE" \
             --overwrite
 
-          if [ ! -f Swiftgram_Crack_Cyan.ipa ]; then
-            echo "❌ Swiftgram + Lead: Cyan não gerou Swiftgram_Crack_Cyan.ipa"
+          if [ ! -f Swiftgram_ModClient_Cyan.ipa ]; then
+            echo "❌ Swiftgram + Lead: Cyan não gerou o IPA"
             exit 1
           fi
 
@@ -3036,185 +3029,98 @@ jobs:
           import hashlib
           import plistlib
           import shutil
+          import struct
           import zipfile
           from pathlib import Path
 
-          from cyan.tbhtypes.executable import Executable
+          PATCH_NAME = "SwiftgramTelegramModClientPatch.dylib"
+          PATCH_LOAD = "@rpath/" + PATCH_NAME
+          LEAD_LOAD = "@executable_path/Frameworks/Lead.dylib"
+          LC_LOAD_WEAK_DYLIB = 0x80000018
+          LC_LOAD_DYLIB = 0xC
 
-          ipa = Path("Swiftgram_Crack_Cyan.ipa")
-          crack_source = Path("addons/swiftgram/dylib/SwiftgramCrack.dylib")
-          lead_source = Path("addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib")
-          work = Path("swiftgram_crack_cyan_validate")
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
 
+          def loads(binary):
+              raw = binary.read_bytes()
+              if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit(f"❌ Swiftgram: Mach-O principal inválido: {binary}")
+              count, size = struct.unpack_from("<II", raw, 16)
+              pos = 32
+              end = pos + size
+              if end > len(raw):
+                  raise SystemExit("❌ Swiftgram: load commands fora do executável")
+              found = []
+              for _ in range(count):
+                  if pos + 8 > end:
+                      raise SystemExit("❌ Swiftgram: load command truncado")
+                  cmd, cmdsize = struct.unpack_from("<II", raw, pos)
+                  if cmdsize < 8 or pos + cmdsize > end:
+                      raise SystemExit("❌ Swiftgram: cmdsize inválido")
+                  if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB):
+                      string_off = struct.unpack_from("<I", raw, pos + 8)[0]
+                      if not 8 <= string_off < cmdsize:
+                          raise SystemExit("❌ Swiftgram: dylib name offset inválido")
+                      name = raw[pos + string_off:pos + cmdsize].split(b"\0", 1)[0].decode()
+                      found.append((cmd, name))
+                  pos += cmdsize
+              return found
+
+          work = Path("swiftgram_modclient_cyan_validate")
           if work.exists():
               shutil.rmtree(work)
           work.mkdir()
-
-          with zipfile.ZipFile(ipa, "r") as z:
-              z.extractall(work)
-
-          apps = sorted((work / "Payload").glob("*.app"))
-          matches = []
-
-          for app in apps:
-              with (app / "Info.plist").open("rb") as f:
-                  info = plistlib.load(f)
-              if info.get("CFBundleIdentifier") == "app.swiftgram.ios":
-                  matches.append((app, info))
-
-          if len(matches) != 1:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: app alvo não encontrado de forma única"
-              )
-
-          app, info = matches[0]
-          frameworks = app / "Frameworks"
-          lead = frameworks / "Lead.dylib"
-
-          if not lead.is_file():
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: Frameworks/Lead.dylib desapareceu"
-              )
-
-          def sha256(path):
-              h = hashlib.sha256()
-              with path.open("rb") as f:
-                  for chunk in iter(lambda: f.read(1024 * 1024), b""):
-                      h.update(chunk)
-              return h.hexdigest()
-
-          if sha256(lead) != sha256(lead_source):
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: Cyan alterou Lead.dylib"
-              )
-
-          executable_name = info.get("CFBundleExecutable")
-          if not executable_name:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: CFBundleExecutable ausente"
-              )
-
-          main = app / executable_name
-          main_deps = Executable(str(main)).get_dependencies()
-
-          lead_load = "@executable_path/Frameworks/Lead.dylib"
-          if lead_load not in main_deps:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: load oficial do Lead sumiu do principal"
-              )
-
-          crack_candidates = [
-              app / "SwiftgramCrack.dylib",
-              frameworks / "SwiftgramCrack.dylib",
-          ]
-          crack_present = [path for path in crack_candidates if path.is_file()]
-
-          if len(crack_present) != 1:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: esperava uma única cópia de "
-                  f"SwiftgramCrack.dylib; encontrei {len(crack_present)}"
-              )
-
-          crack = crack_present[0]
-
-          if sha256(crack) != sha256(crack_source):
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: SHA-256 do SwiftgramCrack mudou"
-              )
-
-          crack_loads = [
-              dep
-              for dep in main_deps
-              if Path(dep).name == "SwiftgramCrack.dylib"
-          ]
-
-          if len(crack_loads) != 1:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: load do SwiftgramCrack "
-                  f"ausente/duplicado: {crack_loads}"
-              )
-
-          substrate = (
-              frameworks
-              / "CydiaSubstrate.framework"
-              / "CydiaSubstrate"
-          )
-
-          if not substrate.is_file():
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: CydiaSubstrate.framework "
-                  "não foi adicionado pelo Cyan"
-              )
-
-          crack_deps = Executable(str(crack)).get_dependencies()
-          substrate_load = (
-              "@rpath/CydiaSubstrate.framework/CydiaSubstrate"
-          )
-
-          if substrate_load not in crack_deps:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: SwiftgramCrack perdeu a "
-                  "dependência do CydiaSubstrate"
-              )
-
-          notification = (
-              app
-              / "PlugIns"
-              / "NotificationServiceExtensionv1.appex"
-          )
-          if not notification.is_dir():
-              notification = (
-                  app
-                  / "Extensions"
-                  / "NotificationServiceExtensionv1.appex"
-              )
-
-          if not notification.is_dir():
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: NSE não encontrada"
-              )
-
-          with (notification / "Info.plist").open("rb") as f:
-              nse_info = plistlib.load(f)
-
-          nse_exec_name = nse_info.get("CFBundleExecutable")
-          if not nse_exec_name:
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: executável da NSE ausente"
-              )
-
-          nse_deps = Executable(
-              str(notification / nse_exec_name)
-          ).get_dependencies()
-
-          if any(
-              Path(dep).name.lower() == "lead.dylib"
-              for dep in nse_deps
-          ):
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: Lead atingiu indevidamente a NSE"
-              )
-
-          if any(
-              "SwiftgramCrack.dylib" in dep
-              for dep in nse_deps
-          ):
-              raise SystemExit(
-                  "❌ Swiftgram + Lead/Cyan: Crack atingiu a NSE"
-              )
-
-          print("✅ Cyan recebeu somente SwiftgramCrack.dylib")
-          print(f"✅ Lead preservado: {sha256(lead)}")
-          print(f"✅ SwiftgramCrack preservado: {sha256(crack)}")
-          print(f"✅ Principal -> {crack_loads[0]}")
-          print("✅ CydiaSubstrate.framework fornecido pelo Cyan")
-          print("✅ Lead permanece somente no executável principal")
-
-          shutil.rmtree(work)
+          try:
+              with zipfile.ZipFile("Swiftgram_ModClient_Cyan.ipa") as z:
+                  z.extractall(work)
+              apps = sorted((work / "Payload").glob("*.app"))
+              if len(apps) != 1:
+                  raise SystemExit("❌ Swiftgram + Lead: app principal ambíguo")
+              app = apps[0]
+              info = plistlib.loads((app / "Info.plist").read_bytes())
+              if info.get("CFBundleIdentifier") != "app.swiftgram.ios":
+                  raise SystemExit("❌ Swiftgram + Lead: bundle incorreto")
+              frameworks = app / "Frameworks"
+              patch = frameworks / PATCH_NAME
+              source = Path("addons/swiftgram/dylib") / PATCH_NAME
+              lead = frameworks / "Lead.dylib"
+              lead_source = Path("addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib")
+              if not patch.is_file() or (app / PATCH_NAME).exists():
+                  raise SystemExit("❌ Swiftgram + Lead: patch deve existir somente em Frameworks/")
+              if not lead.is_file():
+                  raise SystemExit("❌ Swiftgram + Lead: Lead.dylib não existe em Frameworks/")
+              if digest(patch) != digest(source) or digest(lead) != digest(lead_source):
+                  raise SystemExit("❌ Swiftgram + Lead: uma das bibliotecas foi alterada pelo Cyan")
+              executable = info.get("CFBundleExecutable")
+              if not executable:
+                  raise SystemExit("❌ Swiftgram + Lead: CFBundleExecutable ausente")
+              main_loads = loads(app / executable)
+              if main_loads.count((LC_LOAD_WEAK_DYLIB, PATCH_LOAD)) != 1:
+                  raise SystemExit("❌ Swiftgram + Lead: ModClient não possui um único LC_LOAD_WEAK_DYLIB")
+              if sum(name == PATCH_LOAD for _, name in main_loads) != 1:
+                  raise SystemExit("❌ Swiftgram + Lead: dependência ModClient duplicada")
+              if not any(name == LEAD_LOAD for _, name in main_loads):
+                  raise SystemExit("❌ Swiftgram + Lead: load do Lead desapareceu")
+              if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name for _, name in main_loads):
+                  raise SystemExit("❌ Swiftgram + Lead: patch antigo ou blatant ainda ligado")
+              for directory in ("PlugIns", "Extensions"):
+                  for extension in (app / directory).glob("*.appex"):
+                      ext_info = plistlib.loads((extension / "Info.plist").read_bytes())
+                      ext_name = ext_info.get("CFBundleExecutable")
+                      if not ext_name:
+                          raise SystemExit(f"❌ Swiftgram: CFBundleExecutable ausente em {extension.name}")
+                      ext_loads = loads(extension / ext_name)
+                      if any(Path(name).name in (PATCH_NAME, "Lead.dylib") for _, name in ext_loads):
+                          raise SystemExit(f"❌ Swiftgram + Lead: dylib ligada à extensão {extension.name}")
+              print("✅ Swiftgram + Lead: ModClient intacto em Frameworks/")
+              print("✅ Swiftgram + Lead: LC_LOAD_WEAK_DYLIB somente no app principal")
+              print("✅ Swiftgram + Lead: Lead 2.0 original preservado")
+          finally:
+              shutil.rmtree(work, ignore_errors=True)
           PY
 
-          mv -f Swiftgram_Crack_Cyan.ipa Layout_Output.ipa
-
+          mv -f Swiftgram_ModClient_Cyan.ipa Layout_Output.ipa
           echo "✅ Swiftgram + Lead: Layout_Output.ipa atualizado pelo Cyan"
 
       - name: Inject with Cyan
@@ -5475,9 +5381,6 @@ jobs:
                   "TelegramChatFixer.dylib",
                   "TelegramNotificationFix.dylib",
                   "TelegramScreenshotBypass.dylib",
-              ],
-              "app.swiftgram.ios": [
-                  "SwiftgramCrack.dylib",
               ],
               "com.dr1ven.eraser": [
                   "link_file_0.dylib",
@@ -10074,7 +9977,7 @@ jobs:
               )
 
               required_main = {
-                  "@executable_path/SwiftgramCrack.dylib",
+                  "@rpath/SwiftgramTelegramModClientPatch.dylib",
                   "@rpath/iQTele.dylib",
                   "@rpath/iQSwiftEnhancer.dylib",
                   "@rpath/sideloadFixerLol.dylib",
@@ -10096,17 +9999,25 @@ jobs:
                       )
                   )
 
-              if not (
-                  app / "SwiftgramCrack.dylib"
-              ).is_file():
+              modclient_name = "SwiftgramTelegramModClientPatch.dylib"
+              modclient = frameworks / modclient_name
+              modclient_source = (
+                  Path("addons/swiftgram/dylib") / modclient_name
+              )
+              if not modclient.is_file() or (app / modclient_name).exists():
                   raise SystemExit(
-                      "❌ Swiftgram iQTele: "
-                      "SwiftgramCrack.dylib não está na raiz"
+                      "❌ Swiftgram iQTele: ModClient deve ficar "
+                      "somente em Frameworks/"
+                  )
+              if sha256(modclient) != sha256(modclient_source):
+                  raise SystemExit(
+                      "❌ Swiftgram iQTele: ModClient foi alterado "
+                      "antes do pós-processamento V5"
                   )
 
               print(
                   "✅ Swiftgram iQTele: "
-                  "SwiftgramCrack na raiz validado"
+                  "ModClient preservado em Frameworks/"
               )
               print(
                   "✅ Swiftgram iQTele: NSE -> "
@@ -13299,6 +13210,128 @@ jobs:
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
 
+
+      - name: Validate Swiftgram ModClient V5 final layout
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' }}
+        env:
+          ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import importlib.util
+          import json
+          import os
+          import plistlib
+          import struct
+          import sys
+          import zipfile
+          from pathlib import Path
+
+          PATCH_NAME = "SwiftgramTelegramModClientPatch.dylib"
+          LOAD = "@rpath/" + PATCH_NAME
+          LC_LOAD_DYLIB = 0xC
+          LC_LOAD_WEAK_DYLIB = 0x80000018
+          ADDON = os.environ["ADDON_NAME"].strip()
+
+          status_path = Path(".private-status.json")
+          if not status_path.is_file():
+              raise SystemExit("❌ Swiftgram: status V5 não foi produzido")
+          status = json.loads(status_path.read_text(encoding="utf-8"))
+          if status.get("processing_route") != "private" or status.get("nopopup", {}).get("status") not in ("applied", "already_applied"):
+              raise SystemExit("❌ Swiftgram: pós-processamento V5 não aplicado: " + json.dumps(status.get("nopopup", {}), ensure_ascii=False))
+
+          spec = importlib.util.spec_from_file_location("swiftgram_postprocess_final", "private-core/scripts/postprocess.py")
+          if spec is None or spec.loader is None:
+              raise SystemExit("❌ Swiftgram: não foi possível carregar o V5 do Core")
+          module = importlib.util.module_from_spec(spec)
+          sys.modules[spec.name] = module
+          spec.loader.exec_module(module)
+
+          source_bytes = (Path("addons/swiftgram/dylib") / PATCH_NAME).read_bytes()
+          expected = module.patch_dylib_bytes(source_bytes)
+          if expected.status not in ("patched", "already_patched"):
+              raise SystemExit("❌ Swiftgram: resultado estrutural V5 desconhecido")
+
+          def loads(raw):
+              if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
+                  raise SystemExit("❌ Swiftgram: executável Mach-O inválido")
+              count, size = struct.unpack_from("<II", raw, 16)
+              cursor = 32
+              end = cursor + size
+              if end > len(raw):
+                  raise SystemExit("❌ Swiftgram: comandos Mach-O truncados")
+              result = []
+              for _ in range(count):
+                  if cursor + 8 > end:
+                      raise SystemExit("❌ Swiftgram: load command truncado")
+                  cmd, cmdsize = struct.unpack_from("<II", raw, cursor)
+                  if cmdsize < 8 or cursor + cmdsize > end:
+                      raise SystemExit("❌ Swiftgram: tamanho de load command inválido")
+                  if cmd in (LC_LOAD_DYLIB, LC_LOAD_WEAK_DYLIB):
+                      string_offset = struct.unpack_from("<I", raw, cursor + 8)[0]
+                      if not 8 <= string_offset < cmdsize:
+                          raise SystemExit("❌ Swiftgram: offset de dependência inválido")
+                      name = raw[cursor + string_offset:cursor + cmdsize].split(b"\0", 1)[0].decode()
+                      result.append((cmd, name))
+                  cursor += cmdsize
+              return result
+
+          with zipfile.ZipFile("Final.ipa") as z:
+              if z.testzip() is not None:
+                  raise SystemExit("❌ Swiftgram: Final.ipa corrompido")
+              names = z.namelist()
+              info_paths = [n for n in names if n.startswith("Payload/") and n.count("/") == 2 and n.endswith(".app/Info.plist")]
+              if len(info_paths) != 1:
+                  raise SystemExit("❌ Swiftgram: app principal não é único")
+              root = info_paths[0].removesuffix("Info.plist")
+              info = plistlib.loads(z.read(info_paths[0]))
+              if info.get("CFBundleIdentifier") != "app.swiftgram.ios":
+                  raise SystemExit("❌ Swiftgram: Bundle ID incorreto")
+              path = root + "Frameworks/" + PATCH_NAME
+              if names.count(path) != 1 or root + PATCH_NAME in names:
+                  raise SystemExit("❌ Swiftgram: ModClient não está exclusivamente em Frameworks/")
+              if z.read(path) != expected.data:
+                  raise SystemExit("❌ Swiftgram: binário V5 final diverge do patch aplicado à fonte aprovada")
+              candidate = module.find_v5_candidate(z.read(path))
+              if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
+                  raise SystemExit("❌ Swiftgram: viewDidLoad não foi redirecionado")
+
+              main = root + str(info.get("CFBundleExecutable") or "")
+              if main not in names:
+                  raise SystemExit("❌ Swiftgram: executável principal ausente")
+              main_loads = loads(z.read(main))
+              if main_loads.count((LC_LOAD_WEAK_DYLIB, LOAD)) != 1 or sum(name == LOAD for _, name in main_loads) != 1:
+                  raise SystemExit("❌ Swiftgram: ModClient não carrega exclusivamente com LC_LOAD_WEAK_DYLIB")
+              if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name for _, name in main_loads):
+                  raise SystemExit("❌ Swiftgram: dependência obsoleta ou blatant no principal")
+              if any(n.endswith(("/SwiftgramCrack.dylib", "/blatantsPatch.dylib")) and n.startswith(root) for n in names):
+                  raise SystemExit("❌ Swiftgram: biblioteca antiga ou blatant indevidamente no IPA")
+
+              for ext_info_path in names:
+                  if not ext_info_path.startswith((root + "PlugIns/", root + "Extensions/")) or not ext_info_path.endswith(".appex/Info.plist"):
+                      continue
+                  extension = ext_info_path.removesuffix("Info.plist")
+                  ext_info = plistlib.loads(z.read(ext_info_path))
+                  ext_executable = extension + str(ext_info.get("CFBundleExecutable") or "")
+                  if ext_executable not in names:
+                      raise SystemExit(f"❌ Swiftgram: executável ausente em {extension}")
+                  ext_loads = loads(z.read(ext_executable))
+                  if any(Path(name).name in (PATCH_NAME, "Lead.dylib") for _, name in ext_loads):
+                      raise SystemExit(f"❌ Swiftgram: ModClient/Lead foi injetado na extensão {extension}")
+
+              if ADDON == "Lead":
+                  lead = root + "Frameworks/Lead.dylib"
+                  if lead not in names or "@executable_path/Frameworks/Lead.dylib" not in [name for _, name in main_loads]:
+                      raise SystemExit("❌ Swiftgram + Lead: biblioteca ou dependência ausente")
+                  source_lead = Path("addons/telegram/lead/dylib/Lead-2.0-PTBR.dylib")
+                  if hashlib.sha256(z.read(lead)).digest() != hashlib.sha256(source_lead.read_bytes()).digest():
+                      raise SystemExit("❌ Swiftgram + Lead: Lead não corresponde ao original")
+
+          print("✅ Swiftgram: V5 aplicado sobre o Final.ipa")
+          print("✅ Swiftgram: ModClient intacto exceto pelo patch V5 validado")
+          print("✅ Swiftgram: LC_LOAD_WEAK_DYLIB no principal e nenhuma extensão alterada por este tweak")
+          print(f"✅ Swiftgram: addon {ADDON}, {len(expected.changed_offsets)} bytes V5")
+          PY
 
       - name: Validate selective IPA Patch final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.ipapatch == 'true' && steps.prepare.outputs.ipapatch_mode == 'plugins-selective' }}
