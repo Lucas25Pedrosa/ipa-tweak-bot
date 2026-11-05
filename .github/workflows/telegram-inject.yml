@@ -59,6 +59,9 @@ jobs:
           test -d private-core/config
           test -d private-core/translations
           test -f private-core/scripts/postprocess.py
+          test -f private-core/scripts/postprocess_impl.py
+          test -f private-core/scripts/swiftgram_v6.py
+          test -f private-core/addons/swiftgram/dylib/SwiftgramPro.dylib
           test -f private-core/scripts/zx_compat_patch.py
           test -f private-core/scripts/ipapatch_selective.py
           test -f private-core/scripts/validate_lead_layout.py
@@ -2989,7 +2992,7 @@ jobs:
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' && steps.prepare.outputs.addon_name == 'Lead' }}
         run: |
           mapfile -t INJECT_FILES < inject_files.txt
-          PATCH_NAME="SwiftgramTelegramModClientPatch.dylib"
+          PATCH_NAME="SwiftgramPro.dylib"
           PATCH_FILES=()
           for FILE in "${INJECT_FILES[@]}"; do
             if [ "$(basename "$FILE")" = "$PATCH_NAME" ]; then
@@ -3033,7 +3036,7 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          PATCH_NAME = "SwiftgramTelegramModClientPatch.dylib"
+          PATCH_NAME = "SwiftgramPro.dylib"
           PATCH_LOAD = "@rpath/" + PATCH_NAME
           LEAD_LOAD = "@executable_path/Frameworks/Lead.dylib"
           LC_LOAD_WEAK_DYLIB = 0x80000018
@@ -9977,7 +9980,7 @@ jobs:
               )
 
               required_main = {
-                  "@rpath/SwiftgramTelegramModClientPatch.dylib",
+                  "@rpath/SwiftgramPro.dylib",
                   "@rpath/iQTele.dylib",
                   "@rpath/iQSwiftEnhancer.dylib",
                   "@rpath/sideloadFixerLol.dylib",
@@ -9999,7 +10002,7 @@ jobs:
                       )
                   )
 
-              modclient_name = "SwiftgramTelegramModClientPatch.dylib"
+              modclient_name = "SwiftgramPro.dylib"
               modclient = frameworks / modclient_name
               modclient_source = (
                   Path("addons/swiftgram/dylib") / modclient_name
@@ -13211,7 +13214,7 @@ jobs:
             --status-file .private-status.json
 
 
-      - name: Validate Swiftgram ModClient V5 final layout
+      - name: Validate SwiftgramPro V5 + V6-F final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' }}
         env:
           ADDON_NAME: ${{ steps.prepare.outputs.addon_name }}
@@ -13227,7 +13230,7 @@ jobs:
           import zipfile
           from pathlib import Path
 
-          PATCH_NAME = "SwiftgramTelegramModClientPatch.dylib"
+          PATCH_NAME = "SwiftgramPro.dylib"
           LOAD = "@rpath/" + PATCH_NAME
           LC_LOAD_DYLIB = 0xC
           LC_LOAD_WEAK_DYLIB = 0x80000018
@@ -13239,6 +13242,9 @@ jobs:
           status = json.loads(status_path.read_text(encoding="utf-8"))
           if status.get("processing_route") != "private" or status.get("nopopup", {}).get("status") not in ("applied", "already_applied"):
               raise SystemExit("❌ Swiftgram: pós-processamento V5 não aplicado: " + json.dumps(status.get("nopopup", {}), ensure_ascii=False))
+          v6_status = status.get("v6", {})
+          if v6_status.get("status") not in ("applied", "already_applied"):
+              raise SystemExit("❌ Swiftgram: pós-processamento V6 não confirmado: " + json.dumps(v6_status, ensure_ascii=False))
 
           spec = importlib.util.spec_from_file_location("swiftgram_postprocess_final", "private-core/scripts/postprocess.py")
           if spec is None or spec.loader is None:
@@ -13248,9 +13254,14 @@ jobs:
           spec.loader.exec_module(module)
 
           source_bytes = (Path("addons/swiftgram/dylib") / PATCH_NAME).read_bytes()
-          expected = module.patch_dylib_bytes(source_bytes)
-          if expected.status not in ("patched", "already_patched"):
+          expected_v5 = module.patch_dylib_bytes(source_bytes)
+          if expected_v5.status not in ("patched", "already_patched"):
               raise SystemExit("❌ Swiftgram: resultado estrutural V5 desconhecido")
+          expected_v6 = module.swiftgram_v6.apply_v6_after_v5(expected_v5.data)
+          if expected_v6.sha256 != module.swiftgram_v6.FINAL_V6F_SHA256:
+              raise SystemExit("❌ Swiftgram: hash final V6-F inválido")
+          if v6_status.get("sha256") != expected_v6.sha256:
+              raise SystemExit("❌ Swiftgram: hash do status V6 diverge do binário aprovado")
 
           def loads(raw):
               if len(raw) < 32 or struct.unpack_from("<I", raw, 0)[0] != 0xFEEDFACF:
@@ -13290,8 +13301,8 @@ jobs:
               path = root + "Frameworks/" + PATCH_NAME
               if names.count(path) != 1 or root + PATCH_NAME in names:
                   raise SystemExit("❌ Swiftgram: ModClient não está exclusivamente em Frameworks/")
-              if z.read(path) != expected.data:
-                  raise SystemExit("❌ Swiftgram: binário V5 final diverge do patch aplicado à fonte aprovada")
+              if z.read(path) != expected_v6.data:
+                  raise SystemExit("❌ Swiftgram: binário V5 + V6 final diverge da V6-F aprovada")
               candidate = module.find_v5_candidate(z.read(path))
               if candidate.view_did_load.imp != candidate.dismiss_callback.imp:
                   raise SystemExit("❌ Swiftgram: viewDidLoad não foi redirecionado")
@@ -13302,9 +13313,9 @@ jobs:
               main_loads = loads(z.read(main))
               if main_loads.count((LC_LOAD_WEAK_DYLIB, LOAD)) != 1 or sum(name == LOAD for _, name in main_loads) != 1:
                   raise SystemExit("❌ Swiftgram: ModClient não carrega exclusivamente com LC_LOAD_WEAK_DYLIB")
-              if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name for _, name in main_loads):
+              if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name or "SwiftgramTelegramModClientPatch.dylib" in name for _, name in main_loads):
                   raise SystemExit("❌ Swiftgram: dependência obsoleta ou blatant no principal")
-              if any(n.endswith(("/SwiftgramCrack.dylib", "/blatantsPatch.dylib")) and n.startswith(root) for n in names):
+              if any(n.endswith(("/SwiftgramCrack.dylib", "/blatantsPatch.dylib", "/SwiftgramTelegramModClientPatch.dylib")) and n.startswith(root) for n in names):
                   raise SystemExit("❌ Swiftgram: biblioteca antiga ou blatant indevidamente no IPA")
 
               for ext_info_path in names:
@@ -13327,10 +13338,10 @@ jobs:
                   if hashlib.sha256(z.read(lead)).digest() != hashlib.sha256(source_lead.read_bytes()).digest():
                       raise SystemExit("❌ Swiftgram + Lead: Lead não corresponde ao original")
 
-          print("✅ Swiftgram: V5 aplicado sobre o Final.ipa")
-          print("✅ Swiftgram: ModClient intacto exceto pelo patch V5 validado")
+          print("✅ Swiftgram: V5 + V6-F aplicados sobre o Final.ipa")
+          print("✅ Swiftgram: SwiftgramPro.dylib corresponde à V6-F aprovada")
           print("✅ Swiftgram: LC_LOAD_WEAK_DYLIB no principal e nenhuma extensão alterada por este tweak")
-          print(f"✅ Swiftgram: addon {ADDON}, {len(expected.changed_offsets)} bytes V5")
+          print(f"✅ Swiftgram: addon {ADDON}, V5={len(expected_v5.changed_offsets)} bytes, V6 hash={expected_v6.sha256}")
           PY
 
       - name: Validate selective IPA Patch final layout
