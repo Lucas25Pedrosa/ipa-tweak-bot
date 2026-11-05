@@ -1217,13 +1217,13 @@ jobs:
           )
 
           if (
-              version == "443.1.0"
-              and str(build) == "1045455915"
-              and addon_version == "6.0.1"
+              version == "454.1.0"
+              and str(build) == "1106185088"
+              and addon_version == "7.0"
           ):
               print(
-                  "✅ Base auditada Instagram 443.1.0 / "
-                  "Regram 6.0.1 confirmada"
+                  "✅ Base auditada Instagram 454.1.0 / "
+                  "Regram 7.0 confirmada"
               )
           else:
               print(
@@ -1933,24 +1933,9 @@ jobs:
           # O IPA oficial do Fouad altera apenas CFBundleIcons.
           # Não adicionamos os cinco ícones em CFBundleIcons~ipad.
 
-          app_transport_security = plist.get(
-              "NSAppTransportSecurity",
-              {},
-          )
-
-          if not isinstance(
-              app_transport_security,
-              dict,
-          ):
-              app_transport_security = {}
-
-          app_transport_security[
-              "NSAllowsArbitraryLoads"
-          ] = True
-
-          plist[
-              "NSAppTransportSecurity"
-          ] = app_transport_security
+          plist["NSAppTransportSecurity"] = {
+              "NSAllowsArbitraryLoads": True,
+          }
 
           plist[
               "UISupportsDocumentBrowser"
