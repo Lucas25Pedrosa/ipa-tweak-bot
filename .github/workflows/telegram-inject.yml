@@ -2373,12 +2373,12 @@ jobs:
           PY
 
 
-      - name: Inject Lead 2.0.2 and PT-BR using developer layout
+      - name: Inject Lead 2.0.3 with integrated PT-BR using developer layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && (steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' || steps.prepare.outputs.bundle_id == 'app.swiftgram.ios') }}
         env:
           BUNDLE_ID: ${{ steps.prepare.outputs.bundle_id }}
         run: |
-          echo "💉 Lead 2.0.2 + PT-BR: aplicando layout específico do aplicativo"
+          echo "💉 Lead 2.0.3 (PT-BR integrado): aplicando layout específico do aplicativo"
           rm -rf lead_developer_work
           rm -f Layout_Output.ipa
           unzip -q input.ipa -d lead_developer_work
@@ -2415,27 +2415,27 @@ jobs:
           ]
 
           lead_sources = [p for p in inject_paths if p.name == "Lead.dylib"]
-          ptbr_sources = [p for p in inject_paths if p.name == "LeadPTBR.dylib"]
-          if len(lead_sources) != 1 or len(ptbr_sources) != 1:
-              raise SystemExit("❌ Lead 2.0.2: exigidas uma Lead.dylib e uma LeadPTBR.dylib")
-          lead_source, ptbr_source = lead_sources[0], ptbr_sources[0]
-          if not lead_source.is_file() or not ptbr_source.is_file():
-              raise SystemExit("❌ Lead 2.0.2: fonte original ou tradução ausente")
+          if len(lead_sources) != 1 or any(p.name == "LeadPTBR.dylib" for p in inject_paths):
+              raise SystemExit("❌ Lead 2.0.3: esperado um único Lead.dylib sem complemento")
+          lead_source = lead_sources[0]
+          if not lead_source.is_file():
+              raise SystemExit("❌ Lead 2.0.3: biblioteca de origem ausente")
           source_bytes = lead_source.read_bytes()
           source_sha256 = hashlib.sha256(source_bytes).hexdigest()
-          ptbr_bytes = ptbr_source.read_bytes()
-          ptbr_sha256 = hashlib.sha256(ptbr_bytes).hexdigest()
-          if b"pt-BR" not in ptbr_bytes:
-              raise SystemExit("❌ LeadPTBR: marcador pt-BR ausente")
+          expected_sha256 = "17e742c3b0ed94805a2b3d16da9ee3ad28ad94d2b9225e2c2426d57a15dad85c"
+          if source_sha256 != expected_sha256:
+              raise SystemExit("❌ Lead 2.0.3: SHA-256 diferente da versão PT-BR aprovada")
+          if b"pt-BR" not in source_bytes:
+              raise SystemExit("❌ Lead 2.0.3: marcador pt-BR ausente")
           portuguese_name = "Português (Brasil)"
           if not any(
-              s in ptbr_bytes for s in (
+              v in source_bytes for v in (
                   portuguese_name.encode("utf-8"),
                   portuguese_name.encode("utf-16-le"),
                   portuguese_name.encode("utf-16-be"),
               )
           ):
-              raise SystemExit("❌ LeadPTBR: marcador Português (Brasil) ausente")
+              raise SystemExit("❌ Lead 2.0.3: marcador Português (Brasil) ausente")
 
           apps = sorted(PAYLOAD.glob("*.app"))
 
@@ -2472,13 +2472,11 @@ jobs:
           frameworks.mkdir(exist_ok=True)
 
           lead_destination = frameworks / INTERNAL_DYLIB_NAME
-          ptbr_destination = frameworks / "LeadPTBR.dylib"
+          if (frameworks / "LeadPTBR.dylib").exists():
+              raise SystemExit("❌ Lead 2.0.3: IPA de entrada já contém complemento PT-BR antigo")
           shutil.copy2(lead_source, lead_destination)
-          shutil.copy2(ptbr_source, ptbr_destination)
           if hashlib.sha256(lead_destination.read_bytes()).hexdigest() != source_sha256:
-              raise SystemExit("❌ Lead original: erro na cópia")
-          if hashlib.sha256(ptbr_destination.read_bytes()).hexdigest() != ptbr_sha256:
-              raise SystemExit("❌ Tradução PT-BR: erro na cópia")
+              raise SystemExit("❌ Lead 2.0.3: erro na cópia")
 
           LC_SEGMENT_64 = 0x19
           LC_LOAD_DYLIB = 0xC
@@ -2773,9 +2771,6 @@ jobs:
           MAIN_LOAD = (
               "@executable_path/Frameworks/Lead.dylib"
           )
-          MAIN_PTBR_LOAD = (
-              "@executable_path/Frameworks/LeadPTBR.dylib"
-          )
           EXTENSION_LOAD = (
               "@executable_path/../../Frameworks/Lead.dylib"
           )
@@ -2790,10 +2785,8 @@ jobs:
                   f"❌ Lead 2.0 principal: {exc}"
               )
 
-          try:
-              patch_binary(main_executable, MAIN_PTBR_LOAD, dylib_name="LeadPTBR.dylib")
-          except InjectError as exc:
-              raise SystemExit(f"❌ LeadPTBR no principal: {exc}")
+          if any("LeadPTBR.dylib" in name for name in linked_dylibs(bytearray(main_executable.read_bytes()))):
+              raise SystemExit("❌ Lead 2.0.3: executável ainda carrega LeadPTBR.dylib antiga")
 
           # Rota única Lead: Telegram e Swiftgram recebem a mesma injeção.
           notification_services = []
@@ -2886,7 +2879,7 @@ jobs:
               "app principal + Notification Service Extension"
           )
           print(
-              "✅ Lead 2.0.2 oficial copiado como "
+              "✅ Lead 2.0.3 com PT-BR integrado copiado como "
               "Frameworks/Lead.dylib"
           )
           print(
@@ -2900,7 +2893,6 @@ jobs:
           print(
               f"✅ SHA-256 Lead.dylib: {source_sha256}"
           )
-          print(f"✅ SHA-256 LeadPTBR.dylib: {ptbr_sha256}")
           PY
 
           (
@@ -2913,7 +2905,7 @@ jobs:
             exit 1
           fi
 
-          echo "✅ Lead 2.0.2 + PT-BR: Layout_Output.ipa pronto"
+          echo "✅ Lead 2.0.3 PT-BR integrado: Layout_Output.ipa pronto"
 
       - name: Inject Swiftgram ModClient Patch with Cyan
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' && steps.prepare.outputs.addon_name == 'Lead' }}
@@ -2966,7 +2958,6 @@ jobs:
           PATCH_NAME = "SwiftgramPro.dylib"
           PATCH_LOAD = "@rpath/" + PATCH_NAME
           LEAD_LOAD = "@executable_path/Frameworks/Lead.dylib"
-          PTBR_LOAD = "@executable_path/Frameworks/LeadPTBR.dylib"
           LC_LOAD_WEAK_DYLIB = 0x80000018
           LC_LOAD_DYLIB = 0xC
 
@@ -3017,13 +3008,11 @@ jobs:
               source = Path("addons/swiftgram/dylib") / PATCH_NAME
               lead = frameworks / "Lead.dylib"
               lead_source = Path("addons/telegram/lead/dylib/Lead.dylib")
-              ptbr = frameworks / "LeadPTBR.dylib"
-              ptbr_source = Path("addons/telegram/lead/dylib/LeadPTBR.dylib")
               if not patch.is_file() or (app / PATCH_NAME).exists():
                   raise SystemExit("❌ Swiftgram + Lead: patch deve existir somente em Frameworks/")
-              if not lead.is_file() or not ptbr.is_file():
-                  raise SystemExit("❌ Swiftgram + Lead: Lead/PTBR ausentes em Frameworks/")
-              if digest(patch) != digest(source) or digest(lead) != digest(lead_source) or digest(ptbr) != digest(ptbr_source):
+              if not lead.is_file() or (frameworks / "LeadPTBR.dylib").exists():
+                  raise SystemExit("❌ Swiftgram + Lead: Lead ausente ou tradução antiga encontrada")
+              if digest(patch) != digest(source) or digest(lead) != digest(lead_source):
                   raise SystemExit("❌ Swiftgram + Lead: uma das bibliotecas foi alterada pelo Cyan")
               executable = info.get("CFBundleExecutable")
               if not executable:
@@ -3035,10 +3024,8 @@ jobs:
                   raise SystemExit("❌ Swiftgram + Lead: dependência ModClient duplicada")
               if main_loads.count((LC_LOAD_WEAK_DYLIB, LEAD_LOAD)) != 1:
                   raise SystemExit("❌ Swiftgram + Lead: load do original ausente/duplicado")
-              if main_loads.count((LC_LOAD_WEAK_DYLIB, PTBR_LOAD)) != 1:
-                  raise SystemExit("❌ Swiftgram + Lead: load PT-BR ausente/duplicado")
-              if main_loads.index((LC_LOAD_WEAK_DYLIB, LEAD_LOAD)) >= main_loads.index((LC_LOAD_WEAK_DYLIB, PTBR_LOAD)):
-                  raise SystemExit("❌ Swiftgram + Lead: ordem de carregamento incorreta")
+              if any("LeadPTBR.dylib" in name for _, name in main_loads):
+                  raise SystemExit("❌ Swiftgram + Lead: carga antiga de PT-BR encontrada")
               if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name for _, name in main_loads):
                   raise SystemExit("❌ Swiftgram + Lead: patch antigo ou blatant ainda ligado")
               notification_services = 0
@@ -3062,7 +3049,7 @@ jobs:
               if not notification_services:
                   raise SystemExit("❌ Swiftgram + Lead: nenhuma Notification Service Extension encontrada")
               print("✅ Swiftgram + Lead: ModClient intacto em Frameworks/")
-              print("✅ Swiftgram + Lead: SwiftgramPro e PT-BR somente no app principal")
+              print("✅ Swiftgram + Lead: SwiftgramPro apenas no principal e PT-BR integrada ao Lead")
               print(f"✅ Swiftgram + Lead: Lead presente em {notification_services} NSE(s) com LC_LOAD_WEAK_DYLIB")
           finally:
               shutil.rmtree(work, ignore_errors=True)
@@ -13291,18 +13278,12 @@ jobs:
                   if lead not in names or "@executable_path/Frameworks/Lead.dylib" not in [name for _, name in main_loads]:
                       raise SystemExit("❌ Swiftgram + Lead: biblioteca ou dependência ausente")
                   source_lead = Path("addons/telegram/lead/dylib/Lead.dylib")
-                  ptbr = root + "Frameworks/LeadPTBR.dylib"
-                  source_ptbr = Path("addons/telegram/lead/dylib/LeadPTBR.dylib")
-                  ptbr_load = "@executable_path/Frameworks/LeadPTBR.dylib"
-                  if names.count(ptbr) != 1 or main_loads.count((LC_LOAD_WEAK_DYLIB, ptbr_load)) != 1:
-                      raise SystemExit("❌ Swiftgram + Lead: PT-BR ausente/duplicado")
-                  if hashlib.sha256(z.read(ptbr)).digest() != hashlib.sha256(source_ptbr.read_bytes()).digest():
-                      raise SystemExit("❌ Swiftgram + Lead: tradução modificada")
-                  lead_load = "@executable_path/Frameworks/Lead.dylib"
-                  if main_loads.index((LC_LOAD_WEAK_DYLIB, lead_load)) >= main_loads.index((LC_LOAD_WEAK_DYLIB, ptbr_load)):
-                      raise SystemExit("❌ Swiftgram + Lead: ordem Lead/PTBR incorreta")
+                  if root + "Frameworks/LeadPTBR.dylib" in names:
+                      raise SystemExit("❌ Swiftgram + Lead: complemento PT-BR antigo encontrado")
+                  if any("LeadPTBR.dylib" in name for _, name in main_loads):
+                      raise SystemExit("❌ Swiftgram + Lead: carga PT-BR antiga encontrada")
                   if hashlib.sha256(z.read(lead)).digest() != hashlib.sha256(source_lead.read_bytes()).digest():
-                      raise SystemExit("❌ Swiftgram + Lead: Lead não corresponde ao original")
+                      raise SystemExit("❌ Swiftgram + Lead: Lead 2.0.3 não corresponde à versão aprovada")
 
           print("✅ Swiftgram: V5 + V6-F aplicados sobre o Final.ipa")
           print("✅ Swiftgram: SwiftgramPro.dylib corresponde à V6-F aprovada")
@@ -13318,15 +13299,13 @@ jobs:
             --metadata .ipapatch_selective_meta.json \
             --bundle-id "${{ steps.prepare.outputs.bundle_id }}"
 
-      # O validador externo permanece restrito ao Telegram até sua revisão separada.
-      # Swiftgram + Lead já é validado pelas etapas Cyan e SwiftgramPro acima.
-      - name: Validate Lead 2.0.2 + PT-BR final layout
+      # O validador externo confere Telegram e Swiftgram com PT-BR integrado.
+      - name: Validate Lead 2.0.3 PT-BR integrated final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && (steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' || steps.prepare.outputs.bundle_id == 'app.swiftgram.ios') }}
         run: |
           python private-core/scripts/validate_lead_layout.py \
             --ipa Final.ipa \
             --source-dylib addons/telegram/lead/dylib/Lead.dylib \
-            --source-ptbr addons/telegram/lead/dylib/LeadPTBR.dylib \
             --bundle-id "${{ steps.prepare.outputs.bundle_id }}" \
             --selective-metadata .ipapatch_selective_meta.json
 
