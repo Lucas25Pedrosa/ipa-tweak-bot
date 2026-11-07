@@ -2795,143 +2795,96 @@ jobs:
           except InjectError as exc:
               raise SystemExit(f"❌ LeadPTBR no principal: {exc}")
 
-          if EXPECTED_BUNDLE_ID == "ph.telegra.Telegraph":
-              notification_services = []
+          # Rota única Lead: Telegram e Swiftgram recebem a mesma injeção.
+          notification_services = []
 
-              for directory_name in (
-                  "PlugIns",
-                  "Extensions",
+          for directory_name in (
+              "PlugIns",
+              "Extensions",
+          ):
+              directory = app / directory_name
+
+              if not directory.is_dir():
+                  continue
+
+              for extension in sorted(
+                  directory.glob("*.appex")
               ):
-                  directory = app / directory_name
-
-                  if not directory.is_dir():
-                      continue
-
-                  for extension in sorted(
-                      directory.glob("*.appex")
-                  ):
-                      extension_info_path = (
-                          extension / "Info.plist"
-                      )
-
-                      if not extension_info_path.is_file():
-                          continue
-
-                      with extension_info_path.open(
-                          "rb"
-                      ) as f:
-                          extension_info = plistlib.load(f)
-
-                      extension_point = (
-                          extension_info.get(
-                              "NSExtension",
-                              {},
-                          ).get(
-                              "NSExtensionPointIdentifier",
-                              "",
-                          )
-                      )
-
-                      if (
-                          extension_point
-                          != "com.apple.usernotifications.service"
-                      ):
-                          continue
-
-                      extension_executable_name = (
-                          extension_info.get(
-                              "CFBundleExecutable"
-                          )
-                      )
-
-                      if not extension_executable_name:
-                          raise SystemExit(
-                              "❌ Lead 2.0: CFBundleExecutable "
-                              f"ausente em {extension.name}"
-                          )
-
-                      extension_executable = (
-                          extension
-                          / extension_executable_name
-                      )
-
-                      if not extension_executable.is_file():
-                          raise SystemExit(
-                              "❌ Lead 2.0: executável da extensão "
-                              f"ausente em {extension.name}"
-                          )
-
-                      try:
-                          patch_binary(
-                              extension_executable,
-                              EXTENSION_LOAD,
-                          )
-                      except InjectError as exc:
-                          raise SystemExit(
-                              "❌ Lead 2.0 extensão "
-                              f"{extension.name}: {exc}"
-                          )
-
-                      notification_services.append(
-                          extension
-                      )
-
-              if not notification_services:
-                  raise SystemExit(
-                      "❌ Lead 2.0: nenhuma Notification "
-                      "Service Extension encontrada"
+                  extension_info_path = (
+                      extension / "Info.plist"
                   )
 
-              formula_label = (
-                  "app principal + Notification Service Extension"
-              )
-          else:
-              # Swiftgram: Lead deve existir somente no executável principal.
-              for directory_name in (
-                  "PlugIns",
-                  "Extensions",
-              ):
-                  directory = app / directory_name
-                  if not directory.is_dir():
+                  if not extension_info_path.is_file():
                       continue
 
-                  for extension in sorted(
-                      directory.glob("*.appex")
+                  with extension_info_path.open(
+                      "rb"
+                  ) as f:
+                      extension_info = plistlib.load(f)
+
+                  extension_point = (
+                      extension_info.get(
+                          "NSExtension",
+                          {},
+                      ).get(
+                          "NSExtensionPointIdentifier",
+                          "",
+                      )
+                  )
+
+                  if (
+                      extension_point
+                      != "com.apple.usernotifications.service"
                   ):
-                      extension_info_path = extension / "Info.plist"
-                      if not extension_info_path.is_file():
-                          continue
+                      continue
 
-                      with extension_info_path.open("rb") as f:
-                          extension_info = plistlib.load(f)
-
-                      extension_executable_name = (
-                          extension_info.get("CFBundleExecutable")
+                  extension_executable_name = (
+                      extension_info.get(
+                          "CFBundleExecutable"
                       )
-                      if not extension_executable_name:
-                          continue
+                  )
 
-                      extension_executable = (
-                          extension / extension_executable_name
+                  if not extension_executable_name:
+                      raise SystemExit(
+                          "❌ Lead 2.0: CFBundleExecutable "
+                          f"ausente em {extension.name}"
                       )
-                      if not extension_executable.is_file():
-                          continue
 
-                      existing = linked_dylibs(
-                          bytearray(extension_executable.read_bytes())
+                  extension_executable = (
+                      extension
+                      / extension_executable_name
+                  )
+
+                  if not extension_executable.is_file():
+                      raise SystemExit(
+                          "❌ Lead 2.0: executável da extensão "
+                          f"ausente em {extension.name}"
                       )
-                      if any(
-                          Path(dependency).name.lower()
-                          in (INTERNAL_DYLIB_NAME.lower(), "leadptbr.dylib")
-                          for dependency in existing
-                      ):
-                          raise SystemExit(
-                              "❌ Swiftgram + Lead: Lead já está ligado "
-                              f"indevidamente em {extension.name}"
-                          )
 
-              formula_label = "somente app principal"
+                  try:
+                      patch_binary(
+                          extension_executable,
+                          EXTENSION_LOAD,
+                      )
+                  except InjectError as exc:
+                      raise SystemExit(
+                          "❌ Lead 2.0 extensão "
+                          f"{extension.name}: {exc}"
+                      )
 
+                  notification_services.append(
+                      extension
+                  )
+
+          if not notification_services:
+              raise SystemExit(
+                  "❌ Lead 2.0: nenhuma Notification "
+                  "Service Extension encontrada"
+              )
+
+          formula_label = (
+              "app principal + Notification Service Extension"
+          )
           print(
               "✅ Lead 2.0.2 oficial copiado como "
               "Frameworks/Lead.dylib"
@@ -2987,7 +2940,7 @@ jobs:
 
           rm -f Swiftgram_ModClient_Cyan.ipa
           echo "💉 Swiftgram + Lead: Cyan recebe apenas o ModClient Patch"
-          echo "ℹ️ Lead.dylib continua com carregamento próprio no executável principal"
+          echo "ℹ️ Lead.dylib mantém LC_LOAD_WEAK_DYLIB no app principal e nas NSEs"
 
           cyan \
             -i Layout_Output.ipa \
@@ -3088,6 +3041,8 @@ jobs:
                   raise SystemExit("❌ Swiftgram + Lead: ordem de carregamento incorreta")
               if any("SwiftgramCrack.dylib" in name or "blatantsPatch.dylib" in name for _, name in main_loads):
                   raise SystemExit("❌ Swiftgram + Lead: patch antigo ou blatant ainda ligado")
+              notification_services = 0
+              nse_lead_load = "@executable_path/../../Frameworks/Lead.dylib"
               for directory in ("PlugIns", "Extensions"):
                   for extension in (app / directory).glob("*.appex"):
                       ext_info = plistlib.loads((extension / "Info.plist").read_bytes())
@@ -3095,11 +3050,20 @@ jobs:
                       if not ext_name:
                           raise SystemExit(f"❌ Swiftgram: CFBundleExecutable ausente em {extension.name}")
                       ext_loads = loads(extension / ext_name)
-                      if any(Path(name).name in (PATCH_NAME, "Lead.dylib", "LeadPTBR.dylib") for _, name in ext_loads):
-                          raise SystemExit(f"❌ Swiftgram + Lead: dylib ligada à extensão {extension.name}")
+                      if any(Path(name).name in (PATCH_NAME, "LeadPTBR.dylib") for _, name in ext_loads):
+                          raise SystemExit(f"❌ Swiftgram + Lead: ModClient/PT-BR indevido na extensão {extension.name}")
+                      is_nse = ext_info.get("NSExtension", {}).get("NSExtensionPointIdentifier") == "com.apple.usernotifications.service"
+                      if is_nse:
+                          notification_services += 1
+                          if ext_loads.count((LC_LOAD_WEAK_DYLIB, nse_lead_load)) != 1 or sum(Path(name).name == "Lead.dylib" for _, name in ext_loads) != 1:
+                              raise SystemExit(f"❌ Swiftgram + Lead: carregamento Lead inválido na NSE {extension.name}")
+                      elif any(Path(name).name == "Lead.dylib" for _, name in ext_loads):
+                          raise SystemExit(f"❌ Swiftgram + Lead: Lead indevido na extensão {extension.name}")
+              if not notification_services:
+                  raise SystemExit("❌ Swiftgram + Lead: nenhuma Notification Service Extension encontrada")
               print("✅ Swiftgram + Lead: ModClient intacto em Frameworks/")
-              print("✅ Swiftgram + Lead: LC_LOAD_WEAK_DYLIB somente no app principal")
-              print("✅ Swiftgram + Lead: Lead 2.0.2 original e PT-BR preservados")
+              print("✅ Swiftgram + Lead: SwiftgramPro e PT-BR somente no app principal")
+              print(f"✅ Swiftgram + Lead: Lead presente em {notification_services} NSE(s) com LC_LOAD_WEAK_DYLIB")
           finally:
               shutil.rmtree(work, ignore_errors=True)
           PY
@@ -13299,6 +13263,8 @@ jobs:
               if any(n.endswith(("/SwiftgramCrack.dylib", "/blatantsPatch.dylib", "/SwiftgramTelegramModClientPatch.dylib")) and n.startswith(root) for n in names):
                   raise SystemExit("❌ Swiftgram: biblioteca antiga ou blatant indevidamente no IPA")
 
+              notification_services = 0
+              nse_lead_load = "@executable_path/../../Frameworks/Lead.dylib"
               for ext_info_path in names:
                   if not ext_info_path.startswith((root + "PlugIns/", root + "Extensions/")) or not ext_info_path.endswith(".appex/Info.plist"):
                       continue
@@ -13308,10 +13274,19 @@ jobs:
                   if ext_executable not in names:
                       raise SystemExit(f"❌ Swiftgram: executável ausente em {extension}")
                   ext_loads = loads(z.read(ext_executable))
-                  if any(Path(name).name in (PATCH_NAME, "Lead.dylib", "LeadPTBR.dylib") for _, name in ext_loads):
-                      raise SystemExit(f"❌ Swiftgram: ModClient/Lead foi injetado na extensão {extension}")
+                  if any(Path(name).name in (PATCH_NAME, "LeadPTBR.dylib") for _, name in ext_loads):
+                      raise SystemExit(f"❌ Swiftgram: ModClient/PT-BR foi injetado na extensão {extension}")
+                  is_nse = ext_info.get("NSExtension", {}).get("NSExtensionPointIdentifier") == "com.apple.usernotifications.service"
+                  if ADDON == "Lead" and is_nse:
+                      notification_services += 1
+                      if ext_loads.count((LC_LOAD_WEAK_DYLIB, nse_lead_load)) != 1 or sum(Path(name).name == "Lead.dylib" for _, name in ext_loads) != 1:
+                          raise SystemExit(f"❌ Swiftgram + Lead: NSE sem o carregamento Lead correto: {extension}")
+                  elif any(Path(name).name == "Lead.dylib" for _, name in ext_loads):
+                      raise SystemExit(f"❌ Swiftgram: Lead indevido na extensão {extension}")
 
               if ADDON == "Lead":
+                  if not notification_services:
+                      raise SystemExit("❌ Swiftgram + Lead: nenhuma Notification Service Extension validada")
                   lead = root + "Frameworks/Lead.dylib"
                   if lead not in names or "@executable_path/Frameworks/Lead.dylib" not in [name for _, name in main_loads]:
                       raise SystemExit("❌ Swiftgram + Lead: biblioteca ou dependência ausente")
@@ -13331,7 +13306,7 @@ jobs:
 
           print("✅ Swiftgram: V5 + V6-F aplicados sobre o Final.ipa")
           print("✅ Swiftgram: SwiftgramPro.dylib corresponde à V6-F aprovada")
-          print("✅ Swiftgram: LC_LOAD_WEAK_DYLIB no principal e nenhuma extensão alterada por este tweak")
+          print("✅ Swiftgram: ModClient só no principal; Lead nas NSEs quando selecionado")
           print(f"✅ Swiftgram: addon {ADDON}, V5={len(expected_v5.changed_offsets)} bytes, V6 hash={expected_v6.sha256}")
           PY
 
@@ -13343,6 +13318,8 @@ jobs:
             --metadata .ipapatch_selective_meta.json \
             --bundle-id "${{ steps.prepare.outputs.bundle_id }}"
 
+      # O validador externo permanece restrito ao Telegram até sua revisão separada.
+      # Swiftgram + Lead já é validado pelas etapas Cyan e SwiftgramPro acima.
       - name: Validate Lead 2.0.2 + PT-BR final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' }}
         run: |
