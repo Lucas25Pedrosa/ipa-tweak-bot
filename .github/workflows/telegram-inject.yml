@@ -2422,7 +2422,7 @@ jobs:
               raise SystemExit("❌ Lead 2.0.3: biblioteca de origem ausente")
           source_bytes = lead_source.read_bytes()
           source_sha256 = hashlib.sha256(source_bytes).hexdigest()
-          expected_sha256 = "17e742c3b0ed94805a2b3d16da9ee3ad28ad94d2b9225e2c2426d57a15dad85c"
+          expected_sha256 = "6b73542c40d6136dcdc1d2bff6e14d4940dc34cdb5c59d86c7a561f2ccc2b4b8"
           if source_sha256 != expected_sha256:
               raise SystemExit("❌ Lead 2.0.3: SHA-256 diferente da versão PT-BR aprovada")
           if b"pt-BR" not in source_bytes:
