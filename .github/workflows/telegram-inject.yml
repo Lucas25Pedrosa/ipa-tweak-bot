@@ -13321,7 +13321,7 @@ jobs:
       # O validador externo permanece restrito ao Telegram até sua revisão separada.
       # Swiftgram + Lead já é validado pelas etapas Cyan e SwiftgramPro acima.
       - name: Validate Lead 2.0.2 + PT-BR final layout
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.addon_name == 'Lead' && (steps.prepare.outputs.bundle_id == 'ph.telegra.Telegraph' || steps.prepare.outputs.bundle_id == 'app.swiftgram.ios') }}
         run: |
           python private-core/scripts/validate_lead_layout.py \
             --ipa Final.ipa \
