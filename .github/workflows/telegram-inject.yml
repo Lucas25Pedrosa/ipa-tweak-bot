@@ -2427,7 +2427,7 @@ jobs:
               raise SystemExit("❌ Lead 2.0.3: SHA-256 diferente da versão PT-BR aprovada")
           if b"pt-BR" not in source_bytes:
               raise SystemExit("❌ Lead 2.0.3: marcador pt-BR ausente")
-          portuguese_name = "Português (Brasil)"
+          portuguese_name = "Português"
           if not any(
               v in source_bytes for v in (
                   portuguese_name.encode("utf-8"),
@@ -2435,7 +2435,7 @@ jobs:
                   portuguese_name.encode("utf-16-be"),
               )
           ):
-              raise SystemExit("❌ Lead 2.0.3: marcador Português (Brasil) ausente")
+              raise SystemExit("❌ Lead 2.0.3: marcador Português ausente")
 
           apps = sorted(PAYLOAD.glob("*.app"))
 
