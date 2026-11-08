@@ -6224,7 +6224,7 @@ jobs:
           PY
 
       - name: Shared blatantsPatch layout - supported apps including Dynamic Lyrics
-        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale' || steps.prepare.outputs.bundle_id == 'com.bing.lyrics') }}
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && (steps.prepare.outputs.bundle_id == 'com.readdle.ReaddleDocsIPad' || steps.prepare.outputs.bundle_id == 'com.readdle.PDFExpert5' || steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' || steps.prepare.outputs.bundle_id == 'co.bazaart.app' || steps.prepare.outputs.bundle_id == 'com.camerasideas.InstaShot' || steps.prepare.outputs.bundle_id == 'com.picsart.studio' || steps.prepare.outputs.bundle_id == 'com.verycoolapp.mediaconvert' || steps.prepare.outputs.bundle_id == 'com.lightricks.Enlight-Editor' || steps.prepare.outputs.bundle_id == 'com.ilovepdf.www' || steps.prepare.outputs.bundle_id == 'com.outerspaceapps.itranslate' || steps.prepare.outputs.bundle_id == 'com.frontpocketsoftware.happyscale' || steps.prepare.outputs.bundle_id == 'com.bing.lyrics') }}
         run: |
           python <<'PY'
           import hashlib
@@ -6253,6 +6253,18 @@ jobs:
                       "Frameworks/FilePickerFix.dylib",
                       "Frameworks/PDFExpert.dylib",
                       "Frameworks/blatantsPatch.dylib",
+                  ),
+              },
+              "co.bazaart.app": {
+                  "name": "Bazaart",
+                  "required_paths": (
+                      "Frameworks/Bazaart.dylib",
+                      "Frameworks/blatantsPatch.dylib",
+                  ),
+                  "expected_extensions": (
+                      "PlugIns/BazaartThumbnail.appex",
+                      "PlugIns/OneSignalNotificationServiceExtension.appex",
+                      "PlugIns/share.appex",
                   ),
               },
               "com.duolingo.DuolingoMobile": {
@@ -6601,6 +6613,44 @@ jobs:
                   raw
               )
 
+          def force_weak_load(
+              executable_path: Path,
+              dependency: str,
+          ) -> None:
+              raw = bytearray(executable_path.read_bytes())
+              if len(raw) < 32 or struct.unpack_from("<I", raw)[0] != 0xFEEDFACF:
+                  raise SystemExit(
+                      f"❌ Bazaart: Mach-O arm64 inesperado: {executable_path}"
+                  )
+
+              ncmds = struct.unpack_from("<I", raw, 16)[0]
+              offset = 32
+              found = 0
+              for _ in range(ncmds):
+                  if offset + 8 > len(raw):
+                      raise SystemExit("❌ Bazaart: Mach-O truncado")
+                  command, size = struct.unpack_from("<II", raw, offset)
+                  if size < 8 or offset + size > len(raw):
+                      raise SystemExit("❌ Bazaart: load command inválido")
+                  if command in {0x0C, 0x18, 0x80000018}:
+                      name_offset = struct.unpack_from("<I", raw, offset + 8)[0]
+                      if name_offset < 24 or name_offset >= size:
+                          raise SystemExit("❌ Bazaart: nome de dylib inválido")
+                      dylib_name = raw[
+                          offset + name_offset:offset + size
+                      ].split(b"\0", 1)[0].decode("utf-8", errors="replace")
+                      if dylib_name == dependency:
+                          struct.pack_into("<I", raw, offset, 0x80000018)
+                          found += 1
+                  offset += size
+
+              if found != 1:
+                  raise SystemExit(
+                      f"❌ Bazaart: esperado um único load de {dependency}; "
+                      f"encontrados={found} em {executable_path.name}"
+                  )
+              executable_path.write_bytes(raw)
+
           if bundle_id == "com.bing.lyrics":
               main_name = app_plist.get(
                   "CFBundleExecutable"
@@ -6681,6 +6731,15 @@ jobs:
               current_dependencies = dependencies(executable_path)
 
               if (
+                  bundle_id == "co.bazaart.app"
+                  and not has_shared_rpath(executable_path)
+              ):
+                  raise SystemExit(
+                      "❌ Bazaart: RPATH original da extensão ausente: "
+                      f"{appex.name}"
+                  )
+
+              if (
                   expected_load in current_dependencies
                   and has_shared_rpath(executable_path)
               ):
@@ -6757,6 +6816,9 @@ jobs:
                       "❌ Injeção não persistiu em "
                       f"{appex.name}: {expected_load}"
                   )
+
+              if bundle_id == "co.bazaart.app":
+                  force_weak_load(executable_path, expected_load)
 
               if bundle_id == "com.bing.lyrics":
                   force_strong_load(
@@ -13145,6 +13207,165 @@ jobs:
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
 
+
+      - name: Validate Bazaart weak-load layout and original extensions
+        if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'co.bazaart.app' }}
+        run: |
+          python <<'PY'
+          import hashlib
+          import plistlib
+          import struct
+          import zipfile
+          from pathlib import Path
+
+          BUNDLE_ID = "co.bazaart.app"
+          EXTENSIONS = (
+              "PlugIns/BazaartThumbnail.appex",
+              "PlugIns/OneSignalNotificationServiceExtension.appex",
+              "PlugIns/share.appex",
+          )
+          WEAK = 0x80000018
+          BLATANT = "@rpath/blatantsPatch.dylib"
+          BAZAART = "@rpath/Bazaart.dylib"
+          SHARED_RPATH = "@executable_path/../../Frameworks"
+
+          def app_root(archive):
+              roots = {
+                  name.rsplit("/", 1)[0]
+                  for name in archive.namelist()
+                  if name.startswith("Payload/")
+                  and name.count("/") == 2
+                  and name.endswith(".app/Info.plist")
+              }
+              if len(roots) != 1:
+                  raise SystemExit(
+                      f"❌ Bazaart: esperado 1 app; encontrados={len(roots)}"
+                  )
+              return roots.pop()
+
+          def macho_layout(data, label):
+              if len(data) < 32 or struct.unpack_from("<I", data)[0] != 0xFEEDFACF:
+                  raise SystemExit(f"❌ Bazaart: Mach-O arm64 inválido: {label}")
+              count = struct.unpack_from("<I", data, 16)[0]
+              offset = 32
+              dependencies = []
+              rpaths = []
+              for _ in range(count):
+                  if offset + 8 > len(data):
+                      raise SystemExit(f"❌ Bazaart: Mach-O truncado: {label}")
+                  command, size = struct.unpack_from("<II", data, offset)
+                  if size < 8 or offset + size > len(data):
+                      raise SystemExit(f"❌ Bazaart: load command inválido: {label}")
+                  if command in {0x0C, 0x18, WEAK, 0x1C, 0x8000001C}:
+                      name_offset = struct.unpack_from("<I", data, offset + 8)[0]
+                      if not 12 <= name_offset < size:
+                          raise SystemExit(f"❌ Bazaart: nome Mach-O inválido: {label}")
+                      value = data[
+                          offset + name_offset:offset + size
+                      ].split(b"\0", 1)[0].decode("utf-8", errors="replace")
+                      if command in {0x1C, 0x8000001C}:
+                          rpaths.append(value)
+                      else:
+                          dependencies.append((value, command))
+                  offset += size
+              return dependencies, rpaths
+
+          def assert_weak_once(dependencies, name, label):
+              loads = [kind for dependency, kind in dependencies if dependency == name]
+              if loads != [WEAK]:
+                  raise SystemExit(
+                      f"❌ Bazaart: load fraco ausente/duplicado em {label}: "
+                      f"{name} -> {loads}"
+                  )
+
+          def extension_paths(archive, root):
+              paths = set()
+              for name in archive.namelist():
+                  if not name.startswith(root + "/"):
+                      continue
+                  relative = name[len(root) + 1:]
+                  parts = relative.split("/")
+                  if len(parts) >= 3 and parts[0] in {"PlugIns", "Extensions"} \
+                          and parts[1].endswith(".appex"):
+                      paths.add("/".join(parts[:2]))
+              return paths
+
+          with zipfile.ZipFile("input.ipa") as original, zipfile.ZipFile("Final.ipa") as final:
+              if final.testzip() is not None:
+                  raise SystemExit("❌ Bazaart: Final.ipa inválido")
+              orig_root = app_root(original)
+              final_root = app_root(final)
+              original_info = plistlib.loads(original.read(orig_root + "/Info.plist"))
+              final_info = plistlib.loads(final.read(final_root + "/Info.plist"))
+              if original_info.get("CFBundleIdentifier") != BUNDLE_ID or \
+                      final_info.get("CFBundleIdentifier") != BUNDLE_ID:
+                  raise SystemExit("❌ Bazaart: Bundle ID inesperado")
+              main_name = final_info.get("CFBundleExecutable")
+              if not main_name or main_name != original_info.get("CFBundleExecutable"):
+                  raise SystemExit("❌ Bazaart: executável principal alterado")
+
+              expected = set(EXTENSIONS)
+              if extension_paths(original, orig_root) != expected or \
+                      extension_paths(final, final_root) != expected:
+                  raise SystemExit("❌ Bazaart: extensões originais ausentes ou alteradas")
+
+              frameworks = {
+                  "Bazaart.dylib": BAZAART,
+                  "blatantsPatch.dylib": BLATANT,
+              }
+              for filename in frameworks:
+                  source = Path("addons/bazaart/dylib") / filename
+                  if not source.is_file():
+                      raise SystemExit(f"❌ Bazaart: dylib do Core ausente: {filename}")
+                  payload = final.read(final_root + "/Frameworks/" + filename)
+                  if hashlib.sha256(payload).digest() != hashlib.sha256(
+                      source.read_bytes()
+                  ).digest():
+                      raise SystemExit(f"❌ Bazaart: dylib alterada: {filename}")
+
+              main_deps, main_rpaths = macho_layout(
+                  final.read(final_root + "/" + main_name), main_name
+              )
+              _, original_main_rpaths = macho_layout(
+                  original.read(orig_root + "/" + main_name), main_name
+              )
+              if main_rpaths != original_main_rpaths:
+                  raise SystemExit("❌ Bazaart: RPATH principal foi alterado")
+              assert_weak_once(main_deps, BAZAART, main_name)
+              assert_weak_once(main_deps, BLATANT, main_name)
+
+              for relative in EXTENSIONS:
+                  original_appex = orig_root + "/" + relative
+                  final_appex = final_root + "/" + relative
+                  original_meta = plistlib.loads(
+                      original.read(original_appex + "/Info.plist")
+                  )
+                  final_meta = plistlib.loads(
+                      final.read(final_appex + "/Info.plist")
+                  )
+                  executable = original_meta.get("CFBundleExecutable")
+                  if not executable or executable != final_meta.get("CFBundleExecutable"):
+                      raise SystemExit(f"❌ Bazaart: executável mudou: {relative}")
+                  deps, rpaths = macho_layout(
+                      final.read(final_appex + "/" + executable), executable
+                  )
+                  _, original_rpaths = macho_layout(
+                      original.read(original_appex + "/" + executable), executable
+                  )
+                  if rpaths != original_rpaths or SHARED_RPATH not in rpaths:
+                      raise SystemExit(f"❌ Bazaart: RPATH mudou: {relative}")
+                  assert_weak_once(deps, BLATANT, executable)
+                  if any(name == BAZAART for name, _ in deps):
+                      raise SystemExit(f"❌ Bazaart: dylib principal na extensão: {relative}")
+                  for filename in frameworks:
+                      if final_appex + "/Frameworks/" + filename in final.namelist():
+                          raise SystemExit(f"❌ Bazaart: dylib duplicada: {relative}")
+                  print(f"✅ {relative}: blatant weak(0x80000018), RPATH original")
+
+          print("✅ Bazaart: duas dylibs originais em Frameworks, SHA-256 OK")
+          print("✅ Bazaart: executável principal com dois LC_LOAD_WEAK_DYLIB")
+          print("✅ Bazaart: três extensões preservadas e validadas")
+          PY
 
       - name: Validate SwiftgramPro V5 + V6-F final layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'app.swiftgram.ios' }}
