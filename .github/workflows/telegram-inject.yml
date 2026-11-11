@@ -157,7 +157,7 @@ jobs:
           PY
           )"
           case "$INPUT_BUNDLE_ID" in
-            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive|com.bing.lyrics|app.swiftgram.ios)
+            com.alohabrowser.alohabrowser|com.tranzmate.tranzmate1|com.wellocution.iosapp|com.intsig.CamScannerLite|com.dubox.drive|com.bing.lyrics|app.swiftgram.ios|com.iaftt.flightplusfree)
               echo "🟢 $INPUT_BUNDLE_ID: rota inicial forçada para STANDARD"
               echo "ℹ️ V5 será aplicado somente no Final.ipa"
               echo "processing_route=standard" >> "$GITHUB_OUTPUT"
@@ -11097,6 +11097,26 @@ jobs:
         run: |
           python private-core/scripts/postprocess.py Final.ipa \
             --status-file .private-status.json
+      - name: Flight Tracker Pro V5 check
+        if: ${{ steps.prepare.outputs.bundle_id == 'com.iaftt.flightplusfree' }}
+        run: |
+          python <<'PY'
+          import json,sys,zipfile
+          from pathlib import Path
+          sys.path.insert(0,"private-core/scripts")
+          from postprocess_impl import find_v5_candidate
+          s=json.loads(Path(".private-status.json").read_text())
+          assert s["nopopup"]["status"] in ("applied","already_applied"), "V5 falhou"
+          with zipfile.ZipFile("Final.ipa") as z:
+              n=z.namelist()
+              r=next(x[:-10] for x in n if x.endswith(".app/Info.plist") and x.count("/")==2)
+              d=r+"Frameworks/"
+              for x in "NewFix1 libpro Sideloadbypass2 Sideloadbypass1 CachefixPatch NewFix2 FlightTrackerPatch".split():
+                  assert d+x+".dylib" in n,x
+              c=find_v5_candidate(z.read(d+"FlightTrackerPatch.dylib"))
+              assert c.view_did_load.imp==c.dismiss_callback.imp,"V5 falhou"
+          print("✅ Flight Tracker Pro: 7 dylibs e V5 verificados")
+          PY
       - name: Validate Bazaart dylibs and three weak-loaded extensions
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'co.bazaart.app' }}
         run: |
