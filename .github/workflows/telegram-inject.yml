@@ -5298,6 +5298,11 @@ jobs:
                       "PlugIns/lyricsWidgetExtension.appex",
                   ),
               },
+              "com.iaftt.flightplusfree": {
+                  "name": "Flight Tracker",
+                  "required_paths": ("Frameworks/FlightTracker.dylib","Frameworks/blatantsPatch.dylib"),
+                  "expected_extensions": tuple(f"PlugIns/TFT {x} Extension.appex" for x in ("Notification Service","Notification Content","Widgets","Live Activities")),
+              },
           }
           source_ipa = Path("Layout_Output.ipa")
           work = Path("blatant_extensions_work")
@@ -5324,23 +5329,18 @@ jobs:
               app_plist = plistlib.load(f)
           bundle_id = app_plist.get("CFBundleIdentifier")
           if bundle_id == "com.iaftt.flightplusfree":
-              names = (b"@rpath/FlightTracker.dylib", b"@rpath/blatantsPatch.dylib")
-              main = app / app_plist["CFBundleExecutable"]; b = bytearray(main.read_bytes())
-              off, loads = 32, []
-              if b[:4] != b"\xcf\xfa\xed\xfe": raise SystemExit("Flight: Mach-O")
-              for _ in range(struct.unpack_from("<I", b, 16)[0]):
-                  cmd, size = struct.unpack_from("<II", b, off)
-                  if cmd in (12, 24, 0x80000018):
-                      p = off + struct.unpack_from("<I", b, off+8)[0]
-                      name = b[p:off+size].split(b"\0")[0]
-                      if name in names: loads.append((cmd, name, off))
+              p=app/app_plist["CFBundleExecutable"]; b=bytearray(p.read_bytes())
+              if b[:4]!=b"\xcf\xfa\xed\xfe": raise ValueError("Flight Mach-O")
+              names=(b"@rpath/FlightTracker.dylib",b"@rpath/blatantsPatch.dylib")
+              off,found=32,[]
+              for _ in range(struct.unpack_from("<I",b,16)[0]):
+                  cmd,size=struct.unpack_from("<II",b,off)
+                  if cmd in (12,24,0x80000018):
+                      if (n:=b[off+24:off+size].split(b"\0")[0]) in names: found.append((cmd,n,off))
                   off += size
-              if [(c,n) for c,n,_ in loads] != [(0x80000018,n) for n in names]: raise SystemExit("Flight: cargas")
-              if not all((app/"Frameworks"/n[7:].decode()).is_file() for n in names): raise SystemExit("Flight: dylib")
-              for i, (_, _, at) in enumerate(loads): struct.pack_into("<I", b, at+12, i*2)
-              main.write_bytes(b)
-              subprocess.check_call(["zip", "-qry", str(output_ipa.resolve()), "."], cwd=work)
-              shutil.move(output_ipa, source_ipa); raise SystemExit(0)
+              if [t[:2] for t in found]!=[(0x80000018,n) for n in names]: raise ValueError("Flight loads")
+              for i,(_,_,at) in enumerate(found): struct.pack_into("<I",b,at+12,i*2)
+              p.write_bytes(b)
           profile = profiles.get(bundle_id)
           if profile is None:
               raise SystemExit(
@@ -5708,7 +5708,7 @@ jobs:
                       "❌ Injeção não persistiu em "
                       f"{appex.name}: {expected_load}"
                   )
-              if bundle_id == "co.bazaart.app":
+              if bundle_id in ("co.bazaart.app", "com.iaftt.flightplusfree"):
                   force_weak_load(executable_path, expected_load)
               if bundle_id == "com.bing.lyrics":
                   force_strong_load(
@@ -5732,6 +5732,7 @@ jobs:
                   "com.ilovepdf.www",
                   "com.outerspaceapps.itranslate",
                   "com.frontpocketsoftware.happyscale",
+                  "com.iaftt.flightplusfree",
               }:
                   raw_binary = bytearray(executable_path.read_bytes())
                   if struct.unpack_from("<I", raw_binary, 0)[0] != 0xFEEDFACF:
