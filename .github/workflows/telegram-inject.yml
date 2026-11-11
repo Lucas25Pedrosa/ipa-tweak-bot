@@ -4439,7 +4439,7 @@ jobs:
               ],
               "net.whatsapp.WhatsApp": [
                   "Watusi.dylib",
-                  "libWatusiToolsSL.dylib",
+                  "WatusiExt.dylib",
               ],
           }
           work = Path("layout_work")
@@ -8569,7 +8569,11 @@ jobs:
               zx_compat
               and bundle_id in zx_xml_apps
           )
-          if not changes and not force_xml:
+          is_watusi = (
+              bundle_id == "net.whatsapp.WhatsApp"
+              and addon.get("name") == "Watusi"
+          )
+          if not changes and not force_xml and not is_watusi:
               shutil.copy2(
                   "Package_Output.ipa",
                   "Final.ipa",
@@ -8627,6 +8631,21 @@ jobs:
               print(
                   f"✅ {key}: {old} -> {value}"
               )
+          if is_watusi:
+              entries = plist.get("CFBundleURLTypes", [])
+              matches = [
+                  e for e in entries if isinstance(e, dict)
+                  and e.get("CFBundleURLName") == bundle_id
+              ]
+              if len(matches) != 1 or not isinstance(
+                  matches[0].get("CFBundleURLSchemes"), list
+              ):
+                  raise SystemExit("❌ Watusi: URL Types inválido")
+              schemes = matches[0]["CFBundleURLSchemes"]
+              if "watusi" not in schemes:
+                  schemes.append("watusi")
+              plist.pop("DecryptedBy", None)
+              print("✅ Watusi 1.0: URL e DecryptedBy ajustados")
           actual_bundle_id = plist.get("CFBundleIdentifier")
           is_special_zx = (
               bool(addon.get("zx_compat", False))
@@ -9783,7 +9802,7 @@ jobs:
               "MessengerEnhancements"
           )
           PY
-      - name: Validate WhatsApp Watusi Fouad layout
+      - name: Validate WhatsApp Watusi 1.0 Fouad layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
         run: |
           python <<'PY'
@@ -9792,172 +9811,77 @@ jobs:
           import zipfile
           from pathlib import Path
           from cyan.tbhtypes.executable import Executable
-          work = Path("whatsapp_validate")
+
+          def check(ok, reason):
+              if not ok:
+                  raise SystemExit('❌ Watusi 1.0: ' + reason)
+
+          work = Path('whatsapp_validate')
           if work.exists():
               shutil.rmtree(work)
           work.mkdir()
-          with zipfile.ZipFile(
-              "Final.ipa",
-              "r",
-          ) as z:
+          with zipfile.ZipFile('Final.ipa') as z:
               z.extractall(work)
-          apps = list(
-              (work / "Payload").glob("*.app")
-          )
-          if len(apps) != 1:
-              raise SystemExit(
-                  "❌ WhatsApp principal não identificado"
-              )
+          apps = list((work / 'Payload').glob('*.app'))
+          check(len(apps) == 1, 'esperado 1 app principal')
           app = apps[0]
-          with (app / "Info.plist").open("rb") as f:
-              plist = plistlib.load(f)
-          if plist.get("CFBundleIdentifier") != "net.whatsapp.WhatsApp":
-              raise SystemExit(
-                  "❌ Bundle ID do WhatsApp inesperado"
-              )
-          executable_name = plist.get("CFBundleExecutable")
-          if not executable_name:
-              raise SystemExit(
-                  "❌ CFBundleExecutable do WhatsApp ausente"
-              )
-          executable_path = app / executable_name
-          dependencies = Executable(
-              str(executable_path)
-          ).get_dependencies()
-          required_main = {
-              "@executable_path/Watusi.dylib",
-              "@executable_path/libWatusiToolsSL.dylib",
-          }
-          missing_main = sorted(
-              required_main - set(dependencies)
-          )
-          if missing_main:
-              raise SystemExit(
-                  "❌ Dependência principal ausente: "
-                  + ", ".join(missing_main)
-              )
-          forbidden_main = {
-              "@rpath/Watusi.dylib",
-              "@rpath/libWatusiToolsSL.dylib",
-              "@executable_path/ContactSync.dylib",
-              "@executable_path/OnlineNotify.dylib",
-              "@executable_path/Stalky.dylib",
-              "@rpath/ContactSync.dylib",
-              "@rpath/OnlineNotify.dylib",
-              "@rpath/Stalky.dylib",
-              "@rpath/zxPluginsInject.dylib",
-          }
-          unexpected = sorted(
-              forbidden_main & set(dependencies)
-          )
-          if unexpected:
-              raise SystemExit(
-                  "❌ Dependência inesperada no WhatsApp: "
-                  + ", ".join(unexpected)
-              )
-          required_root = [
-              "Watusi.dylib",
-              "libWatusiToolsSL.dylib",
-              "ContactSync.dylib",
-              "OnlineNotify.dylib",
-              "Stalky.dylib",
-              "Watusi.bundle",
-              "WatusiTools.bundle",
-              "ContactSync.bundle",
-              "OnlineNotify.bundle",
-              "Stalky.bundle",
-          ]
-          for name in required_root:
-              if not (app / name).exists():
-                  raise SystemExit(
-                      f"❌ Componente Watusi ausente na raiz: {name}"
-                  )
-          vendor = (
-              app
-              / "Frameworks"
-              / "WSVendor.framework"
-              / "WSVendor"
-          )
-          if not vendor.is_file():
-              raise SystemExit(
-                  "❌ WSVendor.framework ausente"
-              )
-          migration = (
-              app
-              / "Extensions"
-              / "AppMigrationExtension.appex"
-          )
-          if migration.exists():
-              raise SystemExit(
-                  "❌ AppMigrationExtension.appex deveria ter sido removida"
-              )
-          expected_plugins = {
-              "BroadcastUploadExtension.appex",
-              "Intents.appex",
-              "NotificationExtension.appex",
-              "ServiceExtension.appex",
-              "ShareExtension.appex",
-              "WidgetExtension.appex",
-          }
-          plugins = app / "PlugIns"
-          actual_plugins = {
-              item.name
-              for item in plugins.glob("*.appex")
-          }
-          if actual_plugins != expected_plugins:
-              raise SystemExit(
-                  "❌ Conjunto de extensões do WhatsApp mudou. "
-                  f"Esperado: {sorted(expected_plugins)}; "
-                  f"encontrado: {sorted(actual_plugins)}"
-              )
-          forbidden_plugin_tokens = (
-              "Watusi.dylib",
-              "libWatusiToolsSL.dylib",
-              "ContactSync.dylib",
-              "OnlineNotify.dylib",
-              "Stalky.dylib",
-              "zxPluginsInject.dylib",
-          )
-          for extension in sorted(plugins.glob("*.appex")):
-              plist_path = extension / "Info.plist"
-              with plist_path.open("rb") as f:
-                  extension_plist = plistlib.load(f)
-              extension_executable_name = extension_plist.get(
-                  "CFBundleExecutable"
-              )
-              if not extension_executable_name:
-                  raise SystemExit(
-                      f"❌ CFBundleExecutable ausente em {extension.name}"
-                  )
-              extension_executable = (
-                  extension
-                  / extension_executable_name
-              )
-              extension_dependencies = Executable(
-                  str(extension_executable)
-              ).get_dependencies()
-              bad = [
-                  dependency
-                  for dependency in extension_dependencies
-                  if any(
-                      token in dependency
-                      for token in forbidden_plugin_tokens
-                  )
-              ]
-              if bad:
-                  raise SystemExit(
-                      "❌ Tweak injetado indevidamente em "
-                      f"{extension.name}: {bad}"
-                  )
-          print(
-              "✅ WhatsApp segue o layout Watusi/Fouad auditado"
-          )
-          print(
-              "✅ 6 extensões originais preservadas sem Watusi/IPA Patch"
-          )
-          print(
-              "✅ AppMigrationExtension.appex removida seletivamente"
-          )
+          with (app / 'Info.plist').open('rb') as f:
+              info = plistlib.load(f)
+          check(info.get('CFBundleIdentifier') == 'net.whatsapp.WhatsApp', 'Bundle ID')
+          exe = app / str(info.get('CFBundleExecutable') or '')
+          check(exe.is_file(), 'executável principal ausente')
+          loads = Executable(str(exe)).get_dependencies()
+          required = ['@executable_path/Watusi.dylib', '@executable_path/WatusiExt.dylib']
+          check(sorted(p for p in loads if 'Watusi' in p) == sorted(required),
+                'dependências principais incorretas')
+          legacy = ('libWatusiToolsSL.dylib', 'ContactSync.dylib',
+                    'OnlineNotify.dylib', 'Stalky.dylib', 'zxPluginsInject.dylib',
+                    'WSVendor.framework')
+          check(not any(token in dep for dep in loads for token in legacy),
+                'dependência legada presente')
+          for name in ('Watusi.dylib', 'WatusiExt.dylib'):
+              check((app / name).is_file(), f'{name} ausente na raiz')
+              check(not (app / 'Frameworks' / name).exists(), f'{name} em Frameworks')
+          bundle = app / 'Watusi.bundle'
+          check((bundle / 'Info.plist').is_file(), 'Watusi.bundle ausente')
+          with (bundle / 'Info.plist').open('rb') as f:
+              bundle_info = plistlib.load(f)
+          check(bundle_info.get('CFBundleIdentifier') == 'com.fouadraheb.watusi'
+                and str(bundle_info.get('PackageVersion')) == '1.0', 'versão do bundle')
+          for name in (*legacy, 'WatusiTools.bundle', 'ContactSync.bundle',
+                       'OnlineNotify.bundle', 'Stalky.bundle'):
+              check(not (app / name).exists() and not (app / 'Frameworks' / name).exists(),
+                    f'componente legado presente: {name}')
+          for relative in ('Extensions/AppMigrationExtension.appex',
+                           'Extensions/NPCIPaymentsExtension.appex',
+                           'Extensions/net.whatsapp.WhatsApp.appexpt',
+                           'Watch/WhatsAppWatchApp.app'):
+              check(not (app / relative).exists(), f'remoção pendente: {relative}')
+          schemes = [scheme for item in info.get('CFBundleURLTypes', [])
+                     if isinstance(item, dict)
+                     for scheme in item.get('CFBundleURLSchemes', [])]
+          check(schemes.count('watusi') == 1 and 'DecryptedBy' not in info,
+                'URL scheme / DecryptedBy')
+          check(info.get('UISupportsDocumentBrowser') is True and
+                info.get('UIRequiredDeviceCapabilities') == {'arm64': True},
+                'Info.plist não corresponde ao Fouad')
+          plugins = app / 'PlugIns'
+          expected = {'BroadcastUploadExtension.appex', 'Intents.appex',
+                      'NotificationExtension.appex', 'ServiceExtension.appex',
+                      'ShareExtension.appex', 'WidgetExtension.appex'}
+          check({x.name for x in plugins.glob('*.appex')} == expected,
+                'conjunto das seis extensões diverge')
+          for extension in plugins.glob('*.appex'):
+              with (extension / 'Info.plist').open('rb') as f:
+                  extension_info = plistlib.load(f)
+              binary = extension / str(extension_info.get('CFBundleExecutable') or '')
+              check(binary.is_file(), f'executável ausente em {extension.name}')
+              deps = Executable(str(binary)).get_dependencies()
+              check(not any(word in dep for dep in deps for word in
+                            ('Watusi', 'ContactSync', 'OnlineNotify', 'Stalky',
+                             'zxPluginsInject.dylib')), f'tweak na extensão {extension.name}')
+          print('✅ Watusi 1.0: dylibs, bundle, plist e remoções validados')
+          print('✅ Seis extensões de PlugIns preservadas sem injeção')
           PY
       - name: Validate Duolingo MAX layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' }}
