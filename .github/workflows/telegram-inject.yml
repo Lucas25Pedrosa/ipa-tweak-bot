@@ -9818,7 +9818,7 @@ jobs:
               "MessengerEnhancements"
           )
           PY
-      - name: Validate WhatsApp Watusi 1.0 Fouad layout
+      - name: Validate WhatsApp Watusi layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'net.whatsapp.WhatsApp' }}
         run: |
           python <<'PY'
@@ -9826,7 +9826,7 @@ jobs:
           from pathlib import Path
           from cyan.tbhtypes.executable import Executable
           def ck(x, m):
-              if not x: raise SystemExit('❌ Watusi 1.0: '+m)
+              if not x: raise SystemExit('❌ Watusi: '+m)
           work=Path('whatsapp_validate')
           if work.exists(): shutil.rmtree(work)
           work.mkdir()
@@ -9858,7 +9858,7 @@ jobs:
           b=app/'Watusi.bundle'/'Info.plist'; ck(b.is_file(),'Watusi.bundle')
           bi=info(b)
           ck(bi.get('CFBundleIdentifier')=='com.fouadraheb.watusi' and
-             str(bi.get('PackageVersion'))=='1.0','bundle')
+             str(bi.get('PackageVersion') or '').strip(),'bundle')
           removed=('Extensions/AppMigrationExtension.appex',
                    'Extensions/NPCIPaymentsExtension.appex',
                    'Extensions/net.whatsapp.WhatsApp.appexpt','Watch/WhatsAppWatchApp.app')
@@ -9880,7 +9880,7 @@ jobs:
               ck(not any(t in d for d in Executable(str(binary)).get_dependencies()
                   for t in ('Watusi','ContactSync','OnlineNotify','Stalky',
                             'zxPluginsInject.dylib')),ext.name)
-          print('✅ Watusi 1.0: layout validado')
+          print('✅ Watusi válido:',bi['PackageVersion'])
           PY
       - name: Validate Duolingo MAX layout
         if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.duolingo.DuolingoMobile' }}
