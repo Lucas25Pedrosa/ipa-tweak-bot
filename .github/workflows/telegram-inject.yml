@@ -886,6 +886,15 @@ jobs:
             elif action == "appex":
                 with zipfile.ZipFile(path, "r") as z:
                     z.extractall(appex)
+                if (bundle_id == "com.facebook.Facebook"
+                    and addon.get("name") == "Facebook Plus"):
+                    nested = appex / "PlugIns"
+                    extra = nested / "OpenInFacebookSafariExtension.appex"
+                    if not extra.is_dir() or not (extra / "Info.plist").is_file():
+                        raise SystemExit("❌ Facebook Plus: ZIP da extensão Safari inválido")
+                    shutil.move(str(extra), str(appex / extra.name))
+                    shutil.rmtree(nested)
+                    print("✅ Facebook Plus: Safari APPEX normalizada")
             elif action == "icons":
                 with zipfile.ZipFile(path, "r") as z:
                     z.extractall(icons)
@@ -4761,6 +4770,9 @@ jobs:
             bundle_id,
             [],
         )
+        if bundle_id == "com.facebook.Facebook" and addon_name == "Facebook Plus":
+            # Glow pertence ao layout antigo, não ao Facebook Plus.
+            dylibs = []
         if dylibs:
             executable.remove_signature()
         for dylib_name in dylibs:
@@ -7817,10 +7829,27 @@ jobs:
       run: |
         echo "🩹 Aplicando IPA Patch"
         echo "Modo: plugins-selective"
+        ADDON_PATCH=selected_addon.json
+        if [ "${{ steps.prepare.outputs.bundle_id }}" = "com.facebook.Facebook" ] && \
+           [ "${{ steps.prepare.outputs.addon_name }}" = "Facebook Plus" ]; then
+          python <<'PY'
+        import json
+        from pathlib import Path
+        addon = json.loads(Path("selected_addon.json").read_text(encoding="utf-8"))
+        # A extensão Safari adicional não existe no IPA original nesta etapa.
+        addon["ipapatch_plugins"]["exclude"] = [
+            n for n in addon["ipapatch_plugins"]["exclude"]
+            if n != "OpenInFacebookSafariExtension"
+        ]
+        assert "NotificationServiceExtension" in addon["ipapatch_plugins"]["exclude"]
+        Path("selected_addon_ipapatch.json").write_text(json.dumps(addon), encoding="utf-8")
+        PY
+          ADDON_PATCH=selected_addon_ipapatch.json
+        fi
         python private-core/scripts/ipapatch_selective.py apply \
           --input Layout_Output.ipa \
           --output Patched_Output.ipa \
-          --addon selected_addon.json \
+          --addon "$ADDON_PATCH" \
           --ipapatch ./ipapatch \
           --metadata .ipapatch_selective_meta.json
     - name: Apply IPA Patch to original plugins only
@@ -8512,6 +8541,87 @@ jobs:
                 print(
                     f"🧩 APPEX extra: {item.name}"
                 )
+        if bundle_id == "com.facebook.Facebook" and addon_name == "Facebook Plus":
+            import hashlib
+            from cyan.tbhtypes.executable import Executable
+            core = Path("addons/facebook/facebook-plus")
+            main_info = plistlib.loads((app / "Info.plist").read_bytes())
+            main_binary = app / main_info["CFBundleExecutable"]
+            main_dylib = app / "Frameworks/FacebookPlus.dylib"
+            source_main = core / "dylib/FacebookPlus.dylib"
+            if not main_dylib.is_file() or not source_main.is_file():
+                raise SystemExit("❌ Facebook Plus: dylib principal ausente")
+            if hashlib.sha256(main_dylib.read_bytes()).digest() != hashlib.sha256(source_main.read_bytes()).digest():
+                raise SystemExit("❌ Facebook Plus: dylib principal diferente do Core")
+            if "@rpath/FacebookPlus.dylib" not in Executable(str(main_binary)).get_dependencies():
+                raise SystemExit("❌ Facebook Plus: falta LC_LOAD de FacebookPlus no executável principal")
+            if not (app / "FacebookPlus.bundle/pt-BR.lproj/Localizable.strings").is_file():
+                raise SystemExit("❌ Facebook Plus: bundle/tradução PT-BR ausente")
+            safari = app / "PlugIns/OpenInFacebookSafariExtension.appex"
+            if not (safari / "Info.plist").is_file():
+                raise SystemExit("❌ Facebook Plus: Safari APPEX ausente")
+            icon_names = [
+                "fbplus_Facebook-Plus@2x.png", "fbplus_Facebook-Plus@3x.png",
+                "fbplus_Facebook-Plus-iPad@2x.png", "fbplus_Facebook-Plus-iPadPro@2x.png",
+            ]
+            for name in icon_names:
+                icon = Path("prepared/icons") / name
+                if not icon.is_file():
+                    raise SystemExit(f"❌ Facebook Plus: ícone ausente: {name}")
+                shutil.copy2(icon, app / name)
+            entry = {"CFBundleIconFiles": [n[:-4] for n in icon_names],
+                     "UIPrerenderedIcon": False}
+            for key in ("CFBundleIcons", "CFBundleIcons~ipad"):
+                main_info.setdefault(key, {}).setdefault("CFBundleAlternateIcons", {})[
+                    "fbplus_Facebook-Plus"
+                ] = entry
+            with (app / "Info.plist").open("wb") as stream:
+                plistlib.dump(main_info, stream, fmt=plistlib.FMT_BINARY, sort_keys=False)
+            injections = addon.get("extension_injections", [])
+            if len(injections) != 1:
+                raise SystemExit("❌ Facebook Plus: esperada uma injeção de extensão")
+            bridge = injections[0]
+            if (bridge.get("extension") != "NotificationServiceExtension"
+                or bridge.get("action") != "inject"
+                or bridge.get("load_command") != "LC_LOAD_WEAK_DYLIB"
+                or bridge.get("load_path") != "@executable_path/FBPNotifyBridge.dylib"):
+                raise SystemExit("❌ Facebook Plus: perfil FBPNotifyBridge inválido")
+            source = Path(bridge["path"])
+            if source != core / "dylib/FBPNotifyBridge.dylib" or not source.is_file():
+                raise SystemExit("❌ Facebook Plus: bridge não encontrado no Core")
+            nse = app / "PlugIns/NotificationServiceExtension.appex"
+            nse_info_path = nse / "Info.plist"
+            if not nse_info_path.is_file():
+                raise SystemExit("❌ Facebook Plus: NotificationServiceExtension ausente")
+            nse_info = plistlib.loads(nse_info_path.read_bytes())
+            nse_binary = nse / nse_info["CFBundleExecutable"]
+            if not nse_binary.is_file():
+                raise SystemExit("❌ Facebook Plus: executável de notificações ausente")
+            shutil.copy2(source, nse / source.name)
+            dylib_load = bridge["load_path"]
+            exe = Executable(str(nse_binary))
+            current = exe.get_dependencies()
+            if dylib_load not in current:
+                entitlement_file = Path(".fbplus-nse-entitlements.plist")
+                extracted = subprocess.run([exe.ldid, "-e", str(nse_binary)],
+                                           capture_output=True, check=True).stdout
+                if extracted:
+                    entitlement_file.write_bytes(extracted)
+                exe.remove_signature()
+                command = [str(exe.idylib), "--weak", "--inplace", "--all-yes",
+                           dylib_load, str(nse_binary)]
+                subprocess.run(command, check=True, capture_output=True, text=True)
+                if extracted:
+                    sign = [str(exe.ldid), f"-S{entitlement_file}", "-M", "-Cadhoc", str(nse_binary)]
+                    subprocess.run(sign, check=True, capture_output=True, text=True)
+                    entitlement_file.unlink(missing_ok=True)
+                elif not Executable(str(nse_binary)).fakesign():
+                    raise SystemExit("❌ Facebook Plus: falha ao assinar NSE após injeção")
+            if Executable(str(nse_binary)).get_dependencies().count(dylib_load) != 1:
+                raise SystemExit("❌ Facebook Plus: load de FBPNotifyBridge ausente/duplicado")
+            if (app / "Frameworks/FBPNotifyBridge.dylib").exists():
+                raise SystemExit("❌ Facebook Plus: bridge não pode estar nos Frameworks principais")
+            print("✅ Facebook Plus: bundle, ícones, Safari e bridge de notificações preparados")
         for relative_path in addon.get(
             "remove_paths",
             [],
@@ -8880,6 +8990,50 @@ jobs:
                     z.write(file, file.relative_to(work))
         print("✅ Chaves de File Sharing removidas")
         print("✅ Messenger seguirá com o idioma nativo do app/iOS")
+        PY
+    - name: Validate Facebook Plus final layout (no app-version pin)
+      if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Facebook' && steps.prepare.outputs.addon_name == 'Facebook Plus' }}
+      run: |
+        python <<'PY'
+        import plistlib
+        import zipfile
+        from pathlib import Path
+        from cyan.tbhtypes.executable import Executable
+        work = Path("fbplus_final_check")
+        if work.exists():
+            import shutil
+            shutil.rmtree(work)
+        with zipfile.ZipFile("Final.ipa") as z:
+            z.extractall(work)
+        apps = list((work / "Payload").glob("*.app"))
+        if len(apps) != 1:
+            raise SystemExit("❌ Facebook Plus: app principal inválido")
+        app = apps[0]
+        info = plistlib.loads((app / "Info.plist").read_bytes())
+        if info.get("CFBundleIdentifier") != "com.facebook.Facebook":
+            raise SystemExit("❌ Facebook Plus: Bundle ID alterado")
+        main = app / info["CFBundleExecutable"]
+        if "@rpath/FacebookPlus.dylib" not in Executable(str(main)).get_dependencies():
+            raise SystemExit("❌ Facebook Plus: dylib principal não carregada")
+        ext = app / "PlugIns/NotificationServiceExtension.appex"
+        ext_info = plistlib.loads((ext / "Info.plist").read_bytes())
+        bridge_binary = ext / ext_info["CFBundleExecutable"]
+        load = "@executable_path/FBPNotifyBridge.dylib"
+        if Executable(str(bridge_binary)).get_dependencies().count(load) != 1:
+            raise SystemExit("❌ Facebook Plus: carregamento da bridge inválido")
+        for path in ("Frameworks/FacebookPlus.dylib",
+                     "FacebookPlus.bundle/pt-BR.lproj/Localizable.strings",
+                     "PlugIns/NotificationServiceExtension.appex/FBPNotifyBridge.dylib",
+                     "PlugIns/OpenInFacebookSafariExtension.appex/Info.plist"):
+            if not (app / path).is_file():
+                raise SystemExit(f"❌ Facebook Plus: faltando {path}")
+        if "fbplus_Facebook-Plus" not in info.get("CFBundleIcons", {}).get("CFBundleAlternateIcons", {}):
+            raise SystemExit("❌ Facebook Plus: ícone alternativo não registrado")
+        for name in ("fbplus_Facebook-Plus@2x.png", "fbplus_Facebook-Plus@3x.png",
+                     "fbplus_Facebook-Plus-iPad@2x.png", "fbplus_Facebook-Plus-iPadPro@2x.png"):
+            if not (app / name).is_file():
+                raise SystemExit(f"❌ Facebook Plus: ícone ausente: {name}")
+        print("✅ Facebook Plus: layout final validado, sem restrição de versão do Facebook")
         PY
     - name: Validate zx-compat final layout
       if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
