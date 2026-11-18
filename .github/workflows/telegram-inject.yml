@@ -997,13 +997,13 @@ jobs:
             f"🧩 Regram {addon_version}"
         )
         if (
-            version == "454.1.0"
-            and str(build) == "1106185088"
-            and addon_version == "7.0"
+            version == "456.0.0"
+            and str(build) == "1114925422"
+            and addon_version == "7.1"
         ):
             print(
-                "✅ Base auditada Instagram 454.1.0 / "
-                "Regram 7.0 confirmada"
+                "✅ Base auditada Instagram 456.0.0 / "
+                "Regram 7.1 confirmada"
             )
         else:
             print(
@@ -1460,21 +1460,43 @@ jobs:
             appex_destination
             / extra_executable_name
         )
+        if extra_plist.get("CFBundleIdentifier") != (
+            "com.burbn.instagram.OpenInRegram.Extension"
+        ):
+            raise SystemExit(
+                "❌ Bundle ID da extensão Safari do Regram inválido"
+            )
+        if extra_plist.get("NSExtension", {}).get(
+            "NSExtensionPointIdentifier"
+        ) != "com.apple.Safari.web-extension":
+            raise SystemExit(
+                "❌ Tipo da extensão Safari do Regram inválido"
+            )
+        if not extra_executable.is_file():
+            raise SystemExit(
+                "❌ Executável da extensão Safari do Regram ausente"
+            )
         extra_dependencies = Executable(
             str(extra_executable)
         ).get_dependencies()
-        required_extra_dependency = (
-            "@executable_path/../../"
-            "RegramExtension.dylib"
-        )
-        if required_extra_dependency not in extra_dependencies:
+        source_files = {
+            str(p.relative_to(appex_source)): p
+            for p in appex_source.rglob("*") if p.is_file()
+        }
+        copied_files = {
+            str(p.relative_to(appex_destination)): p
+            for p in appex_destination.rglob("*") if p.is_file()
+        }
+        if source_files.keys() != copied_files.keys() or any(
+            source_files[name].read_bytes() != copied_files[name].read_bytes()
+            for name in source_files
+        ):
             raise SystemExit(
-                "❌ OpenInRegramExtension não aponta "
-                "para RegramExtension.dylib"
+                "❌ Extensão Safari do Regram diverge do pacote oficial"
             )
         print(
-            "✅ OpenInRegramExtension -> "
-            "../../RegramExtension.dylib confirmado"
+            "✅ Extensão Safari original preservada byte a byte; "
+            f"{len(extra_dependencies)} dependências Mach-O"
         )
         url_types = plist.get(
             "CFBundleURLTypes",
@@ -1580,6 +1602,8 @@ jobs:
         ] = [
             "arm64"
         ]
+        plist["FRSideloadConfig"] = "IG-SL"
+        plist.pop("DecryptedBy", None)
         with open(
             plist_path,
             "wb",
