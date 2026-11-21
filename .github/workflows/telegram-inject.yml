@@ -2518,7 +2518,7 @@ jobs:
                 raise SystemExit("❌ Swiftgram + Lead: nenhuma Notification Service Extension encontrada")
             print("✅ Swiftgram + Lead: ModClient intacto em Frameworks/")
             print("✅ Swiftgram + Lead: SwiftgramPro apenas no principal; Lead oficial intacta")
-            print(f"✅ Swiftgram + Lead: Lead em todas as extensões, incluindo {notification_services} NSE(s}")
+            print(f"✅ Swiftgram + Lead: Lead em todas as extensões, incluindo {notification_services} NSE(s)")
         finally:
             shutil.rmtree(work, ignore_errors=True)
         PY
