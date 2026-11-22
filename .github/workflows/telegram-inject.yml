@@ -8557,8 +8557,37 @@ jobs:
             source_main = core / "dylib/FacebookPlus.dylib"
             if not main_dylib.is_file() or not source_main.is_file():
                 raise SystemExit("❌ Facebook Plus: dylib principal ausente")
+            def fbplus_uuid(path):
+                # A assinatura muda no Cyan; o LC_UUID identifica o binário compilado.
+                import struct
+                with path.open("rb") as stream:
+                    header = stream.read(32)
+                    if len(header) != 32:
+                        raise SystemExit(f"❌ Facebook Plus: Mach-O incompleto: {path}")
+                    magic, cpu, _, kind, count, size, _, _ = struct.unpack("<8I", header)
+                    if (magic, cpu, kind) != (0xFEEDFACF, 0x0100000C, 6):
+                        raise SystemExit(f"❌ Facebook Plus: dylib não é Mach-O arm64: {path}")
+                    if not (0 < count < 512 and 0 < size <= 65536):
+                        raise SystemExit(f"❌ Facebook Plus: comandos Mach-O inválidos: {path}")
+                    commands = stream.read(size)
+                offset = 0
+                for _ in range(count):
+                    if offset + 8 > len(commands):
+                        break
+                    command, length = struct.unpack_from("<II", commands, offset)
+                    if length < 8 or offset + length > len(commands):
+                        break
+                    if command == 0x1B and length == 24:  # LC_UUID
+                        return commands[offset + 8:offset + 24].hex()
+                    offset += length
+                raise SystemExit(f"❌ Facebook Plus: LC_UUID ausente ou inválido: {path}")
+            core_uuid = fbplus_uuid(source_main)
+            installed_uuid = fbplus_uuid(main_dylib)
+            if installed_uuid != core_uuid:
+                raise SystemExit("❌ Facebook Plus: LC_UUID diverge do binário oficial no Core")
             if hashlib.sha256(main_dylib.read_bytes()).digest() != hashlib.sha256(source_main.read_bytes()).digest():
-                raise SystemExit("❌ Facebook Plus: dylib principal diferente do Core")
+                print("ℹ️ Facebook Plus: hash integral mudou após Cyan (assinatura/ajustes Mach-O)")
+            print(f"✅ Facebook Plus: Mach-O arm64 e LC_UUID conferidos: {core_uuid}")
             if "@rpath/FacebookPlus.dylib" not in Executable(str(main_binary)).get_dependencies():
                 raise SystemExit("❌ Facebook Plus: falta LC_LOAD de FacebookPlus no executável principal")
             if not (app / "FacebookPlus.bundle/pt-BR.lproj/Localizable.strings").is_file():
