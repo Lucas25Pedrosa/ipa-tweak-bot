@@ -8724,6 +8724,19 @@ jobs:
                 key,
                 "<não existente>",
             )
+            if is_unbound and key in (
+                "UIBackgroundModes", "BGTaskSchedulerPermittedIdentifiers"
+            ):
+                current_values = plist.get(key, [])
+                if not isinstance(current_values, list) or not isinstance(value, list):
+                    raise SystemExit(f"❌ Unbound: {key} deve ser uma lista")
+                merged_values = list(current_values)
+                for item in value:
+                    if not isinstance(item, str) or not item:
+                        raise SystemExit(f"❌ Unbound: entrada inválida em {key}")
+                    if item not in merged_values:
+                        merged_values.append(item)
+                value = merged_values
             plist[key] = value
             print(
                 f"✅ {key}: {old} -> {value}"
