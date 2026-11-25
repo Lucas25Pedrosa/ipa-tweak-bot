@@ -888,13 +888,14 @@ jobs:
                     z.extractall(appex)
                 if (bundle_id == "com.facebook.Facebook"
                     and addon.get("name") == "Facebook Plus"):
+                    extra = appex / "OpenInFacebookSafariExtension.appex"
                     nested = appex / "PlugIns"
-                    extra = nested / "OpenInFacebookSafariExtension.appex"
-                    if not extra.is_dir() or not (extra / "Info.plist").is_file():
+                    if not extra.is_dir() and (nested / extra.name).is_dir():
+                        shutil.move(str(nested / extra.name), str(extra))
+                        shutil.rmtree(nested)
+                    if not (extra / "Info.plist").is_file():
                         raise SystemExit("❌ Facebook Plus: ZIP da extensão Safari inválido")
-                    shutil.move(str(extra), str(appex / extra.name))
-                    shutil.rmtree(nested)
-                    print("✅ Facebook Plus: Safari APPEX normalizada")
+                    print("✅ Facebook Plus: Safari APPEX validada")
             elif action == "icons":
                 with zipfile.ZipFile(path, "r") as z:
                     z.extractall(icons)
@@ -2566,6 +2567,44 @@ jobs:
           fi
           CYAN_INJECT_FILES+=("$FILE")
         done
+        if [ "$BUNDLE_ID" = "com.facebook.Facebook" ] && [ "${{ steps.prepare.outputs.addon_name }}" = "Facebook Plus" ]; then
+          # A mesma chamada Cyan recebe todos os componentes já presentes no Core.
+          python <<'PY'
+        import copy
+        import plistlib
+        import zipfile
+        from pathlib import Path
+        base = "fbplus_Facebook-Plus"
+        variants = ("@2x", "@3x", "-iPad@2x", "-iPadPro@2x")
+        icons = Path("prepared/icons")
+        for suffix in variants:
+            if not (icons / (base + suffix + ".png")).is_file():
+                raise SystemExit("❌ Facebook Plus: ícone ausente " + suffix)
+        with zipfile.ZipFile("input.ipa") as z:
+            infos = [n for n in z.namelist() if n.startswith("Payload/") and
+                     n.count("/") == 2 and n.endswith(".app/Info.plist")]
+            if len(infos) != 1:
+                raise SystemExit("❌ Facebook Plus: Info.plist original ambíguo")
+            info = plistlib.loads(z.read(infos[0]))
+        merged = {}
+        for key in ("CFBundleIcons", "CFBundleIcons~ipad"):
+            if key in info:
+                obj = copy.deepcopy(info[key])
+                obj.setdefault("CFBundleAlternateIcons", {})[base] = {
+                    "CFBundleIconFiles": [base + suffix for suffix in variants],
+                    "UIPrerenderedIcon": False,
+                }
+                merged[key] = obj
+        if not merged:
+            raise SystemExit("❌ Facebook Plus: CFBundleIcons não encontrado")
+        Path(".fbplus-icons-merge.plist").write_bytes(plistlib.dumps(merged))
+        PY
+          for FILE in prepared/bundles/FacebookPlus.bundle prepared/appex/OpenInFacebookSafariExtension.appex prepared/icons/fbplus_*.png; do
+            if [ ! -e "$FILE" ]; then echo "❌ Facebook Plus: componente ausente: $FILE"; exit 1; fi
+            CYAN_INJECT_FILES+=("$FILE")
+          done
+          CYAN_ARGS+=("-l" ".fbplus-icons-merge.plist" "-s" "-g" "-q")
+        fi
         if [ "${#CYAN_INJECT_FILES[@]}" -gt 0 ]; then
           CYAN_ARGS+=("-f")
           for FILE in "${CYAN_INJECT_FILES[@]}"; do
@@ -8482,6 +8521,8 @@ jobs:
         )
         if bundle_source.exists():
             for item in bundle_source.iterdir():
+                if bundle_id == "com.facebook.Facebook" and addon_name == "Facebook Plus" and item.name == "FacebookPlus.bundle":
+                    continue  # Cyan instalou o bundle no mesmo -f
                 destination = (
                     app
                     / item.name
@@ -8523,6 +8564,8 @@ jobs:
                 exist_ok=True
             )
             for item in appex_source.iterdir():
+                if bundle_id == "com.facebook.Facebook" and addon_name == "Facebook Plus" and item.name == "OpenInFacebookSafariExtension.appex":
+                    continue  # Cyan instalou a APPEX no mesmo -f
                 destination = (
                     plugins
                     / item.name
@@ -8548,115 +8591,68 @@ jobs:
                     f"🧩 APPEX extra: {item.name}"
                 )
         if bundle_id == "com.facebook.Facebook" and addon_name == "Facebook Plus":
-            import hashlib
             from cyan.tbhtypes.executable import Executable
             core = Path("addons/facebook/facebook-plus")
-            main_info = plistlib.loads((app / "Info.plist").read_bytes())
-            main_binary = app / main_info["CFBundleExecutable"]
-            main_dylib = app / "Frameworks/FacebookPlus.dylib"
-            source_main = core / "dylib/FacebookPlus.dylib"
-            if not main_dylib.is_file() or not source_main.is_file():
-                raise SystemExit("❌ Facebook Plus: dylib principal ausente")
-            def fbplus_uuid(path):
-                # A assinatura muda no Cyan; o LC_UUID identifica o binário compilado.
-                import struct
-                with path.open("rb") as stream:
-                    header = stream.read(32)
-                    if len(header) != 32:
-                        raise SystemExit(f"❌ Facebook Plus: Mach-O incompleto: {path}")
-                    magic, cpu, _, kind, count, size, _, _ = struct.unpack("<8I", header)
-                    if (magic, cpu, kind) != (0xFEEDFACF, 0x0100000C, 6):
-                        raise SystemExit(f"❌ Facebook Plus: dylib não é Mach-O arm64: {path}")
-                    if not (0 < count < 512 and 0 < size <= 65536):
-                        raise SystemExit(f"❌ Facebook Plus: comandos Mach-O inválidos: {path}")
-                    commands = stream.read(size)
-                offset = 0
-                for _ in range(count):
-                    if offset + 8 > len(commands):
-                        break
-                    command, length = struct.unpack_from("<II", commands, offset)
-                    if length < 8 or offset + length > len(commands):
-                        break
-                    if command == 0x1B and length == 24:  # LC_UUID
-                        return commands[offset + 8:offset + 24].hex()
-                    offset += length
-                raise SystemExit(f"❌ Facebook Plus: LC_UUID ausente ou inválido: {path}")
-            core_uuid = fbplus_uuid(source_main)
-            installed_uuid = fbplus_uuid(main_dylib)
-            if installed_uuid != core_uuid:
-                raise SystemExit("❌ Facebook Plus: LC_UUID diverge do binário oficial no Core")
-            if hashlib.sha256(main_dylib.read_bytes()).digest() != hashlib.sha256(source_main.read_bytes()).digest():
-                print("ℹ️ Facebook Plus: hash integral mudou após Cyan (assinatura/ajustes Mach-O)")
-            print(f"✅ Facebook Plus: Mach-O arm64 e LC_UUID conferidos: {core_uuid}")
-            if "@rpath/FacebookPlus.dylib" not in Executable(str(main_binary)).get_dependencies():
-                raise SystemExit("❌ Facebook Plus: falta LC_LOAD de FacebookPlus no executável principal")
-            if not (app / "FacebookPlus.bundle/pt-BR.lproj/Localizable.strings").is_file():
-                raise SystemExit("❌ Facebook Plus: bundle/tradução PT-BR ausente")
-            safari = app / "PlugIns/OpenInFacebookSafariExtension.appex"
-            if not (safari / "Info.plist").is_file():
-                raise SystemExit("❌ Facebook Plus: Safari APPEX ausente")
-            icon_names = [
-                "fbplus_Facebook-Plus@2x.png", "fbplus_Facebook-Plus@3x.png",
-                "fbplus_Facebook-Plus-iPad@2x.png", "fbplus_Facebook-Plus-iPadPro@2x.png",
-            ]
-            for name in icon_names:
-                icon = Path("prepared/icons") / name
-                if not icon.is_file():
-                    raise SystemExit(f"❌ Facebook Plus: ícone ausente: {name}")
-                shutil.copy2(icon, app / name)
-            entry = {"CFBundleIconFiles": [n[:-4] for n in icon_names],
-                     "UIPrerenderedIcon": False}
-            for key in ("CFBundleIcons", "CFBundleIcons~ipad"):
-                main_info.setdefault(key, {}).setdefault("CFBundleAlternateIcons", {})[
-                    "fbplus_Facebook-Plus"
-                ] = entry
-            with (app / "Info.plist").open("wb") as stream:
-                plistlib.dump(main_info, stream, fmt=plistlib.FMT_BINARY, sort_keys=False)
-            injections = addon.get("extension_injections", [])
-            if len(injections) != 1:
-                raise SystemExit("❌ Facebook Plus: esperada uma injeção de extensão")
-            bridge = injections[0]
-            if (bridge.get("extension") != "NotificationServiceExtension"
-                or bridge.get("action") != "inject"
-                or bridge.get("load_command") != "LC_LOAD_WEAK_DYLIB"
-                or bridge.get("load_path") != "@executable_path/FBPNotifyBridge.dylib"):
-                raise SystemExit("❌ Facebook Plus: perfil FBPNotifyBridge inválido")
-            source = Path(bridge["path"])
+            info = plistlib.loads((app / "Info.plist").read_bytes())
+            main = app / info["CFBundleExecutable"]
+            if not (app / "Frameworks/FacebookPlus.dylib").is_file():
+                raise SystemExit("❌ Facebook Plus: dylib não instalada pelo Cyan")
+            if "@rpath/FacebookPlus.dylib" not in Executable(str(main)).get_dependencies():
+                raise SystemExit("❌ Facebook Plus: carregamento principal ausente")
+            bundle = app / "FacebookPlus.bundle"
+            locale = Path("translations/facebook/1.1.0/Localizable.strings")
+            if not bundle.is_dir() or not locale.is_file():
+                raise SystemExit("❌ Facebook Plus: bundle ou tradução ausente")
+            target = bundle / "pt-BR.lproj/Localizable.strings"
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(locale, target)
+            if not (app / "PlugIns/OpenInFacebookSafariExtension.appex/Info.plist").is_file():
+                raise SystemExit("❌ Facebook Plus: extensão Safari não instalada")
+            if "fbplus_Facebook-Plus" not in info.get("CFBundleIcons", {}).get("CFBundleAlternateIcons", {}):
+                raise SystemExit("❌ Facebook Plus: ícones alternativos não registrados")
+            specs = addon.get("extension_injections", [])
+            if len(specs) != 1:
+                raise SystemExit("❌ Facebook Plus: perfil bridge inválido")
+            spec = specs[0]
+            load = "@executable_path/FBPNotifyBridge.dylib"
+            if (spec.get("extension") != "NotificationServiceExtension"
+                or spec.get("action") != "inject"
+                or spec.get("load_command") != "LC_LOAD_WEAK_DYLIB"
+                or spec.get("load_path") != load):
+                raise SystemExit("❌ Facebook Plus: configuração NSE incorreta")
+            source = Path(spec["path"])
             if source != core / "dylib/FBPNotifyBridge.dylib" or not source.is_file():
-                raise SystemExit("❌ Facebook Plus: bridge não encontrado no Core")
-            nse = app / "PlugIns/NotificationServiceExtension.appex"
-            nse_info_path = nse / "Info.plist"
-            if not nse_info_path.is_file():
+                raise SystemExit("❌ Facebook Plus: FBPNotifyBridge ausente no Core")
+            ext = app / "PlugIns/NotificationServiceExtension.appex"
+            if not (ext / "Info.plist").is_file():
                 raise SystemExit("❌ Facebook Plus: NotificationServiceExtension ausente")
-            nse_info = plistlib.loads(nse_info_path.read_bytes())
-            nse_binary = nse / nse_info["CFBundleExecutable"]
-            if not nse_binary.is_file():
-                raise SystemExit("❌ Facebook Plus: executável de notificações ausente")
-            shutil.copy2(source, nse / source.name)
-            dylib_load = bridge["load_path"]
-            exe = Executable(str(nse_binary))
-            current = exe.get_dependencies()
-            if dylib_load not in current:
-                entitlement_file = Path(".fbplus-nse-entitlements.plist")
-                extracted = subprocess.run([exe.ldid, "-e", str(nse_binary)],
-                                           capture_output=True, check=True).stdout
+            ext_info = plistlib.loads((ext / "Info.plist").read_bytes())
+            executable = ext / ext_info["CFBundleExecutable"]
+            if not executable.is_file():
+                raise SystemExit("❌ Facebook Plus: executável NSE ausente")
+            bridge = ext / "FBPNotifyBridge.dylib"
+            shutil.copy2(source, bridge)
+            exe = Executable(str(executable))
+            entitlements = Path(".fbplus-nse-entitlements.plist")
+            try:
+                extracted = subprocess.run([exe.ldid, "-e", str(executable)],
+                                           capture_output=True, check=False).stdout
                 if extracted:
-                    entitlement_file.write_bytes(extracted)
-                exe.remove_signature()
-                command = [str(exe.idylib), "--weak", "--inplace", "--all-yes",
-                           dylib_load, str(nse_binary)]
-                subprocess.run(command, check=True, capture_output=True, text=True)
-                if extracted:
-                    sign = [str(exe.ldid), f"-S{entitlement_file}", "-M", "-Cadhoc", str(nse_binary)]
-                    subprocess.run(sign, check=True, capture_output=True, text=True)
-                    entitlement_file.unlink(missing_ok=True)
-                elif not Executable(str(nse_binary)).fakesign():
-                    raise SystemExit("❌ Facebook Plus: falha ao assinar NSE após injeção")
-            if Executable(str(nse_binary)).get_dependencies().count(dylib_load) != 1:
-                raise SystemExit("❌ Facebook Plus: load de FBPNotifyBridge ausente/duplicado")
+                    entitlements.write_bytes(extracted)
+                if load not in exe.get_dependencies():
+                    exe.remove_signature()
+                    subprocess.run([str(exe.idylib), "--weak", "--inplace", "--all-yes",
+                                    load, str(executable)], check=True)
+                subprocess.run([str(exe.ldid), "-S", str(bridge)], check=True)
+                subprocess.run([str(exe.ldid), "-S" + str(entitlements) if extracted else "-S",
+                                str(executable)], check=True)
+            finally:
+                entitlements.unlink(missing_ok=True)
+            if Executable(str(executable)).get_dependencies().count(load) != 1:
+                raise SystemExit("❌ Facebook Plus: LC_LOAD_WEAK_DYLIB ausente ou duplicado")
             if (app / "Frameworks/FBPNotifyBridge.dylib").exists():
-                raise SystemExit("❌ Facebook Plus: bridge não pode estar nos Frameworks principais")
-            print("✅ Facebook Plus: bundle, ícones, Safari e bridge de notificações preparados")
+                raise SystemExit("❌ Facebook Plus: bridge indevido nos Frameworks")
+            print("✅ Facebook Plus 1.1.0: Cyan, PT-BR, Safari, ícones e NSE preparados")
         for relative_path in addon.get(
             "remove_paths",
             [],
