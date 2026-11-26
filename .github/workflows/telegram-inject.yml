@@ -7873,22 +7873,6 @@ jobs:
         echo "🩹 Aplicando IPA Patch"
         echo "Modo: plugins-selective"
         ADDON_PATCH=selected_addon.json
-        if [ "${{ steps.prepare.outputs.bundle_id }}" = "com.facebook.Facebook" ] && \
-           [ "${{ steps.prepare.outputs.addon_name }}" = "Facebook Plus" ]; then
-          python <<'PY'
-        import json
-        from pathlib import Path
-        addon = json.loads(Path("selected_addon.json").read_text(encoding="utf-8"))
-        # A extensão Safari adicional não existe no IPA original nesta etapa.
-        addon["ipapatch_plugins"]["exclude"] = [
-            n for n in addon["ipapatch_plugins"]["exclude"]
-            if n != "OpenInFacebookSafariExtension"
-        ]
-        assert "NotificationServiceExtension" in addon["ipapatch_plugins"]["exclude"]
-        Path("selected_addon_ipapatch.json").write_text(json.dumps(addon), encoding="utf-8")
-        PY
-          ADDON_PATCH=selected_addon_ipapatch.json
-        fi
         python private-core/scripts/ipapatch_selective.py apply \
           --input Layout_Output.ipa \
           --output Patched_Output.ipa \
@@ -8598,12 +8582,17 @@ jobs:
             if "@rpath/FacebookPlus.dylib" not in Executable(str(main)).get_dependencies():
                 raise SystemExit("❌ Facebook Plus: carregamento principal ausente")
             bundle = app / "FacebookPlus.bundle"
-            locale = Path("translations/facebook/1.1.0/Localizable.strings")
-            if not bundle.is_dir() or not locale.is_file():
-                raise SystemExit("❌ Facebook Plus: bundle ou tradução ausente")
+            locale = Path("translations/facebook") / addon["version"] / "Localizable.strings"
             target = bundle / "pt-BR.lproj/Localizable.strings"
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(locale, target)
+            if not bundle.is_dir() or not target.is_file():
+                raise SystemExit("❌ Facebook Plus: bundle ou PT-BR ausente")
+            if locale.is_file():
+                shutil.copy2(locale, target)
+            import re
+            raw = target.read_bytes()
+            count = len(plistlib.loads(raw)) if raw.startswith(b"bplist00") else len(re.findall(rb'^\s*"[^"\n]+"\s*=', raw, re.M))
+            if addon["version"] == "1.1.1" and count != 242:
+                raise SystemExit(f"❌ Facebook Plus: esperadas 242 strings PT-BR, há {count}")
             if not (app / "PlugIns/OpenInFacebookSafariExtension.appex/Info.plist").is_file():
                 raise SystemExit("❌ Facebook Plus: extensão Safari não instalada")
             if "fbplus_Facebook-Plus" not in info.get("CFBundleIcons", {}).get("CFBundleAlternateIcons", {}):
@@ -8650,7 +8639,7 @@ jobs:
                 raise SystemExit("❌ Facebook Plus: LC_LOAD_WEAK_DYLIB ausente ou duplicado")
             if (app / "Frameworks/FBPNotifyBridge.dylib").exists():
                 raise SystemExit("❌ Facebook Plus: bridge indevido nos Frameworks")
-            print("✅ Facebook Plus 1.1.0: Cyan, PT-BR, Safari, ícones e NSE preparados")
+            print(f"✅ Facebook Plus {addon['version']}: Cyan, PT-BR, Safari, ícones e NSE preparados")
         for relative_path in addon.get(
             "remove_paths",
             [],
@@ -9033,6 +9022,84 @@ jobs:
         print("✅ Chaves de File Sharing removidas")
         print("✅ Messenger seguirá com o idioma nativo do app/iOS")
         PY
+    - name: Facebook Plus ZX Compat on eight original extensions
+      if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Facebook' && steps.prepare.outputs.addon_name == 'Facebook Plus' }}
+      run: |
+        python <<'PY'
+        import json, plistlib, runpy, shutil, subprocess, zipfile
+        from pathlib import Path
+        from cyan.tbhtypes.executable import Executable
+        addon = json.loads(Path('selected_addon.json').read_text(encoding='utf-8'))
+        cfg = addon.get('zx_compat_extensions', {})
+        if not cfg.get('enabled') or cfg.get('mode') != 'selective':
+            raise SystemExit('❌ Facebook Plus: zx_compat_extensions seletivo não ativado')
+        wanted = set(cfg.get('include', []))
+        excluded = set(cfg.get('exclude', []))
+        if len(wanted) != 8 or excluded != {'NotificationServiceExtension', 'OpenInFacebookSafariExtension'} or wanted & excluded:
+            raise SystemExit('❌ Facebook Plus: seleção ZX de 8 extensões inválida')
+        work = Path('fbplus_zx_selective_work')
+        shutil.rmtree(work, ignore_errors=True)
+        with zipfile.ZipFile('Final.ipa') as z:
+            z.extractall(work)
+        apps = list((work / 'Payload').glob('*.app'))
+        if len(apps) != 1:
+            raise SystemExit('❌ Facebook Plus: IPA sem app principal único')
+        app = apps[0]
+        if plistlib.loads((app / 'Info.plist').read_bytes()).get('CFBundleIdentifier') != 'com.facebook.Facebook':
+            raise SystemExit('❌ Facebook Plus: Bundle ID incompatível')
+        extensions = {p.stem: p for root in ('PlugIns', 'Extensions')
+                      for p in (app / root).glob('*.appex')}
+        if set(extensions) != wanted | excluded:
+            raise SystemExit(f'❌ Facebook Plus: extensões inesperadas: {sorted(set(extensions) ^ (wanted | excluded))}')
+        framework = app / 'Frameworks'
+        substrate = framework / 'CydiaSubstrate.framework/CydiaSubstrate'
+        source = Path('addons/shared/zx-compat/dylib/zxPluginsInject.dylib')
+        if not substrate.is_file() or not source.is_file():
+            raise SystemExit('❌ Facebook Plus: zxPluginsInject ou CydiaSubstrate ausente')
+        dest = framework / source.name
+        if dest.exists() and dest.read_bytes() != source.read_bytes():
+            raise SystemExit('❌ Facebook Plus: zxPluginsInject conflitante')
+        shutil.copy2(source, dest)
+        patcher = runpy.run_path('private-core/scripts/zx_compat_patch.py')
+        weak = '@rpath/zxPluginsInject.dylib'
+        ldids = set()
+        for name in sorted(wanted):
+            ext = extensions[name]
+            info = plistlib.loads((ext / 'Info.plist').read_bytes())
+            binary = ext / info['CFBundleExecutable']
+            original = binary.read_bytes()
+            slices = patcher['_fat_slices'](original)
+            for offset, size in slices:
+                rpaths = patcher['_parse_slice'](original, offset, size)['rpaths']
+                if '@executable_path/../../Frameworks' not in rpaths:
+                    raise SystemExit(f'❌ Facebook Plus: extensão sem rpath para Frameworks: {name}')
+            exe = Executable(str(binary))
+            ent = subprocess.run([exe.ldid, '-e', str(binary)], capture_output=True).stdout
+            patcher['patch_macho'](binary, [weak])
+            entfile = Path('.fbplus-zx-entitlements.plist')
+            try:
+                if ent:
+                    entfile.write_bytes(ent)
+                subprocess.run([str(exe.ldid), '-S'+str(entfile) if ent else '-S', str(binary)], check=True)
+            finally:
+                entfile.unlink(missing_ok=True)
+            if Executable(str(binary)).get_dependencies().count(weak) != 1:
+                raise SystemExit(f'❌ Facebook Plus: ZX weak load inválido: {name}')
+            ldids.add(str(exe.ldid))
+            print(f'✅ Facebook Plus ZX: {name}')
+        subprocess.run([ldids.pop(), '-S', str(dest)], check=True)
+        for name in excluded:
+            ext = extensions[name]
+            info = plistlib.loads((ext / 'Info.plist').read_bytes())
+            if weak in Executable(str(ext / info['CFBundleExecutable'])).get_dependencies():
+                raise SystemExit(f'❌ Facebook Plus: ZX aplicado à extensão excluída: {name}')
+        with zipfile.ZipFile('Final.ipa', 'w', compression=zipfile.ZIP_DEFLATED) as z:
+            for file in work.rglob('*'):
+                if file.is_file():
+                    z.write(file, file.relative_to(work))
+        shutil.rmtree(work)
+        print('✅ Facebook Plus: 8 extensões ZX, NSE bridge e Safari isoladas; sem IPA Patch')
+        PY
     - name: Validate Facebook Plus final layout (no app-version pin)
       if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.bundle_id == 'com.facebook.Facebook' && steps.prepare.outputs.addon_name == 'Facebook Plus' }}
       run: |
@@ -9075,7 +9142,19 @@ jobs:
                      "fbplus_Facebook-Plus-iPad@2x.png", "fbplus_Facebook-Plus-iPadPro@2x.png"):
             if not (app / name).is_file():
                 raise SystemExit(f"❌ Facebook Plus: ícone ausente: {name}")
-        print("✅ Facebook Plus: layout final validado, sem restrição de versão do Facebook")
+        import json
+        cfg = json.loads(Path('selected_addon.json').read_text())['zx_compat_extensions']
+        wanted = set(cfg['include'])
+        for name in wanted | set(cfg['exclude']):
+            ext = app / 'PlugIns' / (name + '.appex')
+            e_info = plistlib.loads((ext / 'Info.plist').read_bytes())
+            loads = Executable(str(ext / e_info['CFBundleExecutable'])).get_dependencies()
+            count = loads.count('@rpath/zxPluginsInject.dylib')
+            if count != (1 if name in wanted else 0):
+                raise SystemExit(f'❌ Facebook Plus: carga ZX incorreta em {name}: {count}')
+        if not (app / 'Frameworks/zxPluginsInject.dylib').is_file():
+            raise SystemExit('❌ Facebook Plus: zxPluginsInject ausente do IPA')
+        print('✅ Facebook Plus: 8 extensões ZX + NSE bridge + Safari preservada')
         PY
     - name: Validate zx-compat final layout
       if: ${{ steps.private_input.outputs.processing_route == 'standard' && steps.prepare.outputs.zx_compat == 'true' }}
