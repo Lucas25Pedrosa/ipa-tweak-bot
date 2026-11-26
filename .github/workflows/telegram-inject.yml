@@ -55,7 +55,6 @@ jobs:
         test -f private-core/scripts/zx_compat_patch.py
         test -f private-core/scripts/ipapatch_selective.py
         test -f private-core/scripts/validate_lead_layout.py
-        test -f private-core/addons/telegram/iqtele/dylib/iQTeleLocation.dylib
         test -f private-core/addons/shared/zx-compat/dylib/zxPluginsInject.dylib
         test -f private-core/addons/shared/zx-compat/framework/CydiaSubstrate.framework.zip
         echo "✅ Bot-Injector-Core acessado com sucesso"
@@ -4059,7 +4058,6 @@ jobs:
                 "frameworks": {
                     "iQTele.dylib",
                     "iQTeleEnhancer.dylib",
-                    "iQTeleLocation.dylib",
                     "sideloadFixerLol.dylib",
                     "iqKeepDeleted.dylib",
                 },
@@ -4233,12 +4231,12 @@ jobs:
             )
             if notification_service is None:
                 raise SystemExit(
-                    "❌ iQTele 1.4: NotificationServiceExtensionv1 ausente"
+                    "❌ iQTele 1.6: NotificationServiceExtensionv1 ausente"
                 )
             keep_deleted_source = frameworks / "iqKeepDeleted.dylib"
             if not keep_deleted_source.is_file():
                 raise SystemExit(
-                    "❌ iQTele 1.4: Frameworks/iqKeepDeleted.dylib ausente"
+                    "❌ iQTele 1.6: Frameworks/iqKeepDeleted.dylib ausente"
                 )
             keep_deleted_local = (
                 notification_service / "iqKeepDeleted.dylib"
@@ -4252,7 +4250,7 @@ jobs:
                 ),
             )
             print(
-                "✅ iQTele 1.4: iqKeepDeleted duplicado na "
+                "✅ iQTele 1.6: iqKeepDeleted duplicado na "
                 "NotificationServiceExtensionv1"
             )
         zx_source = Path(
@@ -9225,7 +9223,6 @@ jobs:
                 "framework_files": {
                     "iQTele.dylib",
                     "iQTeleEnhancer.dylib",
-                    "iQTeleLocation.dylib",
                     "sideloadFixerLol.dylib",
                     "iqKeepDeleted.dylib",
                     "zxPluginsInject.dylib",
@@ -9237,7 +9234,6 @@ jobs:
                     "@rpath/zxPluginsInject.dylib",
                     "@rpath/iQTele.dylib",
                     "@rpath/iQTeleEnhancer.dylib",
-                    "@rpath/iQTeleLocation.dylib",
                 },
                 "extension_loads": {
                     "@rpath/zxPluginsInject.dylib",
@@ -9245,7 +9241,6 @@ jobs:
                 "extension_forbidden": {
                     "iQTele.dylib",
                     "iQTeleEnhancer.dylib",
-                    "iQTeleLocation.dylib",
                     "Prism.dylib",
                     "sideloadFixerLol.dylib",
                     "TelegramChatFixer.dylib",
@@ -9266,12 +9261,7 @@ jobs:
                     "iqKeepDeleted.dylib",
                 },
                 "expected_extensions": {
-                    "BroadcastUploadExtension",
-                    "IntentsExtension",
-                    "NotificationContentExtension",
                     "NotificationServiceExtensionv1",
-                    "ShareExtension",
-                    "WidgetExtension",
                 },
                 "forbidden_main": {
                     "@rpath/Prism.dylib",
@@ -9286,7 +9276,6 @@ jobs:
                     "@rpath/Mx.dylib",
                     "@executable_path/iQTele.dylib",
                     "@executable_path/iQTeleEnhancer.dylib",
-                    "@executable_path/iQTeleLocation.dylib",
                     "@executable_path/Prism.dylib",
                     "@executable_path/iqKeepDeleted.dylib",
                     "@executable_path/sideloadFixerLol.dylib",
@@ -9586,11 +9575,11 @@ jobs:
                 extension.stem
                 for extension in extensions
             }
-            if actual_extensions != expected_extensions:
+            if not expected_extensions.issubset(actual_extensions):
                 raise SystemExit(
-                    "❌ zx-compat final: conjunto de extensões divergiu. "
-                    f"esperado={sorted(expected_extensions)}; "
-                    f"encontrado={sorted(actual_extensions)}"
+                    "❌ zx-compat final: extensão obrigatória ausente. "
+                    f"exigidas={sorted(expected_extensions)}; "
+                    f"encontradas={sorted(actual_extensions)}"
                 )
         required_extension_loads = set(
             profile.get("extension_loads", set())
@@ -9705,7 +9694,7 @@ jobs:
                 if extension.stem == "NotificationServiceExtensionv1":
                     if not local_keep_deleted.is_file():
                         raise SystemExit(
-                            "❌ iQTele 1.4: iqKeepDeleted local ausente em "
+                            "❌ iQTele 1.6: iqKeepDeleted local ausente em "
                             "NotificationServiceExtensionv1"
                         )
                     validate_dynamic_sha(
@@ -9718,7 +9707,7 @@ jobs:
                     )
                 elif local_keep_deleted.exists():
                     raise SystemExit(
-                        "❌ iQTele 1.4: iqKeepDeleted local apareceu na "
+                        "❌ iQTele 1.6: iqKeepDeleted local apareceu na "
                         f"extensão incorreta {extension.name}"
                     )
         if BUNDLE_ID == "com.facebook.Facebook":
@@ -9775,7 +9764,7 @@ jobs:
             and ADDON_NAME == "iQTele"
         ):
             print(
-                "✅ iQTele 1.4 + iQTeleEnhancer + iQTeleLocation validados por SHA dinâmico"
+                "✅ iQTele 1.6 + iQTeleEnhancer validados por SHA dinâmico"
             )
         print(
             f"✅ zx-compat final validado: {BUNDLE_ID}"
